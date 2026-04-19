@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flight Tracker</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#ddd; font-family:'JetBrains Mono',monospace; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  #header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; border-bottom:1px solid #141414; flex-shrink:0; }
+  #header .left { display:flex; align-items:center; gap:8px; }
+  #header .title { font-size:14px; font-weight:800; color:#ff6b35; letter-spacing:2px; }
+  #header .meta { font-size:9px; color:#444; }
+  #header .right { display:flex; gap:4px; }
+  .btn { background:transparent; border:1px solid #1a1a1a; color:#555; padding:3px 8px; border-radius:2px; cursor:pointer; font-size:10px; font-family:inherit; }
+  .btn:hover { border-color:#333; color:#888; }
+  .btn.active { background:#1a1208; border-color:#2a1a08; color:#ff6b35; }
+  #error { margin:6px 12px; padding:6px 8px; background:#180808; border:1px solid #2a0808; border-radius:2px; color:#f44; font-size:10px; display:none; }
+  #main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+  #map-wrap { flex:0 0 45%; min-height:180px; position:relative; transition:flex .3s; }
+  #map-wrap.tracking { flex:0 0 65%; }
+  #map { width:100%; height:100%; }
+  #live-info { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.9); border:1px solid #222; border-radius:4px; padding:8px 12px; z-index:1000; font-size:10px; display:none; max-width:220px; }
+  #live-info .flight-id { color:#ff6b35; font-weight:700; font-size:12px; }
+  #live-info .detail { color:#888; margin-top:2px; line-height:1.5; }
+  #live-info .tracking-badge { display:inline-block; background:#ff6b35; color:#000; font-size:8px; font-weight:700; padding:1px 5px; border-radius:2px; letter-spacing:1px; margin-left:6px; animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  #test-bar { position:absolute; top:8px; right:8px; z-index:1000; display:flex; gap:4px; }
+  #test-bar input { background:#111; border:1px solid #222; color:#ddd; padding:4px 8px; border-radius:2px; font-size:11px; font-family:inherit; width:120px; }
+  #test-bar input::placeholder { color:#444; }
+  #test-bar button { background:#ff6b35; color:#000; border:none; padding:4px 10px; border-radius:2px; font-size:10px; font-weight:700; cursor:pointer; font-family:inherit; }
+  #bottom { flex:1; display:flex; flex-direction:column; border-top:1px solid #141414; overflow:hidden; }
+  #filters { display:flex; gap:2px; padding:6px 12px; border-bottom:1px solid #141414; }
+  #trips { flex:1; overflow-y:auto; padding:4px 0 8px; }
+  .day-header { padding:6px 14px 2px; font-size:10px; font-weight:700; color:#ff6b35; letter-spacing:1px; text-transform:uppercase; }
+  .trip { margin:0 12px 5px; padding:10px 12px; background:#0f0f0f; border-radius:4px; border-left:3px solid #282828; cursor:pointer; transition:all .12s; }
+  .trip.past { opacity:.45; }
+  .trip.selected { background:#1a1208; border-left-color:#ff6b35; }
+  .trip.selected.past { opacity:1; }
+  .trip .route { font-size:12px; font-weight:700; color:#bbb; letter-spacing:.3px; }
+  .trip.selected .route { color:#ff6b35; }
+  .trip .delta { font-size:10px; color:#ff6b35; font-weight:600; }
+  .trip .info { font-size:10px; color:#555; margin-top:4px; }
+  .trip .legs { margin-top:8px; border-top:1px solid #1a1a1a; padding-top:6px; display:none; }
+  .trip.selected .legs { display:block; }
+  .leg { padding:5px 0; border-bottom:1px solid #141414; }
+  .leg:last-child { border-bottom:none; }
+  .leg.dh { opacity:.5; }
+  .leg .fnum { font-size:11px; font-weight:700; color:#ccc; }
+  .leg .rte { font-size:10px; color:#777; }
+  .leg a { font-size:9px; padding:2px 4px; border-radius:2px; text-decoration:none; white-space:nowrap; }
+  .leg .fa-link { color:#06d6a0; background:#081a10; border:1px solid #0d2a18; }
+  .leg .fr-link { color:#ffd166; background:#1a1406; border:1px solid #2a1e0a; }
+  .leg .an-link { color:#c0a0ff; background:#140e1a; border:1px solid #201630; }
+  .leg.active-leg { background:#1a1208; border-radius:3px; margin:0 -4px; padding:5px 4px; }
+  .leg.active-leg .fnum { color:#ff6b35; }
+  .leg-row1 { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .leg-times { font-size:10px; color:#444; margin-left:auto; }
+  .leg-links { display:flex; gap:3px; flex-shrink:0; }
+  .leg-reg { font-size:9px; color:#999; }
+  .leg-details { font-size:9px; color:#555; margin-top:2px; }
+  .empty { text-align:center; padding:28px; color:#333; font-size:11px; }
+  @media (max-width: 600px) {
+    #map-wrap { flex:0 0 35%; min-height:150px; }
+    #map-wrap.tracking { flex:0 0 55%; }
+    .leg-row1 { gap:4px; }
+    .leg-times { margin-left:0; font-size:9px; }
+    .leg-links { margin-top:4px; width:100%; }
+    .leg .fnum { font-size:10px; min-width:auto; }
+    .trip .route { font-size:10px; }
+    #live-info { max-width:180px; font-size:9px; padding:6px 8px; }
+    #test-bar input { width:90px; font-size:10px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="left">
+    <span style="font-size:18px">✈</span>
+    <span class="title">FLIGHTS</span>
+    <span class="meta" id="leg-count"></span>
+  </div>
+  <div class="right">
+    <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
+  </div>
+</div>
+
+<div id="error"></div>
+
+<div id="main">
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="live-info">
+      <div class="flight-id" id="live-ident"></div>
+      <div class="detail" id="live-detail"></div>
+    </div>
+    <div id="test-bar">
+      <input type="text" id="test-input" placeholder="AA1234 or AAL1234">
+      <button onclick="testTrack()">TRACK</button>
+      <button onclick="clearTest()" style="background:#333;color:#aaa">✕</button>
+    </div>
+  </div>
+  <div id="bottom">
+    <div id="filters"></div>
+    <div id="trips"></div>
+  </div>
+</div>
+
+<script>
+const AP = {
+  ATL:{lat:33.6407,lon:-84.4277,n:"Atlanta"},LAX:{lat:33.9425,lon:-118.4081,n:"Los Angeles"},
+  ORD:{lat:41.9742,lon:-87.9073,n:"Chicago O'Hare"},DFW:{lat:32.8998,lon:-97.0403,n:"Dallas/Fort Worth"},
+  DEN:{lat:39.8561,lon:-104.6737,n:"Denver"},JFK:{lat:40.6413,lon:-73.7781,n:"New York JFK"},
+  SFO:{lat:37.6213,lon:-122.379,n:"San Francisco"},SEA:{lat:47.4502,lon:-122.3088,n:"Seattle"},
+  LAS:{lat:36.084,lon:-115.1537,n:"Las Vegas"},MCO:{lat:28.4312,lon:-81.308,n:"Orlando"},
+  CLT:{lat:35.214,lon:-80.9431,n:"Charlotte"},PHX:{lat:33.4373,lon:-112.0078,n:"Phoenix"},
+  MIA:{lat:25.7959,lon:-80.287,n:"Miami"},BOS:{lat:42.3656,lon:-71.0096,n:"Boston"},
+  DTW:{lat:42.2124,lon:-83.3534,n:"Detroit"},PHL:{lat:39.8744,lon:-75.2424,n:"Philadelphia"},
+  LGA:{lat:40.7769,lon:-73.874,n:"LaGuardia"},DCA:{lat:38.8512,lon:-77.0402,n:"Reagan"},
+  TPA:{lat:27.9755,lon:-82.5332,n:"Tampa"},AUS:{lat:30.1975,lon:-97.6664,n:"Austin"},
+  STL:{lat:38.7487,lon:-90.37,n:"St. Louis"},MSY:{lat:29.9934,lon:-90.258,n:"New Orleans"},
+  CLE:{lat:41.4058,lon:-81.8539,n:"Cleveland"},IND:{lat:39.7173,lon:-86.2944,n:"Indianapolis"},
+  PIT:{lat:40.4957,lon:-80.2328,n:"Pittsburgh"},JAX:{lat:30.4941,lon:-81.6879,n:"Jacksonville"},
+  MDT:{lat:40.1935,lon:-76.7634,n:"Harrisburg"},PVD:{lat:41.7246,lon:-71.4282,n:"Providence"},
+  SJU:{lat:18.4394,lon:-66.0018,n:"San Juan"},STT:{lat:18.3373,lon:-64.9734,n:"St. Thomas"},
+  RIC:{lat:37.5052,lon:-77.3197,n:"Richmond"},CUN:{lat:21.0365,lon:-86.877,n:"Cancún"},
+  IAH:{lat:29.9902,lon:-95.3368,n:"Houston IAH"},MSP:{lat:44.8848,lon:-93.2223,n:"Minneapolis"},
+  BNA:{lat:36.1263,lon:-86.6774,n:"Nashville"},SAN:{lat:32.7338,lon:-117.1933,n:"San Diego"},
+  SLC:{lat:40.7884,lon:-111.9778,n:"Salt Lake City"},MCI:{lat:39.2976,lon:-94.7139,n:"Kansas City"},
+  CMH:{lat:39.998,lon:-82.8919,n:"Columbus"},RSW:{lat:26.5362,lon:-81.7552,n:"Fort Myers"},
+  SAT:{lat:29.5337,lon:-98.4698,n:"San Antonio"},FLL:{lat:26.0742,lon:-80.1506,n:"Fort Lauderdale"},
+  BWI:{lat:39.1754,lon:-76.6683,n:"Baltimore"},IAD:{lat:38.9531,lon:-77.4565,n:"Dulles"},
+  HOU:{lat:29.6454,lon:-95.2789,n:"Hobby"},MDW:{lat:41.786,lon:-87.7524,n:"Midway"},
+  RDU:{lat:35.8801,lon:-78.7875,n:"Raleigh"},EWR:{lat:40.6895,lon:-74.1745,n:"Newark"},
+  HNL:{lat:21.3187,lon:-157.9225,n:"Honolulu"},PDX:{lat:45.5898,lon:-122.5951,n:"Portland"},
+  OMA:{lat:41.3032,lon:-95.894,n:"Omaha"},BUF:{lat:42.9405,lon:-78.7322,n:"Buffalo"},
+  SJC:{lat:37.3639,lon:-121.929,n:"San Jose"},SMF:{lat:38.6954,lon:-121.5908,n:"Sacramento"},
+};
+
+function parseEvent(ev) {
+  const s = ev.summary || "";
+  const m = s.match(/^AA\s+(\d{1,4})\s+(?:\(DH\)\s+)?([A-Z]{3})-([A-Z]{3})\s+\((\d{1,2}:\d{2})L\s*-\s*(\d{1,2}:\d{2})L\)/);
+  if (!m) return null;
+  const seq = (ev.description||"").match(/SEQ:\s*(\d+)/);
+  return {
+    num: m[1], dep: m[2], arr: m[3], depT: m[4], arrT: m[5],
+    isDH: s.includes("(DH)"), seq: seq?.[1]||null,
+    start: ev.start?.dateTime||ev.start, end: ev.end?.dateTime||ev.end, summary: s,
+  };
+}
+
+function groupTrips(legs) {
+  const t = {};
+  legs.forEach(l => {
+    const k = l.seq||("s-"+l.start);
+    if (!t[k]) t[k] = {seq:l.seq, legs:[], first:l.start};
+    t[k].legs.push(l);
+  });
+  return Object.values(t).sort((a,b) => new Date(a.first)-new Date(b.first));
+}
+
+let allTrips = [], filteredTrips = [], selectedIdx = null, selectedDay = null, filter = "upcoming";
+let testMode = null;
+let liveInterval = null;
+let map, layerGroup, planeMarker, trackLine;
+var regCache = {};
+var photoCache = {};
+
+async function fetchRegistrations(trip) {
+  var legs = trip.legs;
+  var promises = legs.map(function(l) {
+    var dateStr = new Date(l.start).toISOString().split("T")[0];
+    var key = l.num + "-" + dateStr;
+    if (regCache[key]) return Promise.resolve();
+    return fetch("/api/fa/registration/" + l.num + "/" + dateStr)
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) { if (data) regCache[key] = data; })
+      .catch(function() {});
+  });
+  await Promise.all(promises);
+  renderTrips();
+  // Now fetch photos for any registrations we got
+  fetchPhotos(legs);
+}
+
+async function fetchPhotos(legs) {
+  var regs = [];
+  legs.forEach(function(l) {
+    var r = getRegForLeg(l);
+    if (r && r.registration && !photoCache[r.registration]) regs.push(r.registration);
+  });
+  if (regs.length === 0) return;
+  var unique = regs.filter(function(v, i, a) { return a.indexOf(v) === i; });
+  var promises = unique.map(function(reg) {
+    return fetch("/api/photo/" + reg)
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) { if (data) photoCache[reg] = data; })
+      .catch(function() {});
+  });
+  await Promise.all(promises);
+  renderTrips();
+}
+
+function getRegForLeg(l) {
+  var key = l.num + "-" + new Date(l.start).toISOString().split("T")[0];
+  return regCache[key] || null;
+}
+
+function getPhotoForReg(reg) {
+  return photoCache[reg] || null;
+}
+
+function showPhoto(thumbUrl, fullUrl, reg, photographer) {
+  var overlay = document.createElement("div");
+  overlay.id = "photo-overlay";
+  overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.92);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer";
+  overlay.onclick = function() { overlay.remove(); };
+  overlay.innerHTML =
+    '<img src="' + fullUrl + '" style="max-width:90vw;max-height:80vh;border-radius:4px;border:1px solid #333">' +
+    '<div style="margin-top:8px;font-size:11px;color:#888">' + reg + (photographer ? ' · Photo: ' + photographer : '') + '</div>' +
+    '<div style="margin-top:4px;font-size:10px;color:#555">Click anywhere to close</div>';
+  document.body.appendChild(overlay);
+}
+
+function initMap() {
+  map = L.map("map", { center:[39.8,-98.5], zoom:4, zoomControl:false, attributionControl:false });
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {maxZoom:19}).addTo(map);
+  L.control.zoom({position:"bottomright"}).addTo(map);
+  layerGroup = L.layerGroup().addTo(map);
+}
+
+function drawMap() {
+  layerGroup.clearLayers();
+  if (planeMarker) { map.removeLayer(planeMarker); planeMarker = null; }
+  if (trackLine) { map.removeLayer(trackLine); trackLine = null; }
+
+  // Expand map when actively tracking
+  var mapWrap = document.getElementById("map-wrap");
+  if (testMode && testMode.flight) {
+    mapWrap.classList.add("tracking");
+  } else {
+    mapWrap.classList.remove("tracking");
+  }
+  setTimeout(function(){ map.invalidateSize(); }, 350);
+
+  const bounds = [];
+  const all = allTrips.flatMap(t => t.legs);
+  var tripLegs = selectedIdx !== null ? (filteredTrips[selectedIdx]?.legs||[]) : [];
+  var active;
+  if (selectedDay && tripLegs.length) {
+    active = tripLegs.filter(function(l) {
+      return new Date(l.start).toDateString() === selectedDay;
+    });
+  } else {
+    active = tripLegs;
+  }
+  const hasSel = active.length > 0;
+
+  all.forEach(f => {
+    const d = AP[f.dep], a = AP[f.arr];
+    if (!d || !a) return;
+    const sel = active.includes(f);
+    if (sel) bounds.push([d.lat,d.lon],[a.lat,a.lon]);
+    const pts = [];
+    for (let t=0;t<=1;t+=.025) {
+      const lat=d.lat+t*(a.lat-d.lat), lon=d.lon+t*(a.lon-d.lon);
+      pts.push([lat+Math.sin(t*Math.PI)*Math.min(5,Math.abs(a.lon-d.lon)*.025), lon]);
+    }
+    L.polyline(pts, {
+      color: sel?(f.isDH?"#666":"#ff6b35"):(hasSel?"#111":"#262626"),
+      weight: sel?2.5:1, opacity: sel?.9:(hasSel?.12:.35),
+      dashArray: f.isDH&&sel?"4 4":null
+    }).addTo(layerGroup);
+    if (sel) {
+      const mk=(p,label,c)=>L.marker(p,{icon:L.divIcon({className:"",
+        html:'<div style="background:'+c+';color:#000;font:700 10px/1 monospace;padding:2px 5px;border-radius:2px">'+label+'</div>',
+        iconSize:null})});
+      mk([d.lat,d.lon],f.dep,f.isDH?"#666":"#ff6b35").addTo(layerGroup);
+      mk([a.lat,a.lon],f.arr,f.isDH?"#666":"#ff6b35").addTo(layerGroup);
+    }
+  });
+
+  if (testMode) drawTestFlight();
+  if (bounds.length && !testMode) map.fitBounds(bounds,{padding:[40,40],maxZoom:6});
+  else if (!hasSel && !testMode && all.length) {
+    const ab=[];
+    all.forEach(f=>{const d=AP[f.dep],a=AP[f.arr];if(d)ab.push([d.lat,d.lon],[a.lat,a.lon]);});
+    if(ab.length) map.fitBounds(ab,{padding:[30,30],maxZoom:5});
+  }
+}
+
+function drawTestFlight() {
+  if (!testMode) return;
+  var flight = testMode.flight, position = testMode.position, track = testMode.track;
+  var bounds = [];
+
+  if (track && track.positions && track.positions.length > 1) {
+    var pts = track.positions.map(function(p){ return [p.latitude, p.longitude]; });
+    trackLine = L.polyline(pts, { color:"#06d6a0", weight:2, opacity:.7 }).addTo(map);
+    bounds = bounds.concat(pts);
+  }
+
+  if (flight.origin && flight.destination) {
+    var oCode = flight.origin.code_iata;
+    var dCode = flight.destination.code_iata;
+    var oLat = AP[oCode] ? AP[oCode].lat : null;
+    var oLon = AP[oCode] ? AP[oCode].lon : null;
+    var dLat = AP[dCode] ? AP[dCode].lat : null;
+    var dLon = AP[dCode] ? AP[dCode].lon : null;
+    if (oLat && dLat) {
+      var pts2 = [];
+      for (var t=0;t<=1;t+=.02) {
+        var lat=oLat+t*(dLat-oLat), lon=oLon+t*(dLon-oLon);
+        pts2.push([lat+Math.sin(t*Math.PI)*Math.min(5,Math.abs(dLon-oLon)*.025),lon]);
+      }
+      L.polyline(pts2,{color:"#333",weight:1.5,opacity:.4,dashArray:"6 3"}).addTo(layerGroup);
+      if (!track || track.positions.length < 2) bounds.push([oLat,oLon],[dLat,dLon]);
+
+      var mkAp=function(p,label){return L.marker(p,{icon:L.divIcon({className:"",
+        html:'<div style="background:#ff6b35;color:#000;font:700 10px/1 monospace;padding:2px 5px;border-radius:2px">'+label+'</div>',
+        iconSize:null})})};
+      mkAp([oLat,oLon],oCode).addTo(layerGroup);
+      mkAp([dLat,dLon],dCode).addTo(layerGroup);
+    }
+  }
+
+  var lp = position ? position.last_position : null;
+  if (lp && lp.latitude) {
+    var hdg = lp.heading || 0;
+    planeMarker = L.marker([lp.latitude, lp.longitude], {
+      icon: L.divIcon({
+        className: "",
+        html: '<div style="font-size:22px;transform:rotate('+hdg+'deg);filter:drop-shadow(0 0 4px rgba(255,107,53,.6))">✈️</div>',
+        iconSize: [24,24], iconAnchor: [12,12],
+      })
+    }).addTo(map);
+    bounds.push([lp.latitude, lp.longitude]);
+
+    var li = document.getElementById("live-info");
+    li.style.display = "block";
+    document.getElementById("live-ident").innerHTML = (flight.ident_iata || flight.ident) + '<span class="tracking-badge">LIVE</span>';
+    document.getElementById("live-detail").innerHTML =
+      (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>" +
+      "Alt: " + (lp.altitude*100).toLocaleString() + "ft<br>" +
+      "GS: " + lp.groundspeed + "kts · Hdg: " + lp.heading + "°<br>" +
+      "Progress: " + flight.progress_percent + "%";
+  } else if (flight) {
+    // Pre-departure: show flight info without position
+    var li = document.getElementById("live-info");
+    li.style.display = "block";
+    var statusText = flight.status || "Scheduled";
+    var badgeColor = "#666";
+    var badgeLabel = "PRE-DEP";
+    if (statusText.indexOf("Taxi") >= 0 || flight.actual_out) { badgeLabel = "TAXI"; badgeColor = "#ffd166"; }
+    if (flight.progress_percent > 0) { badgeLabel = "LIVE"; badgeColor = "#ff6b35"; }
+    document.getElementById("live-ident").innerHTML = (flight.ident_iata || flight.ident) +
+      '<span class="tracking-badge" style="background:' + badgeColor + '">' + badgeLabel + '</span>';
+    var depTime = flight.estimated_out || flight.scheduled_out;
+    var depStr = depTime ? new Date(depTime).toLocaleTimeString("en-US", {hour:"numeric",minute:"2-digit"}) : "?";
+    document.getElementById("live-detail").innerHTML =
+      (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>" +
+      "Departs: " + depStr + "<br>" +
+      "Status: " + statusText +
+      (flight.gate_origin ? "<br>Gate: " + flight.gate_origin : "") +
+      (flight.registration ? "<br>Tail: " + flight.registration : "");
+  }
+
+  if (bounds.length) map.fitBounds(bounds,{padding:[50,50],maxZoom:8});
+}
+
+async function testTrack() {
+  var input = document.getElementById("test-input").value.trim().toUpperCase();
+  if (!input) return;
+  if (input.match(/^AA\d/)) input = "AAL" + input.slice(2);
+  if (!input.match(/^[A-Z]{3}\d/)) input = "AAL" + input;
+
+  showError("");
+  try {
+    var resp = await fetch("/api/test-track/" + input);
+    if (!resp.ok) {
+      var d = await resp.json();
+      showError(d.error || "No active flight found");
+      return;
+    }
+    testMode = await resp.json();
+    drawMap();
+
+    if (liveInterval) clearInterval(liveInterval);
+    liveInterval = setInterval(async function() {
+      try {
+        var r = await fetch("/api/test-track/" + input);
+        if (r.ok) { testMode = await r.json(); drawMap(); }
+      } catch(e) {}
+    }, 30000);
+  } catch(e) { showError(e.message); }
+}
+
+function clearTest() {
+  testMode = null;
+  if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+  document.getElementById("test-input").value = "";
+  document.getElementById("live-info").style.display = "none";
+  drawMap();
+}
+
+async function loadFlights() {
+  try {
+    var resp = await fetch("/api/flights");
+    if (!resp.ok) throw new Error("Failed to load flights");
+    var events = await resp.json();
+    var parsed = events.map(parseEvent).filter(Boolean);
+    allTrips = groupTrips(parsed);
+    document.getElementById("leg-count").textContent = parsed.length + " legs · " + allTrips.length + " trips";
+    applyFilter();
+    drawMap();
+    checkActiveLeg(parsed);
+  } catch(e) {
+    showError(e.message);
+  }
+}
+
+async function checkActiveLeg(legs) {
+  var now = new Date();
+  var PRE_DEPART_MS = 20 * 60 * 1000; // 20 minutes before departure
+  var active = legs.find(function(l) {
+    var s = new Date(l.start);
+    var e = new Date(l.end);
+    var earlyStart = new Date(s.getTime() - PRE_DEPART_MS);
+    return now >= earlyStart && now <= e && !l.isDH;
+  });
+  if (active) {
+    try {
+      var resp = await fetch("/api/track/" + active.num);
+      if (resp.ok) {
+        var data = await resp.json();
+        // Only set if we got useful data (position or at least flight info)
+        if (data.flight) {
+          testMode = data;
+          drawMap();
+          if (liveInterval) clearInterval(liveInterval);
+          liveInterval = setInterval(async function() {
+            try {
+              var r = await fetch("/api/track/" + active.num);
+              if (r.ok) {
+                var d = await r.json();
+                if (d.flight) { testMode = d; drawMap(); }
+              }
+            } catch(e) {}
+          }, 30000);
+        }
+      }
+    } catch(e) {}
+  }
+}
+
+function applyFilter() {
+  var now = new Date();
+  var isPastFn = function(t) { return new Date(t.legs[t.legs.length-1].end) < now; };
+  filteredTrips = allTrips.filter(function(t) {
+    if (filter === "all") return true;
+    if (filter === "upcoming") return !isPastFn(t);
+    return isPastFn(t);
+  });
+  if (filter === "past") filteredTrips = filteredTrips.slice().reverse();
+  selectedIdx = null;
+  renderFilters();
+  renderTrips();
+}
+
+function renderFilters() {
+  var now = new Date();
+  var isPastFn = function(t) { return new Date(t.legs[t.legs.length-1].end) < now; };
+  var counts = {
+    upcoming: allTrips.filter(function(t){return !isPastFn(t);}).length,
+    past: allTrips.filter(isPastFn).length,
+    all: allTrips.length
+  };
+  document.getElementById("filters").innerHTML = ["upcoming","past","all"].map(function(f) {
+    return '<button class="btn '+(filter===f?"active":"")+'" onclick="setFilter(\''+f+'\')">'+f+' ('+counts[f]+')</button>';
+  }).join("");
+}
+
+function setFilter(f) { filter=f; applyFilter(); }
+
+function fmtDate(iso) {
+  return iso ? new Date(iso).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"}) : "";
+}
+function timeDelta(iso) {
+  if(!iso) return "";
+  var diff = new Date(iso) - new Date();
+  var dd = Math.abs(Math.round(diff/864e5));
+  var hh = Math.abs(Math.round(diff/36e5));
+  if (diff < 0) return dd > 0 ? dd+"d ago" : hh+"h ago";
+  return dd > 0 ? "in "+dd+"d" : "in "+hh+"h";
+}
+function tripRoute(legs) {
+  var codes = [legs[0].dep];
+  legs.forEach(function(l){ codes.push(l.arr); });
+  return codes.join("→");
+}
+function tripDates(legs) {
+  var a = fmtDate(legs[0].start), b = fmtDate(legs[legs.length-1].end);
+  return a === b ? a : a + " – " + b;
+}
+
+function renderTripCard(trip, idx) {
+  var now = new Date();
+  var past = new Date(trip.legs[trip.legs.length-1].end) < now;
+  var sel = selectedIdx === idx;
+  var isActiveLeg = function(l) { var s=new Date(l.start),e=new Date(l.end); return now>=s && now<=e; };
+
+  var legsHtml = "";
+  var lastLegDay = "";
+  trip.legs.forEach(function(l) {
+    var legDate = new Date(l.start);
+    var legDayKey = legDate.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" });
+    var legDateStr = legDate.toDateString();
+    if (legDayKey !== lastLegDay) {
+      var isDaySelected = selectedDay === legDateStr;
+      legsHtml += '<div onclick="event.stopPropagation();selectDay(\'' + legDateStr + '\',' + idx + ')" style="cursor:pointer;font-size:9px;font-weight:700;color:' + (isDaySelected ? "#000" : "#ff6b35") + ';background:' + (isDaySelected ? "#ff6b35" : "transparent") + ';letter-spacing:1px;text-transform:uppercase;padding:' + (lastLegDay ? "8" : "2") + 'px 4px 4px;margin:0 -4px;border-radius:2px;border-top:' + (lastLegDay ? "1px solid #1a1a1a" : "none") + '">' + legDayKey + '</div>';
+      lastLegDay = legDayKey;
+    }
+    var reg = getRegForLeg(l);
+    var regHtml = "";
+    var photoHtml = "";
+    if (reg && reg.registration) {
+      var photo = getPhotoForReg(reg.registration);
+      regHtml = '<span class="leg-reg">' + reg.registration + '</span>';
+      if (photo && photo.thumbnail) {
+        photoHtml = '<div style="margin-top:4px"><img src="' + photo.thumbnail + '" style="height:36px;border-radius:3px;border:1px solid #222;cursor:pointer;opacity:.85;transition:opacity .15s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.85" onclick="event.stopPropagation();showPhoto(\'' + photo.thumbnail + '\',\'' + (photo.full||photo.thumbnail) + '\',\'' + reg.registration + '\',\'' + (photo.photographer||'').replace(/'/g,"\\'") + '\')"></div>';
+      }
+    } else if (reg && reg.reason === "future") {
+      regHtml = '<span class="leg-reg" style="color:#333">TBD</span>';
+    } else if (sel) {
+      regHtml = '<span class="leg-reg" style="color:#333">···</span>';
+    }
+    // Flight details line
+    var detailsHtml = "";
+    if (reg && (reg.filed_ete || reg.filed_airspeed || reg.filed_altitude)) {
+      var parts = [];
+      if (reg.filed_ete) {
+        var hrs = Math.floor(reg.filed_ete / 3600);
+        var mins = Math.round((reg.filed_ete % 3600) / 60);
+        parts.push(hrs + "h" + (mins > 0 ? mins + "m" : ""));
+      }
+      if (reg.filed_airspeed) parts.push(reg.filed_airspeed + "kts");
+      if (reg.filed_altitude) parts.push("FL" + reg.filed_altitude);
+      if (reg.aircraft_type) parts.push(reg.aircraft_type);
+      if (parts.length) {
+        detailsHtml = '<div class="leg-details">' + parts.join(' · ') + '</div>';
+      }
+    }
+
+    // Build date-aware URLs
+    var legDate = new Date(l.start);
+    var todayStr = new Date().toDateString();
+    var isPastLeg = legDate < new Date() && legDate.toDateString() !== todayStr;
+    var dateStr = legDate.getFullYear() + String(legDate.getMonth()+1).padStart(2,'0') + String(legDate.getDate()).padStart(2,'0');
+    var faUrl = 'https://www.flightaware.com/live/flight/AAL' + l.num + (isPastLeg ? '/history/' + dateStr : '');
+    var fr24Url = (reg && reg.registration) ?
+      'https://www.flightradar24.com/data/aircraft/' + reg.registration.toLowerCase() :
+      'https://www.flightradar24.com/data/flights/aa' + l.num;
+
+    legsHtml += '<div class="leg '+(l.isDH?"dh":"")+' '+(isActiveLeg(l)?"active-leg":"")+'">' +
+      '<div class="leg-row1">' +
+        '<span class="fnum">'+(l.isDH?"DH ":"")+'AA'+l.num+'</span>' +
+        '<span class="rte">'+l.dep+'→'+l.arr+'</span>' +
+        regHtml +
+        '<span class="leg-times">'+l.depT+'–'+l.arrT+'L</span>' +
+        '<span class="leg-links">' +
+          '<a class="fa-link" href="'+faUrl+'" target="_blank" onclick="event.stopPropagation()">FA</a>' +
+          '<a class="fr-link" href="'+fr24Url+'" target="_blank" onclick="event.stopPropagation()">FR24</a>' +
+          (reg && reg.registration ? '<a class="an-link" href="https://www.airliners.net/search?keywords='+reg.registration+'" target="_blank" onclick="event.stopPropagation()">AN</a>' : '') +
+        '</span>' +
+      '</div>' +
+      detailsHtml +
+      photoHtml +
+    '</div>';
+  });
+
+  return '<div class="trip '+(past?"past":"")+' '+(sel?"selected":"")+'" onclick="selectTrip('+idx+')">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center">' +
+      '<span class="route">'+tripRoute(trip.legs)+'</span>' +
+      '<span class="delta">'+timeDelta(trip.legs[0].start)+'</span>' +
+    '</div>' +
+    '<div class="info">'+tripDates(trip.legs)+' · '+trip.legs.length+' leg'+(trip.legs.length>1?"s":"")+ ' · SEQ '+(trip.seq||"—")+'</div>' +
+    '<div class="legs">'+legsHtml+'</div>' +
+  '</div>';
+}
+
+function renderTrips() {
+  if (filteredTrips.length === 0) {
+    document.getElementById("trips").innerHTML = '<div class="empty">No '+filter+' trips</div>';
+    return;
+  }
+
+  var now = new Date();
+  var html = "";
+  var lastDay = "";
+  filteredTrips.forEach(function(trip, i) {
+    var d = new Date(trip.legs[0].start);
+    var dayKey = d.toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" });
+    if (dayKey !== lastDay) {
+      var isToday = d.toDateString() === now.toDateString();
+      var tmrw = new Date(now); tmrw.setDate(tmrw.getDate()+1);
+      var isTomorrow = d.toDateString() === tmrw.toDateString();
+      var yest = new Date(now); yest.setDate(yest.getDate()-1);
+      var isYesterday = d.toDateString() === yest.toDateString();
+      var label = isToday ? "Today" : isTomorrow ? "Tomorrow" : isYesterday ? "Yesterday" : dayKey;
+      html += '<div class="day-header" style="margin-top:'+(lastDay?"6":"0")+'px">'+label+'</div>';
+      lastDay = dayKey;
+    }
+    html += renderTripCard(trip, i);
+  });
+  document.getElementById("trips").innerHTML = html;
+}
+
+function selectDay(dateStr, tripIdx) {
+  if (selectedIdx !== tripIdx) {
+    selectedIdx = tripIdx;
+    selectedDay = dateStr;
+    fetchRegistrations(filteredTrips[tripIdx]);
+  } else if (selectedDay === dateStr) {
+    selectedDay = null;
+  } else {
+    selectedDay = dateStr;
+  }
+  renderTrips();
+  drawMap();
+}
+
+function selectTrip(i) {
+  if (selectedIdx === i) {
+    selectedIdx = null;
+    selectedDay = null;
+  } else {
+    selectedIdx = i;
+    selectedDay = null;
+    fetchRegistrations(filteredTrips[i]);
+  }
+  renderTrips();
+  drawMap();
+}
+
+function showError(msg) {
+  var el = document.getElementById("error");
+  if (msg) { el.textContent = msg; el.style.display = "block"; }
+  else el.style.display = "none";
+}
+
+initMap();
+loadFlights();
+setInterval(loadFlights, 300000);
+</script>
+</body>
+</html>
