@@ -307,6 +307,223 @@ app.get("/api/photo/:reg", async (req, res) => {
   }
 });
 
+// --- Commute schedule: all flights between two airports for a given date ---
+// Returns combined scheduled + actual flights with status/times
+// Strategy: query the SMALLER airport's arrivals/departures (avoids pagination hell at ORD)
+// Airport flight list cache (in-memory, 15-min TTL)
+// Multiple commute routes share the same airport data
+const airportCache = {};
+const AIRPORT_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+
+// Track last FA call timestamp globally to enforce minimum interval
+let lastFaCallTs = 0;
+const FA_MIN_INTERVAL_MS = 10000; // 10 seconds between calls = 6/min, well under 10/min limit
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function fetchAirportFlights(airport, endpoint, startStr, endStr) {
+  const cacheKey = `${airport}-${endpoint}-${startStr}`;
+  const cached = airportCache[cacheKey];
+  if (cached && Date.now() - cached.ts < AIRPORT_CACHE_TTL) {
+    console.log(`  [cache hit] ${airport}/${endpoint}`);
+    return cached.data;
+  }
+  // Throttle FA calls to stay under rate limit
+  const sinceLastCall = Date.now() - lastFaCallTs;
+  if (sinceLastCall < FA_MIN_INTERVAL_MS) {
+    const wait = FA_MIN_INTERVAL_MS - sinceLastCall;
+    console.log(`  [throttle] waiting ${wait}ms before ${airport}/${endpoint}`);
+    await sleep(wait);
+  }
+  lastFaCallTs = Date.now();
+
+  // All endpoints get max_pages=3 to cover the full day for busier airports like GRR
+  const maxPages = 3;
+  // type=Airline filters out GA/private traffic
+  const resp = await fetch(
+    `${FA_BASE}/airports/${airport}/flights/${endpoint}?start=${startStr}&end=${endStr}&max_pages=${maxPages}&type=Airline`,
+    { headers: { "x-apikey": FA_API_KEY } }
+  );
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    console.error(`  [fetch fail] ${endpoint} ${resp.status}: ${txt.substring(0,100)}`);
+    return [];
+  }
+  const data = await resp.json();
+  const flights = data[endpoint] || data.flights || [];
+  console.log(`  [fetched] ${airport}/${endpoint}: ${flights.length} flights (max_pages=${maxPages})`);
+  airportCache[cacheKey] = { ts: Date.now(), data: flights };
+  return flights;
+}
+
+app.get("/api/commute/:from/:to/:date", async (req, res) => {
+  if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
+  const { from, to, date } = req.params;
+  try {
+    const targetDate = new Date(date);
+    const now = new Date();
+
+    // Build day window in Central Time (ORD) — covers 5am CT to 5am CT next day
+    // This matches how a traveler thinks of "today's flights"
+    // CT is UTC-6 (standard) or UTC-5 (DST); using -5 as approximation works for both since
+    // we're just trying to shift the window away from UTC midnight
+    // Year/month/day in target date, then add 5 hours to UTC midnight to get CT midnight
+    const y = targetDate.getUTCFullYear();
+    const m = targetDate.getUTCMonth();
+    const d = targetDate.getUTCDate();
+    // CT midnight = UTC 5:00 or 6:00 (DST vs standard). Use 5 hours for DST.
+    // Check if date is in DST (roughly March-November in US)
+    const inDST = m >= 2 && m <= 10; // approximation
+    const ctOffsetHours = inDST ? 5 : 6;
+    const startStr = new Date(Date.UTC(y, m, d, ctOffsetHours)).toISOString();
+    const endStr = new Date(Date.UTC(y, m, d + 1, ctOffsetHours)).toISOString();
+
+    const daysDiff = (targetDate - now) / 864e5;
+    const isFuture = daysDiff > 0.5;
+    const isPast = daysDiff < -1;
+
+    console.log(`Commute date window: ${startStr} to ${endStr}`);
+
+    // Normalize airport codes: if 3-letter IATA, prefix with K for US airports
+    function normalizeAirport(code) {
+      const c = code.toUpperCase();
+      if (c.length === 4) return c; // already ICAO
+      if (c.length === 3) return "K" + c; // US IATA -> ICAO
+      return c;
+    }
+
+    // Pick the smaller airport for the query to minimize pagination
+    // ORD is huge (1000+/day); AZO/GRR are small (~40-80/day total)
+    const LARGE_AIRPORTS = ["KORD","ORD","KATL","ATL","KDFW","DFW","KDEN","DEN","KLAX","LAX","KJFK","JFK","KLGA","LGA","KEWR","EWR","KCLT","CLT","KMIA","MIA","KMCO","MCO","KPHX","PHX","KSEA","SEA","KSFO","SFO","KBOS","BOS","KIAH","IAH"];
+    const fromIsLarge = LARGE_AIRPORTS.includes(from.toUpperCase());
+    const toIsLarge = LARGE_AIRPORTS.includes(to.toUpperCase());
+
+    // If from is large and to is small, query arrivals at `to` and filter by origin
+    // Otherwise query departures at `from` and filter by destination (default)
+    const queryAtArrivalAirport = fromIsLarge && !toIsLarge;
+    const queryAirport = normalizeAirport(queryAtArrivalAirport ? to : from);
+    const filterAirport = (queryAtArrivalAirport ? from : to).toUpperCase();
+    const filterField = queryAtArrivalAirport ? "origin" : "destination";
+
+    const endpoints = [];
+    if (queryAtArrivalAirport) {
+      if (!isPast) endpoints.push("scheduled_arrivals");
+      if (!isFuture) endpoints.push("arrivals");
+    } else {
+      if (!isPast) endpoints.push("scheduled_departures");
+      if (!isFuture) endpoints.push("departures");
+    }
+
+    console.log(`Commute ${from}->${to}: querying ${queryAirport} endpoints=[${endpoints.join(",")}] filterField=${filterField} filterAirport=${filterAirport}`);
+
+    // Serialize requests (not parallel) to avoid rate limits
+    const results = [];
+    for (const ep of endpoints) {
+      const flights = await fetchAirportFlights(queryAirport, ep, startStr, endStr);
+      results.push(flights);
+    }
+    const allFlights = [].concat.apply([], results);
+    console.log(`  got ${allFlights.length} total flights across endpoints`);
+
+    // Dedupe by fa_flight_id first, then collapse codeshares (same route + same scheduled time)
+    const seen = {};
+    const uniqueFlights = allFlights.filter(f => {
+      const id = f.fa_flight_id || (f.ident + "-" + f.scheduled_out);
+      if (seen[id]) return false;
+      seen[id] = true;
+      return true;
+    });
+
+    // Collapse codeshares: group by route + scheduled time, keep the operator-preferred one
+    // Preference: operator matches the ident prefix (AAL for AA, SKW for OH, etc.) — those are the actual operating carriers
+    const codeshareGroups = {};
+    uniqueFlights.forEach(f => {
+      const schedTime = f.scheduled_out || f.scheduled_off || f.scheduled_in || "";
+      const origCode = (f.origin && (f.origin.code_iata || f.origin.code)) || "";
+      const destCode = (f.destination && (f.destination.code_iata || f.destination.code)) || "";
+      const key = origCode + "-" + destCode + "-" + schedTime;
+      if (!codeshareGroups[key]) codeshareGroups[key] = [];
+      codeshareGroups[key].push(f);
+    });
+
+    // For each group, pick the one where ident prefix matches operator (the operating carrier)
+    const deduped = Object.values(codeshareGroups).map(group => {
+      if (group.length === 1) return group[0];
+      // Find the one that's the operating carrier (ident starts with operator code)
+      const operating = group.find(f => {
+        const op = f.operator_icao || f.operator || "";
+        return op && f.ident_icao && f.ident_icao.startsWith(op);
+      });
+      return operating || group[0];
+    });
+
+    // Filter by the other airport (match IATA or ICAO)
+    const filterIata = filterAirport.length === 4 ? filterAirport.substring(1) : filterAirport;
+    const filterIcao = filterAirport.length === 3 ? "K" + filterAirport : filterAirport;
+    const routeFlights = deduped.filter(f => {
+      const a = f[filterField];
+      if (!a) return false;
+      return a.code_icao === filterIcao ||
+             a.code_iata === filterIata ||
+             a.code === filterIata ||
+             a.code === filterIcao;
+    });
+    console.log(`  filtered to ${routeFlights.length} flights matching ${filterField}=${filterIata}/${filterIcao}`);
+
+    // Simplify response - prefer AA/AAL marketing ident over operator callsign
+    // For each flight, check if there's an AA codeshare and use that instead
+    function getDisplayIdent(f) {
+      // If operator is AA, use it directly
+      if (f.operator === "AAL" || f.operator_iata === "AA") {
+        return f.ident_iata || f.ident;
+      }
+      // Check codeshares for AA
+      if (f.codeshares_iata) {
+        const aa = f.codeshares_iata.find(c => c.startsWith("AA"));
+        if (aa) return aa;
+      }
+      if (f.codeshares) {
+        const aal = f.codeshares.find(c => c.startsWith("AAL"));
+        if (aal) {
+          // Convert AAL1234 to AA1234 for display
+          return "AA" + aal.replace("AAL", "");
+        }
+      }
+      return f.ident_iata || f.ident;
+    }
+
+    const simplified = routeFlights.map(f => ({
+      ident: getDisplayIdent(f),
+      ident_icao: f.ident_icao || f.ident,
+      flight_number: f.flight_number,
+      operator: f.operator,
+      scheduled_out: f.scheduled_out,
+      estimated_out: f.estimated_out,
+      actual_out: f.actual_out,
+      scheduled_in: f.scheduled_in,
+      estimated_in: f.estimated_in,
+      actual_in: f.actual_in,
+      status: f.status,
+      cancelled: f.cancelled,
+      departure_delay: f.departure_delay,
+      arrival_delay: f.arrival_delay,
+      gate_origin: f.gate_origin,
+      terminal_origin: f.terminal_origin,
+      aircraft_type: f.aircraft_type,
+      progress_percent: f.progress_percent,
+    })).sort((a, b) => {
+      const ta = new Date(a.scheduled_out || a.estimated_out || 0);
+      const tb = new Date(b.scheduled_out || b.estimated_out || 0);
+      return ta - tb;
+    });
+
+    res.json({ flights: simplified, from, to, date });
+  } catch (e) {
+    console.error("Commute lookup error:", e.message);
+    res.json({ flights: [], error: e.message });
+  }
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Flight tracker running on port ${PORT}`);
   console.log(`HA_URL: ${HA_URL ? "configured" : "NOT SET"}`);
