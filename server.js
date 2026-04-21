@@ -109,20 +109,41 @@ app.get("/api/track/:flightNum", async (req, res) => {
     if (!fResp.ok) throw new Error(`FA flights returned ${fResp.status}`);
     const fData = await fResp.json();
 
-    // Priority: 1) actively flying, 2) scheduled today (not cancelled), 3) most recent
     const now = new Date();
-    const todayStr = now.toISOString().split("T")[0];
+    const nowMs = now.getTime();
+
+    // Priority:
+    // 1) Currently en-route (has position data, 0 < progress < 100)
+    // 2) Very recently arrived (within last 30 min) - transponder still on
+    // 3) Scheduled to depart within the next 24 hours (handles pre-departure)
+    // 4) Most recent non-cancelled flight as fallback
 
     const enRoute = fData.flights.find(
       (f) => f.progress_percent > 0 && f.progress_percent < 100 && !f.cancelled
     );
-    const scheduledToday = fData.flights.find((f) => {
-      if (f.cancelled) return false;
-      const depDate = (f.scheduled_out || f.scheduled_off || "").split("T")[0];
-      return depDate === todayStr && f.progress_percent < 100;
+
+    const recentlyArrived = fData.flights.find((f) => {
+      if (f.cancelled || !f.actual_in) return false;
+      const arrivedMs = new Date(f.actual_in).getTime();
+      const sinceArrived = nowMs - arrivedMs;
+      // Within last 30 minutes
+      return sinceArrived >= 0 && sinceArrived < 30 * 60 * 1000;
     });
-    const target = enRoute || scheduledToday || fData.flights.find((f) => !f.cancelled);
+
+    const upcomingScheduled = fData.flights.find((f) => {
+      if (f.cancelled || f.actual_out || f.progress_percent >= 100) return false;
+      const schedOut = new Date(f.scheduled_out || f.scheduled_off || 0).getTime();
+      if (!schedOut) return false;
+      const untilDep = schedOut - nowMs;
+      // Within next 24 hours and not already past departure time
+      return untilDep > -60 * 60 * 1000 && untilDep < 24 * 60 * 60 * 1000;
+    });
+
+    const target = enRoute || recentlyArrived || upcomingScheduled || fData.flights.find((f) => !f.cancelled);
     if (!target) return res.status(404).json({ error: "No flight found" });
+
+    const targetType = enRoute ? "en-route" : recentlyArrived ? "recently-arrived" : upcomingScheduled ? "upcoming" : "fallback";
+    console.log(`Track AAL${req.params.flightNum}: selected ${target.fa_flight_id} (${targetType}, progress=${target.progress_percent}%)`);
 
     // Get position (may return no data if not departed yet — that's ok)
     let position = null;
@@ -133,9 +154,9 @@ app.get("/api/track/:flightNum", async (req, res) => {
       position = await pResp.json();
     }
 
-    // Get track if en route
+    // Get track if en route or recently arrived (for arrival visualization)
     let track = null;
-    if (enRoute || (target.progress_percent > 0)) {
+    if (enRoute || recentlyArrived || target.progress_percent > 0) {
       const tResp = await fetch(`${FA_BASE}/flights/${target.fa_flight_id}/track`, {
         headers: { "x-apikey": FA_API_KEY },
       });
@@ -310,10 +331,11 @@ app.get("/api/photo/:reg", async (req, res) => {
 // --- Commute schedule: all flights between two airports for a given date ---
 // Returns combined scheduled + actual flights with status/times
 // Strategy: query the SMALLER airport's arrivals/departures (avoids pagination hell at ORD)
-// Airport flight list cache (in-memory, 15-min TTL)
+// Airport flight list cache (in-memory, 1-hour TTL with stale-while-revalidate)
 // Multiple commute routes share the same airport data
 const airportCache = {};
-const AIRPORT_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const AIRPORT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const AIRPORT_CACHE_STALE_TTL = 24 * 60 * 60 * 1000; // serve stale for up to 24 hrs if API fails
 
 // Track last FA call timestamp globally to enforce minimum interval
 let lastFaCallTs = 0;
@@ -324,10 +346,14 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function fetchAirportFlights(airport, endpoint, startStr, endStr) {
   const cacheKey = `${airport}-${endpoint}-${startStr}`;
   const cached = airportCache[cacheKey];
-  if (cached && Date.now() - cached.ts < AIRPORT_CACHE_TTL) {
-    console.log(`  [cache hit] ${airport}/${endpoint}`);
-    return cached.data;
+  const age = cached ? Date.now() - cached.ts : Infinity;
+
+  // Fresh cache hit: return immediately
+  if (cached && age < AIRPORT_CACHE_TTL) {
+    console.log(`  [cache hit] ${airport}/${endpoint} (age ${Math.round(age/1000)}s)`);
+    return { data: cached.data, fromCache: true };
   }
+
   // Throttle FA calls to stay under rate limit
   const sinceLastCall = Date.now() - lastFaCallTs;
   if (sinceLastCall < FA_MIN_INTERVAL_MS) {
@@ -340,20 +366,33 @@ async function fetchAirportFlights(airport, endpoint, startStr, endStr) {
   // All endpoints get max_pages=3 to cover the full day for busier airports like GRR
   const maxPages = 3;
   // type=Airline filters out GA/private traffic
-  const resp = await fetch(
-    `${FA_BASE}/airports/${airport}/flights/${endpoint}?start=${startStr}&end=${endStr}&max_pages=${maxPages}&type=Airline`,
-    { headers: { "x-apikey": FA_API_KEY } }
-  );
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => "");
-    console.error(`  [fetch fail] ${endpoint} ${resp.status}: ${txt.substring(0,100)}`);
-    return [];
+  try {
+    const resp = await fetch(
+      `${FA_BASE}/airports/${airport}/flights/${endpoint}?start=${startStr}&end=${endStr}&max_pages=${maxPages}&type=Airline`,
+      { headers: { "x-apikey": FA_API_KEY } }
+    );
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      console.error(`  [fetch fail] ${endpoint} ${resp.status}: ${txt.substring(0,100)}`);
+      // Fall back to stale cache if available
+      if (cached && age < AIRPORT_CACHE_STALE_TTL) {
+        console.log(`  [stale fallback] ${airport}/${endpoint} (age ${Math.round(age/1000)}s)`);
+        return { data: cached.data, fromCache: true, stale: true };
+      }
+      return { data: [], fromCache: false };
+    }
+    const data = await resp.json();
+    const flights = data[endpoint] || data.flights || [];
+    console.log(`  [fetched] ${airport}/${endpoint}: ${flights.length} flights (max_pages=${maxPages})`);
+    airportCache[cacheKey] = { ts: Date.now(), data: flights };
+    return { data: flights, fromCache: false };
+  } catch (e) {
+    console.error(`  [fetch error] ${endpoint}: ${e.message}`);
+    if (cached && age < AIRPORT_CACHE_STALE_TTL) {
+      return { data: cached.data, fromCache: true, stale: true };
+    }
+    return { data: [], fromCache: false };
   }
-  const data = await resp.json();
-  const flights = data[endpoint] || data.flights || [];
-  console.log(`  [fetched] ${airport}/${endpoint}: ${flights.length} flights (max_pages=${maxPages})`);
-  airportCache[cacheKey] = { ts: Date.now(), data: flights };
-  return flights;
 }
 
 app.get("/api/commute/:from/:to/:date", async (req, res) => {
@@ -418,12 +457,20 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
 
     // Serialize requests (not parallel) to avoid rate limits
     const results = [];
+    let anyStale = false;
+    let allFromCache = true;
+    let cacheTs = null;
     for (const ep of endpoints) {
-      const flights = await fetchAirportFlights(queryAirport, ep, startStr, endStr);
-      results.push(flights);
+      const result = await fetchAirportFlights(queryAirport, ep, startStr, endStr);
+      results.push(result.data);
+      if (!result.fromCache) allFromCache = false;
+      if (result.stale) anyStale = true;
+      // Track the oldest cache timestamp from this batch
+      const cached = airportCache[`${queryAirport}-${ep}-${startStr}`];
+      if (cached && (!cacheTs || cached.ts < cacheTs)) cacheTs = cached.ts;
     }
     const allFlights = [].concat.apply([], results);
-    console.log(`  got ${allFlights.length} total flights across endpoints`);
+    console.log(`  got ${allFlights.length} total flights across endpoints${allFromCache ? " [all cached]" : ""}${anyStale ? " [stale]" : ""}`);
 
     // Dedupe by fa_flight_id first, then collapse codeshares (same route + same scheduled time)
     const seen = {};
@@ -492,11 +539,74 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
       return f.ident_iata || f.ident;
     }
 
+    // Determine marketing carrier (who sold the seat): check operator first, then codeshares
+    // Regional operators (OO=SkyWest, YX=Republic, ENY=Envoy, MQ=Envoy) fly FOR AA, UA, or DL
+    function getMarketingCarrier(f) {
+      // If the operator is already a mainline US carrier, that's the marketing carrier
+      const mainlineOperators = ["AAL","UAL","DAL","SWA","ASA","JBU","NKS","FFT","AAY","HAL"];
+      if (mainlineOperators.includes((f.operator || "").toUpperCase())) {
+        return f.operator_iata || f.operator;
+      }
+      const op = (f.operator || "").toUpperCase();
+      // Envoy (MQ/ENY) flies exclusively for American Eagle
+      if (op === "ENY" || op === "MQ") return "AA";
+      // GoJet (G7/GJS) flies exclusively for United Express
+      if (op === "GJS" || op === "G7") return "UA";
+      // PSA (JIA) flies exclusively for American Eagle
+      if (op === "JIA" || op === "OH") return "AA";
+      // Piedmont (PDT) flies exclusively for American Eagle
+      if (op === "PDT" || op === "PT") return "AA";
+      // Endeavor (EDV) flies exclusively for Delta Connection
+      if (op === "EDV" || op === "9E") return "DL";
+
+      // SkyWest (OO/SKW) and Republic (YX/RPA) fly for multiple mainlines
+      // Priority: check codeshares first for AA/UA/DL
+      const regionalParents = ["AA","UA","DL"];
+      if (f.codeshares_iata && f.codeshares_iata.length > 0) {
+        for (const parent of regionalParents) {
+          for (const cs of f.codeshares_iata) {
+            const m = cs.match(/^([A-Z]{2})\d/);
+            if (m && m[1] === parent) return parent;
+          }
+        }
+      }
+
+      // Fallback heuristic for SkyWest by flight number range:
+      // OO 3000-3999 = United Express, 5000-5999 = United Express, 6000-6999 = United Express
+      // OO 4000-4999 = American Eagle (some), Delta Connection (some)
+      // This isn't perfect but better than showing a random codeshare partner
+      if (op === "SKW" || op === "OO") {
+        const num = parseInt(f.flight_number || (f.ident || "").match(/\d+$/)?.[0] || "0");
+        if (num >= 3000 && num <= 3999) return "UA";
+        if (num >= 5000 && num <= 5999) return "UA";
+        if (num >= 6000 && num <= 6999) return "UA";
+        // 4000s and other ranges are ambiguous — fall through
+      }
+      // Republic similar — mostly UA at this range
+      if (op === "RPA" || op === "YX") {
+        const num = parseInt(f.flight_number || (f.ident || "").match(/\d+$/)?.[0] || "0");
+        if (num >= 3400 && num <= 3799) return "UA";
+        if (num >= 4000 && num <= 4999) return "AA";
+      }
+
+      // Final fallback: any codeshare code, then operator
+      if (f.codeshares_iata && f.codeshares_iata.length > 0) {
+        for (const cs of f.codeshares_iata) {
+          const m = cs.match(/^([A-Z]{2})\d/);
+          if (m) return m[1];
+        }
+      }
+      return f.operator_iata || (f.operator || "").substring(0, 2);
+    }
+
     const simplified = routeFlights.map(f => ({
       ident: getDisplayIdent(f),
       ident_icao: f.ident_icao || f.ident,
       flight_number: f.flight_number,
       operator: f.operator,
+      operator_iata: f.operator_iata,
+      marketing_carrier: getMarketingCarrier(f),
+      codeshares_iata: f.codeshares_iata || [],
       scheduled_out: f.scheduled_out,
       estimated_out: f.estimated_out,
       actual_out: f.actual_out,
@@ -517,7 +627,15 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
       return ta - tb;
     });
 
-    res.json({ flights: simplified, from, to, date });
+    res.json({
+      flights: simplified,
+      from,
+      to,
+      date,
+      cached: allFromCache,
+      stale: anyStale,
+      cacheAge: cacheTs ? Math.round((Date.now() - cacheTs) / 1000) : null,
+    });
   } catch (e) {
     console.error("Commute lookup error:", e.message);
     res.json({ flights: [], error: e.message });
