@@ -63,6 +63,42 @@
   .leg-reg { font-size:9px; color:#999; }
   .leg-details { font-size:9px; color:#555; margin-top:2px; }
   .empty { text-align:center; padding:28px; color:#333; font-size:11px; }
+  #commute-panel { background:#0c0c0c; border-top:1px solid #141414; flex-shrink:0; }
+  #commute-header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; cursor:pointer; user-select:none; }
+  #commute-header:hover { background:#111; }
+  #commute-title { font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
+  #commute-toggle { font-size:10px; color:#555; transition:transform .15s; }
+  #commute-panel.open #commute-toggle { transform:rotate(90deg); }
+  #commute-body { max-height:400px; overflow-y:auto; border-top:1px solid #141414; }
+  .commute-row { display:flex; align-items:center; gap:8px; padding:6px 14px; border-bottom:1px solid #141414; font-size:10px; }
+  .commute-row:last-child { border-bottom:none; }
+  .commute-row.cancelled { opacity:.4; }
+  .commute-row.delayed { background:rgba(255,107,53,.05); }
+  .commute-row .c-ident { font-weight:700; color:#06d6a0; min-width:60px; font-size:11px; }
+  .commute-row .c-airline { display:inline-block; font-size:9px; font-weight:800; padding:2px 5px; border-radius:2px; letter-spacing:0.5px; min-width:24px; text-align:center; }
+  .commute-row .c-time { color:#aaa; font-size:10px; }
+  .commute-row .c-time-strike { color:#444; font-size:9px; text-decoration:line-through; margin-left:4px; }
+  .commute-row .c-est { color:#666; font-size:9px; }
+  .commute-row .c-status { margin-left:auto; padding:2px 6px; border-radius:2px; font-size:9px; font-weight:700; letter-spacing:1px; }
+  .commute-row .c-status.ontime { background:#0a2018; color:#06d6a0; }
+  .commute-row .c-status.delay { background:#1a1000; color:#ffd166; }
+  .commute-row .c-status.cancelled-badge { background:#1a0808; color:#f44; }
+  .commute-row .c-status.active { background:#1a1208; color:#ff6b35; animation:pulse 2s infinite; }
+  .commute-loading { padding:16px; text-align:center; color:#555; font-size:10px; }
+  .commute-section { border-bottom:1px solid #1a1a1a; }
+  .commute-section:last-child { border-bottom:none; }
+  .commute-section-header { padding:6px 14px; font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:1px; background:#0a0a0a; border-bottom:1px solid #141414; }
+  #commute-status { flex:1; text-align:center; font-size:9px; color:#06d6a0; font-weight:600; letter-spacing:1px; animation:pulse 1.5s infinite; }
+  .commute-loading-active { padding:8px; display:flex; align-items:center; gap:8px; color:#06d6a0; font-size:10px; }
+  .commute-spinner { width:10px; height:10px; border:1.5px solid #1a3028; border-top-color:#06d6a0; border-radius:50%; animation:spin 0.7s linear infinite; display:inline-block; }
+  .commute-cache-info { padding:4px 14px; font-size:8px; color:#333; letter-spacing:1px; text-transform:uppercase; text-align:right; }
+  .commute-cache-info.stale { color:#ffd166; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (max-width: 600px) {
+    #commute-body { max-height:180px; }
+    .commute-row { gap:4px; padding:6px 10px; font-size:9px; }
+    .commute-row .c-ident { min-width:50px; font-size:10px; }
+  }
   @media (max-width: 600px) {
     #map-wrap { flex:0 0 35%; min-height:150px; }
     #map-wrap.tracking { flex:0 0 55%; }
@@ -104,6 +140,16 @@
       <button onclick="clearTest()" style="background:#333;color:#aaa">✕</button>
     </div>
   </div>
+  <div id="commute-panel" style="display:none">
+    <div id="commute-header" onclick="toggleCommute()">
+      <span id="commute-title">COMMUTE</span>
+      <span id="commute-status"></span>
+      <span id="commute-toggle">▸</span>
+    </div>
+    <div id="commute-body" style="display:none">
+      <div id="commute-content"></div>
+    </div>
+  </div>
   <div id="bottom">
     <div id="filters"></div>
     <div id="trips"></div>
@@ -139,6 +185,50 @@ const AP = {
   HNL:{lat:21.3187,lon:-157.9225,n:"Honolulu"},PDX:{lat:45.5898,lon:-122.5951,n:"Portland"},
   OMA:{lat:41.3032,lon:-95.894,n:"Omaha"},BUF:{lat:42.9405,lon:-78.7322,n:"Buffalo"},
   SJC:{lat:37.3639,lon:-121.929,n:"San Jose"},SMF:{lat:38.6954,lon:-121.5908,n:"Sacramento"},
+  AZO:{lat:42.2349,lon:-85.5521,n:"Kalamazoo"},GRR:{lat:42.8808,lon:-85.5228,n:"Grand Rapids"},
+  LAN:{lat:42.7787,lon:-84.5874,n:"Lansing"},FNT:{lat:42.9654,lon:-83.7435,n:"Flint"},
+  MBS:{lat:43.5329,lon:-84.0796,n:"Saginaw"},TVC:{lat:44.7414,lon:-85.5822,n:"Traverse City"},
+  SBN:{lat:41.7086,lon:-86.3173,n:"South Bend"},FWA:{lat:40.9785,lon:-85.1951,n:"Fort Wayne"},
+  DAY:{lat:39.9024,lon:-84.2194,n:"Dayton"},CAK:{lat:40.9161,lon:-81.4422,n:"Akron-Canton"},
+  TOL:{lat:41.5868,lon:-83.8078,n:"Toledo"},EVV:{lat:38.0369,lon:-87.5325,n:"Evansville"},
+  CID:{lat:41.8847,lon:-91.7108,n:"Cedar Rapids"},DSM:{lat:41.534,lon:-93.6631,n:"Des Moines"},
+  MKE:{lat:42.9472,lon:-87.8966,n:"Milwaukee"},MSN:{lat:43.1399,lon:-89.3375,n:"Madison"},
+  GRB:{lat:44.4851,lon:-88.1296,n:"Green Bay"},FAR:{lat:46.9207,lon:-96.8158,n:"Fargo"},
+  FSD:{lat:43.5821,lon:-96.7417,n:"Sioux Falls"},BIS:{lat:46.7727,lon:-100.7462,n:"Bismarck"},
+  BIL:{lat:45.8077,lon:-108.5428,n:"Billings"},BZN:{lat:45.7775,lon:-111.1601,n:"Bozeman"},
+  BOI:{lat:43.5644,lon:-116.2228,n:"Boise"},RNO:{lat:39.4991,lon:-119.7681,n:"Reno"},
+  TUS:{lat:32.1161,lon:-110.9410,n:"Tucson"},ELP:{lat:31.8072,lon:-106.3778,n:"El Paso"},
+  ABQ:{lat:35.0402,lon:-106.6091,n:"Albuquerque"},OKC:{lat:35.3931,lon:-97.6007,n:"Oklahoma City"},
+  TUL:{lat:36.1984,lon:-95.8881,n:"Tulsa"},LIT:{lat:34.7294,lon:-92.2243,n:"Little Rock"},
+  MEM:{lat:35.0424,lon:-89.9767,n:"Memphis"},BHM:{lat:33.5629,lon:-86.7535,n:"Birmingham"},
+  HSV:{lat:34.6372,lon:-86.7751,n:"Huntsville"},CHA:{lat:35.0353,lon:-85.2038,n:"Chattanooga"},
+  GSP:{lat:34.8957,lon:-82.2189,n:"Greenville-Spartanburg"},AVL:{lat:35.4362,lon:-82.5418,n:"Asheville"},
+  CHS:{lat:32.8986,lon:-80.0405,n:"Charleston"},CAE:{lat:33.9388,lon:-81.1195,n:"Columbia"},
+  SAV:{lat:32.1276,lon:-81.2021,n:"Savannah"},PNS:{lat:30.4734,lon:-87.1866,n:"Pensacola"},
+  GPT:{lat:30.4073,lon:-89.0701,n:"Gulfport-Biloxi"},SYR:{lat:43.1112,lon:-76.1063,n:"Syracuse"},
+  ROC:{lat:43.1189,lon:-77.6724,n:"Rochester NY"},ALB:{lat:42.7483,lon:-73.8017,n:"Albany"},
+  BGR:{lat:44.8074,lon:-68.8281,n:"Bangor"},PWM:{lat:43.6462,lon:-70.3093,n:"Portland ME"},
+  BTV:{lat:44.4719,lon:-73.1533,n:"Burlington"},MHT:{lat:42.9326,lon:-71.4357,n:"Manchester"},
+  ORF:{lat:36.8946,lon:-76.2012,n:"Norfolk"},ORH:{lat:42.2673,lon:-71.8757,n:"Worcester"},
+  GSO:{lat:36.0978,lon:-79.9373,n:"Greensboro"},ILM:{lat:34.2706,lon:-77.9026,n:"Wilmington"},
+  MYR:{lat:33.6797,lon:-78.9283,n:"Myrtle Beach"},GNV:{lat:29.6900,lon:-82.2718,n:"Gainesville"},
+  VPS:{lat:30.4832,lon:-86.5254,n:"Destin/Ft Walton"},SRQ:{lat:27.3954,lon:-82.5544,n:"Sarasota"},
+  PBI:{lat:26.6832,lon:-80.0956,n:"West Palm Beach"},EYW:{lat:24.5562,lon:-81.7595,n:"Key West"},
+  NAS:{lat:25.0390,lon:-77.4662,n:"Nassau"},MBJ:{lat:18.5037,lon:-77.9133,n:"Montego Bay"},
+  PUJ:{lat:18.5674,lon:-68.3634,n:"Punta Cana"},SDQ:{lat:18.4296,lon:-69.6689,n:"Santo Domingo"},
+  BZE:{lat:17.5391,lon:-88.3082,n:"Belize City"},SJO:{lat:9.9939,lon:-84.2088,n:"San José CR"},
+  LIR:{lat:10.5933,lon:-85.5444,n:"Liberia CR"},PTY:{lat:9.0714,lon:-79.3835,n:"Panama City"},
+  GDL:{lat:20.5218,lon:-103.3111,n:"Guadalajara"},MEX:{lat:19.4363,lon:-99.0721,n:"Mexico City"},
+  SJD:{lat:23.1518,lon:-109.7211,n:"Los Cabos"},PVR:{lat:20.6801,lon:-105.2540,n:"Puerto Vallarta"},
+  SJT:{lat:31.3577,lon:-100.4963,n:"San Angelo"},LBB:{lat:33.6636,lon:-101.8228,n:"Lubbock"},
+  MAF:{lat:31.9425,lon:-102.2019,n:"Midland"},AMA:{lat:35.2194,lon:-101.7059,n:"Amarillo"},
+  ICT:{lat:37.6499,lon:-97.4331,n:"Wichita"},COS:{lat:38.8058,lon:-104.7008,n:"Colorado Springs"},
+  EUG:{lat:44.1246,lon:-123.2120,n:"Eugene"},MFR:{lat:42.3742,lon:-122.8735,n:"Medford"},
+  GEG:{lat:47.6199,lon:-117.5338,n:"Spokane"},ANC:{lat:61.1744,lon:-149.9961,n:"Anchorage"},
+  FAI:{lat:64.8151,lon:-147.8560,n:"Fairbanks"},OGG:{lat:20.8986,lon:-156.4305,n:"Maui"},
+  KOA:{lat:19.7388,lon:-156.0456,n:"Kona"},LIH:{lat:21.9760,lon:-159.3389,n:"Kauai"},
+  YYZ:{lat:43.6777,lon:-79.6248,n:"Toronto"},YVR:{lat:49.1967,lon:-123.1815,n:"Vancouver"},
+  YYC:{lat:51.1215,lon:-114.0070,n:"Calgary"},YUL:{lat:45.4657,lon:-73.7455,n:"Montréal"},
 };
 
 function parseEvent(ev) {
@@ -288,7 +378,7 @@ function drawMap() {
   if (bounds.length && !testMode) map.fitBounds(bounds,{padding:[40,40],maxZoom:6});
   else if (!hasSel && !testMode && all.length) {
     const ab=[];
-    all.forEach(f=>{const d=AP[f.dep],a=AP[f.arr];if(d)ab.push([d.lat,d.lon],[a.lat,a.lon]);});
+    all.forEach(f=>{const d=AP[f.dep],a=AP[f.arr];if(d&&a)ab.push([d.lat,d.lon],[a.lat,a.lon]);});
     if(ab.length) map.fitBounds(ab,{padding:[30,30],maxZoom:5});
   }
 }
@@ -349,24 +439,40 @@ function drawTestFlight() {
       "GS: " + lp.groundspeed + "kts · Hdg: " + lp.heading + "°<br>" +
       "Progress: " + flight.progress_percent + "%";
   } else if (flight) {
-    // Pre-departure: show flight info without position
+    // Pre-departure OR arrived: show flight info without position
     var li = document.getElementById("live-info");
     li.style.display = "block";
     var statusText = flight.status || "Scheduled";
     var badgeColor = "#666";
     var badgeLabel = "PRE-DEP";
-    if (statusText.indexOf("Taxi") >= 0 || flight.actual_out) { badgeLabel = "TAXI"; badgeColor = "#ffd166"; }
-    if (flight.progress_percent > 0) { badgeLabel = "LIVE"; badgeColor = "#ff6b35"; }
+    var isArrived = flight.progress_percent >= 100 || flight.actual_in;
+    if (isArrived) { badgeLabel = "ARRIVED"; badgeColor = "#06d6a0"; }
+    else if (statusText.indexOf("Taxi") >= 0 || flight.actual_out) { badgeLabel = "TAXI"; badgeColor = "#ffd166"; }
+    if (flight.progress_percent > 0 && flight.progress_percent < 100) { badgeLabel = "LIVE"; badgeColor = "#ff6b35"; }
     document.getElementById("live-ident").innerHTML = (flight.ident_iata || flight.ident) +
       '<span class="tracking-badge" style="background:' + badgeColor + '">' + badgeLabel + '</span>';
-    var depTime = flight.estimated_out || flight.scheduled_out;
-    var depStr = depTime ? new Date(depTime).toLocaleTimeString("en-US", {hour:"numeric",minute:"2-digit"}) : "?";
-    document.getElementById("live-detail").innerHTML =
-      (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>" +
-      "Departs: " + depStr + "<br>" +
-      "Status: " + statusText +
-      (flight.gate_origin ? "<br>Gate: " + flight.gate_origin : "") +
-      (flight.registration ? "<br>Tail: " + flight.registration : "");
+    var detailHtml = (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>";
+    if (isArrived) {
+      var arrTime = flight.actual_in || flight.estimated_in || flight.scheduled_in;
+      var arrStr = arrTime ? new Date(arrTime).toLocaleTimeString("en-US", {hour:"numeric",minute:"2-digit"}) : "?";
+      detailHtml += "Arrived: " + arrStr + "<br>" +
+        (flight.gate_destination ? "Gate: " + flight.gate_destination + "<br>" : "") +
+        (flight.registration ? "Tail: " + flight.registration : "");
+    } else {
+      var depTime = flight.estimated_out || flight.scheduled_out;
+      var depStr = depTime ? new Date(depTime).toLocaleTimeString("en-US", {hour:"numeric",minute:"2-digit"}) : "?";
+      detailHtml += "Departs: " + depStr + "<br>" +
+        "Status: " + statusText +
+        (flight.gate_origin ? "<br>Gate: " + flight.gate_origin : "") +
+        (flight.registration ? "<br>Tail: " + flight.registration : "");
+    }
+    document.getElementById("live-detail").innerHTML = detailHtml;
+
+    // If arrived, center map on destination
+    if (isArrived && flight.destination) {
+      var dCode = flight.destination.code_iata;
+      if (AP[dCode]) bounds.push([AP[dCode].lat, AP[dCode].lon]);
+    }
   }
 
   if (bounds.length) map.fitBounds(bounds,{padding:[50,50],maxZoom:8});
@@ -416,6 +522,29 @@ async function loadFlights() {
     allTrips = groupTrips(parsed);
     document.getElementById("leg-count").textContent = parsed.length + " legs · " + allTrips.length + " trips";
     applyFilter();
+
+    // Auto-expand current trip and select today's legs, if any
+    if (selectedIdx === null) {
+      var now = new Date();
+      var todayStr = now.toDateString();
+      var activeTripIdx = filteredTrips.findIndex(function(t) {
+        return t.legs.some(function(l) {
+          var legDay = new Date(l.start).toDateString();
+          return legDay === todayStr;
+        });
+      });
+      if (activeTripIdx >= 0) {
+        selectedIdx = activeTripIdx;
+        // Find today's leg to use as the selected day
+        var todaysLeg = filteredTrips[activeTripIdx].legs.find(function(l) {
+          return new Date(l.start).toDateString() === todayStr;
+        });
+        if (todaysLeg) selectedDay = new Date(todaysLeg.start).toDateString();
+        fetchRegistrations(filteredTrips[activeTripIdx]);
+        renderTrips();
+      }
+    }
+
     drawMap();
     checkActiveLeg(parsed);
   } catch(e) {
@@ -426,35 +555,45 @@ async function loadFlights() {
 async function checkActiveLeg(legs) {
   var now = new Date();
   var PRE_DEPART_MS = 20 * 60 * 1000; // 20 minutes before departure
+  var POST_ARRIVE_MS = 30 * 60 * 1000; // 30 minutes after scheduled arrival
   var active = legs.find(function(l) {
     var s = new Date(l.start);
     var e = new Date(l.end);
     var earlyStart = new Date(s.getTime() - PRE_DEPART_MS);
-    return now >= earlyStart && now <= e && !l.isDH;
+    var lateEnd = new Date(e.getTime() + POST_ARRIVE_MS);
+    return now >= earlyStart && now <= lateEnd && !l.isDH;
   });
-  if (active) {
-    try {
-      var resp = await fetch("/api/track/" + active.num);
-      if (resp.ok) {
-        var data = await resp.json();
-        // Only set if we got useful data (position or at least flight info)
-        if (data.flight) {
-          testMode = data;
-          drawMap();
-          if (liveInterval) clearInterval(liveInterval);
-          liveInterval = setInterval(async function() {
-            try {
-              var r = await fetch("/api/track/" + active.num);
-              if (r.ok) {
-                var d = await r.json();
-                if (d.flight) { testMode = d; drawMap(); }
-              }
-            } catch(e) {}
-          }, 30000);
-        }
-      }
-    } catch(e) {}
+  // If no active leg, clear any running tracking
+  if (!active) {
+    if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+    if (testMode && !document.getElementById("test-input").value) {
+      // Only clear if user didn't manually set a test flight
+      testMode = null;
+      document.getElementById("live-info").style.display = "none";
+      drawMap();
+    }
+    return;
   }
+  try {
+    var resp = await fetch("/api/track/" + active.num);
+    if (resp.ok) {
+      var data = await resp.json();
+      if (data.flight) {
+        testMode = data;
+        drawMap();
+        if (liveInterval) clearInterval(liveInterval);
+        liveInterval = setInterval(async function() {
+          try {
+            var r = await fetch("/api/track/" + active.num);
+            if (r.ok) {
+              var d = await r.json();
+              if (d.flight) { testMode = d; drawMap(); }
+            }
+          } catch(e) {}
+        }, 30000);
+      }
+    }
+  } catch(e) {}
 }
 
 function applyFilter() {
@@ -602,7 +741,12 @@ function renderTrips() {
   var html = "";
   var lastDay = "";
   filteredTrips.forEach(function(trip, i) {
-    var d = new Date(trip.legs[0].start);
+    // Find the most relevant leg date: today if trip has legs today, else first future leg, else first leg
+    var todayStr = now.toDateString();
+    var legToday = trip.legs.find(function(l) { return new Date(l.start).toDateString() === todayStr; });
+    var firstFutureLeg = trip.legs.find(function(l) { return new Date(l.start) >= now; });
+    var anchorLeg = legToday || firstFutureLeg || trip.legs[0];
+    var d = new Date(anchorLeg.start);
     var dayKey = d.toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" });
     if (dayKey !== lastDay) {
       var isToday = d.toDateString() === now.toDateString();
@@ -652,7 +796,199 @@ function showError(msg) {
   else el.style.display = "none";
 }
 
+// --- Commute panel: 4 fixed routes, always shown for today ---
+var COMMUTE_ROUTES = [
+  { from: "AZO", to: "ORD", label: "AZO → ORD" },
+  { from: "ORD", to: "AZO", label: "ORD → AZO" },
+  { from: "GRR", to: "ORD", label: "GRR → ORD" },
+  { from: "ORD", to: "GRR", label: "ORD → GRR" },
+];
+var commuteOpen = false;
+var commuteRefreshTimer = null;
+
+function toggleCommute() {
+  commuteOpen = !commuteOpen;
+  var panel = document.getElementById("commute-panel");
+  var body = document.getElementById("commute-body");
+  if (commuteOpen) {
+    panel.classList.add("open");
+    body.style.display = "block";
+  } else {
+    panel.classList.remove("open");
+    body.style.display = "none";
+  }
+}
+
+function fmtLocalTime(iso, tz) {
+  if (!iso) return "?";
+  try {
+    return new Date(iso).toLocaleTimeString("en-US", {
+      hour:"numeric", minute:"2-digit", hour12:false, timeZone: tz || undefined
+    });
+  } catch(e) {
+    return new Date(iso).toLocaleTimeString("en-US", {hour:"numeric",minute:"2-digit",hour12:false});
+  }
+}
+
+function commuteStatusBadge(f) {
+  if (f.cancelled) return {cls:"cancelled-badge", text:"CXL"};
+  if (f.progress_percent > 0 && f.progress_percent < 100) return {cls:"active", text:"AIR"};
+  if (f.progress_percent === 100 || f.actual_in) return {cls:"ontime", text:"ARR"};
+  if (f.departure_delay && f.departure_delay > 600) {
+    var mins = Math.round(f.departure_delay / 60);
+    return {cls:"delay", text:"+" + mins + "m"};
+  }
+  if (f.actual_out) return {cls:"active", text:"OUT"};
+  return {cls:"ontime", text:"OT"};
+}
+
+function getAirlineBadge(f) {
+  // Prefer marketing carrier from server (handles regional operators like OO/YX/ENY)
+  var code = f.marketing_carrier;
+  if (!code) {
+    var m = (f.ident || "").match(/^([A-Z]{2})\d/);
+    if (m) code = m[1];
+  }
+  if (!code) return null;
+  // Airline brand colors and names
+  var airlines = {
+    AA: { name: "AA", bg: "#e4002b", fg: "#fff" },
+    UA: { name: "UA", bg: "#002244", fg: "#fff" },
+    DL: { name: "DL", bg: "#003a70", fg: "#fff" },
+    WN: { name: "WN", bg: "#f9b612", fg: "#000" },
+    AS: { name: "AS", bg: "#01426a", fg: "#fff" },
+    B6: { name: "B6", bg: "#003876", fg: "#fff" },
+    NK: { name: "NK", bg: "#ffcb05", fg: "#000" },
+    F9: { name: "F9", bg: "#00a650", fg: "#fff" },
+    G4: { name: "G4", bg: "#0060a8", fg: "#fff" },
+    HA: { name: "HA", bg: "#e50695", fg: "#fff" },
+    AC: { name: "AC", bg: "#d82f2c", fg: "#fff" },
+    LH: { name: "LH", bg: "#05164d", fg: "#fff" },
+    BA: { name: "BA", bg: "#075aaa", fg: "#fff" },
+    KL: { name: "KL", bg: "#00a1de", fg: "#fff" },
+    AF: { name: "AF", bg: "#002157", fg: "#fff" },
+  };
+  return airlines[code] || { name: code, bg: "#333", fg: "#aaa" };
+}
+
+function renderCommuteFlights(flights) {
+  if (!flights || flights.length === 0) {
+    return '<div class="commute-loading" style="padding:8px">No flights today</div>';
+  }
+  return flights.map(function(f) {
+    var schedOut = fmtLocalTime(f.scheduled_out);
+    var estOut = f.estimated_out && f.estimated_out !== f.scheduled_out ? fmtLocalTime(f.estimated_out) : null;
+    var actOut = f.actual_out ? fmtLocalTime(f.actual_out) : null;
+    var badge = commuteStatusBadge(f);
+    var airline = getAirlineBadge(f);
+    var rowClass = "commute-row";
+    if (f.cancelled) rowClass += " cancelled";
+    if (f.departure_delay && f.departure_delay > 600 && !f.cancelled) rowClass += " delayed";
+
+    // Build time display: show actual/estimated prominently, scheduled dimmed if different
+    var timeHtml;
+    if (actOut) {
+      timeHtml = '<span class="c-time">' + actOut + '</span>' +
+                 (actOut !== schedOut ? '<span class="c-time-strike">' + schedOut + '</span>' : '');
+    } else if (estOut) {
+      timeHtml = '<span class="c-time">' + estOut + '</span>' +
+                 '<span class="c-time-strike">' + schedOut + '</span>';
+    } else {
+      timeHtml = '<span class="c-time">' + schedOut + '</span>';
+    }
+
+    var airlineHtml = airline ?
+      '<span class="c-airline" style="background:' + airline.bg + ';color:' + airline.fg + '">' + airline.name + '</span>' : '';
+
+    return '<div class="' + rowClass + '">' +
+      airlineHtml +
+      '<span class="c-ident">' + f.ident + '</span>' +
+      timeHtml +
+      (f.gate_origin ? '<span class="c-est">Gate ' + f.gate_origin + '</span>' : '') +
+      '<span class="c-status ' + badge.cls + '">' + badge.text + '</span>' +
+    '</div>';
+  }).join("");
+}
+
+async function loadCommuteRoute(route, dateStr) {
+  var sectionId = "commute-" + route.from + "-" + route.to;
+  var el = document.getElementById(sectionId + "-body");
+  if (!el) return;
+  // Only show loading indicator if there's no existing content
+  if (!el.querySelector(".commute-row")) {
+    el.innerHTML = '<div class="commute-loading-active">' +
+      '<span class="commute-spinner"></span>' +
+      '<span>Loading ' + route.label + '...</span>' +
+    '</div>';
+  }
+  try {
+    var resp = await fetch("/api/commute/" + route.from + "/" + route.to + "/" + dateStr);
+    if (!resp.ok) {
+      el.innerHTML = '<div class="commute-loading" style="padding:8px">Failed to load</div>';
+      return;
+    }
+    var data = await resp.json();
+    var ageHtml = "";
+    if (data.cacheAge !== null && data.cacheAge !== undefined) {
+      var ageMin = Math.floor(data.cacheAge / 60);
+      var ageStr = ageMin < 1 ? "just now" : ageMin < 60 ? ageMin + "m ago" : Math.floor(ageMin / 60) + "h ago";
+      ageHtml = '<div class="commute-cache-info' + (data.stale ? " stale" : "") + '">' +
+        (data.stale ? "⚠ Stale (API unavailable) · " : "") +
+        "Updated " + ageStr +
+      '</div>';
+    }
+    el.innerHTML = renderCommuteFlights(data.flights) + ageHtml;
+  } catch(e) {
+    el.innerHTML = '<div class="commute-loading" style="padding:8px">Error</div>';
+  }
+}
+
+function setCommuteStatus(msg) {
+  var status = document.getElementById("commute-status");
+  if (status) status.textContent = msg || "";
+}
+
+async function loadAllCommutes() {
+  var dateStr = new Date().toISOString().split("T")[0];
+  var total = COMMUTE_ROUTES.length;
+  // Only show "Queued" for sections that have no data yet
+  COMMUTE_ROUTES.forEach(function(route) {
+    var el = document.getElementById("commute-" + route.from + "-" + route.to + "-body");
+    if (el && !el.querySelector(".commute-row")) {
+      el.innerHTML = '<div class="commute-loading" style="padding:8px">Queued...</div>';
+    }
+  });
+  // Run sequentially
+  for (var i = 0; i < COMMUTE_ROUTES.length; i++) {
+    setCommuteStatus("Loading " + (i+1) + "/" + total);
+    await loadCommuteRoute(COMMUTE_ROUTES[i], dateStr);
+  }
+  setCommuteStatus("");
+}
+
+function initCommutePanel() {
+  var panel = document.getElementById("commute-panel");
+  var content = document.getElementById("commute-content");
+  panel.style.display = "block";
+  document.getElementById("commute-title").textContent = "COMMUTE · TODAY";
+
+  // Build sections for each route
+  content.innerHTML = COMMUTE_ROUTES.map(function(route) {
+    var sectionId = "commute-" + route.from + "-" + route.to;
+    return '<div class="commute-section">' +
+      '<div class="commute-section-header">' + route.label + '</div>' +
+      '<div id="' + sectionId + '-body"><div class="commute-loading" style="padding:8px">Loading...</div></div>' +
+    '</div>';
+  }).join("");
+
+  loadAllCommutes();
+
+  if (commuteRefreshTimer) clearInterval(commuteRefreshTimer);
+  commuteRefreshTimer = setInterval(loadAllCommutes, 3600000);
+}
+
 initMap();
+initCommutePanel();
 loadFlights();
 setInterval(loadFlights, 300000);
 </script>
