@@ -468,14 +468,29 @@ function drawTestFlight() {
     }
     document.getElementById("live-detail").innerHTML = detailHtml;
 
-    // If arrived, center map on destination
-    if (isArrived && flight.destination) {
-      var dCode = flight.destination.code_iata;
-      if (AP[dCode]) bounds.push([AP[dCode].lat, AP[dCode].lon]);
-    }
   }
 
-  if (bounds.length) map.fitBounds(bounds,{padding:[50,50],maxZoom:8});
+  // Zoom strategy:
+  //   - Plane has live position → fit bounds tight enough to see it on the ground (maxZoom 15)
+  //   - Arrived (no live position) → terminal-level zoom on destination
+  //   - Pre-departure / taxi-out without live position → terminal-level zoom on origin
+  var hasLivePos = position && position.last_position && position.last_position.latitude;
+  var isArrivedFlight = flight.progress_percent >= 100 || flight.actual_in;
+  var TERMINAL_ZOOM = 16;
+
+  if (hasLivePos && bounds.length) {
+    map.fitBounds(bounds, {padding:[50,50], maxZoom:16});
+  } else if (isArrivedFlight && flight.destination) {
+    var dCode = flight.destination.code_iata;
+    if (AP[dCode]) map.setView([AP[dCode].lat, AP[dCode].lon], TERMINAL_ZOOM);
+    else if (bounds.length) map.fitBounds(bounds, {padding:[50,50], maxZoom:8});
+  } else if (flight.origin) {
+    var oCode = flight.origin.code_iata;
+    if (AP[oCode]) map.setView([AP[oCode].lat, AP[oCode].lon], TERMINAL_ZOOM);
+    else if (bounds.length) map.fitBounds(bounds, {padding:[50,50], maxZoom:8});
+  } else if (bounds.length) {
+    map.fitBounds(bounds, {padding:[50,50], maxZoom:8});
+  }
 }
 
 async function testTrack() {
@@ -554,7 +569,7 @@ async function loadFlights() {
 
 async function checkActiveLeg(legs) {
   var now = new Date();
-  var PRE_DEPART_MS = 20 * 60 * 1000; // 20 minutes before departure
+  var PRE_DEPART_MS = 45 * 60 * 1000; // 45 minutes before departure
   var POST_ARRIVE_MS = 30 * 60 * 1000; // 30 minutes after scheduled arrival
   var active = legs.find(function(l) {
     var s = new Date(l.start);

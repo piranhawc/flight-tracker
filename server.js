@@ -388,8 +388,9 @@ async function fetchAirportFlights(airport, endpoint, startStr, endStr) {
   }
   lastFaCallTs = Date.now();
 
-  // All endpoints get max_pages=3 to cover the full day for busier airports like GRR
-  const maxPages = 3;
+  // max_pages=6 covers ~90 flights per endpoint — safe for small/regional airports
+  // even on busy multi-carrier days (GRR, AZO).
+  const maxPages = 6;
   // type=Airline filters out GA/private traffic
   try {
     const resp = await fetch(
