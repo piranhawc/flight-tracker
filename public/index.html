@@ -121,7 +121,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-01.1</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-01.2</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -895,6 +895,24 @@ function fmtLocalTime(iso, tz) {
     return new Date(iso).toLocaleTimeString("en-US", {hour:"numeric",minute:"2-digit",hour12:false});
   }
 }
+// Returns "HH:MM TZ · HH:MMZ" — airport-local time with TZ abbreviation
+// followed by UTC. Falls back to browser-local on bad timezone strings so we
+// never crash the row over a missing FA timezone field.
+function fmtAirportTime(iso, tz) {
+  if (!iso) return "?";
+  try {
+    var local = new Date(iso).toLocaleTimeString("en-US", {
+      hour:"2-digit", minute:"2-digit", hour12:false,
+      timeZone: tz || undefined,
+      timeZoneName: tz ? "short" : undefined,
+    });
+    var d = new Date(iso);
+    var utc = String(d.getUTCHours()).padStart(2,"0") + ":" + String(d.getUTCMinutes()).padStart(2,"0");
+    return local + " · " + utc + "Z";
+  } catch(e) {
+    return fmtLocalTime(iso);
+  }
+}
 
 function commuteStatusBadge(f) {
   if (f.cancelled) return {cls:"cancelled-badge", text:"CXL"};
@@ -942,9 +960,11 @@ function renderCommuteFlights(flights) {
     return '<div class="commute-loading" style="padding:8px">No flights today</div>';
   }
   return flights.map(function(f) {
-    var schedOut = fmtLocalTime(f.scheduled_out);
-    var estOut = f.estimated_out && f.estimated_out !== f.scheduled_out ? fmtLocalTime(f.estimated_out) : null;
-    var actOut = f.actual_out ? fmtLocalTime(f.actual_out) : null;
+    var tz = f.origin_timezone;
+    var schedOut = fmtAirportTime(f.scheduled_out, tz);
+    var schedOutStrike = fmtLocalTime(f.scheduled_out, tz);
+    var estOut = f.estimated_out && f.estimated_out !== f.scheduled_out ? fmtAirportTime(f.estimated_out, tz) : null;
+    var actOut = f.actual_out ? fmtAirportTime(f.actual_out, tz) : null;
     var badge = commuteStatusBadge(f);
     var airline = getAirlineBadge(f);
     var rowClass = "commute-row";
@@ -955,10 +975,10 @@ function renderCommuteFlights(flights) {
     var timeHtml;
     if (actOut) {
       timeHtml = '<span class="c-time">' + actOut + '</span>' +
-                 (actOut !== schedOut ? '<span class="c-time-strike">' + schedOut + '</span>' : '');
+                 (actOut !== schedOut ? '<span class="c-time-strike">' + schedOutStrike + '</span>' : '');
     } else if (estOut) {
       timeHtml = '<span class="c-time">' + estOut + '</span>' +
-                 '<span class="c-time-strike">' + schedOut + '</span>';
+                 '<span class="c-time-strike">' + schedOutStrike + '</span>';
     } else {
       timeHtml = '<span class="c-time">' + schedOut + '</span>';
     }
