@@ -2,7 +2,7 @@
 
 Personal flight tracker that pulls your AA schedule from Home Assistant's Google Calendar integration and provides live tracking via FlightAware AeroAPI.
 
-## Features
+##### Features
 - Pulls flight events from HA calendar (APA Calendar Sync format)
 - Groups flights by trip sequence (SEQ)
 - Shows routes on a dark map with arc lines
