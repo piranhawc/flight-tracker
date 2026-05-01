@@ -61,3 +61,4 @@ Use the input box in the top-right of the map. Type any flight number:
 Auto-deploy test: Fri May  1 10:08:29 PDT 2026
 Custom image test: Fri May  1 10:27:01 PDT 2026
 Path fix test: Fri May  1 10:36:47 PDT 2026
+Post-restart test: Fri May  1 10:39:46 PDT 2026
