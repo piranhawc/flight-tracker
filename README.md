@@ -58,3 +58,4 @@ Use the input box in the top-right of the map. Type any flight number:
 - AeroAPI charges per query. The app polls every 30s during active tracking and every 5min for calendar refresh.
 - Auto-tracking kicks in when the current time falls within a flight's calendar time window.
 - The `CALENDAR_ENTITY` env var defaults to `calendar.american_airlines_schedule`.
+Auto-deploy test: Fri May  1 10:08:29 PDT 2026
