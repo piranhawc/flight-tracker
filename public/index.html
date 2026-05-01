@@ -121,7 +121,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-04-30.5</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-01.1</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -1015,7 +1015,12 @@ function setCommuteStatus(msg) {
 }
 
 async function loadAllCommutes() {
-  var dateStr = new Date().toISOString().split("T")[0];
+  // Use local date — toISOString() returns UTC, which flips to "tomorrow"
+  // after ~7pm CT and would request the wrong day.
+  var d = new Date();
+  var dateStr = d.getFullYear() + "-" +
+    String(d.getMonth() + 1).padStart(2, "0") + "-" +
+    String(d.getDate()).padStart(2, "0");
   var total = COMMUTE_ROUTES.length;
   // Only show "Queued" for sections that have no data yet
   COMMUTE_ROUTES.forEach(function(route) {
