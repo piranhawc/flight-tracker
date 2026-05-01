@@ -59,3 +59,4 @@ Use the input box in the top-right of the map. Type any flight number:
 - Auto-tracking kicks in when the current time falls within a flight's calendar time window.
 - The `CALENDAR_ENTITY` env var defaults to `calendar.american_airlines_schedule`.
 Auto-deploy test: Fri May  1 10:08:29 PDT 2026
+Custom image test: Fri May  1 10:27:01 PDT 2026
