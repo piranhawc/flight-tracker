@@ -2,3 +2,10 @@ node_modules/
 data/
 .env
 docker-compose.yml
+docker-compose.yml
+docker-compose.override.yml
+.env
+.env.*
+*.key
+*.pem
+secrets/
