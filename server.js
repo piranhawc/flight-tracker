@@ -362,63 +362,95 @@ const airportCache = {};
 const AIRPORT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 const AIRPORT_CACHE_STALE_TTL = 24 * 60 * 60 * 1000; // serve stale for up to 24 hrs if API fails
 
-// Track last FA call timestamp globally to enforce minimum interval
-let lastFaCallTs = 0;
-const FA_MIN_INTERVAL_MS = 10000; // 10 seconds between calls = 6/min, well under 10/min limit
-
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Global FA call queue — every outgoing FA fetch chains off faChain so that
+// AT MOST one FA call is in flight at a time, with a minimum interval between
+// completions. Without this, concurrent /api/commute invocations all check
+// lastFaCallTs independently and fire bursts that trip FA's 10/min rate limit.
+let lastFaCallTs = 0;
+const FA_MIN_INTERVAL_MS = 10000;
+let faChain = Promise.resolve();
+function enqueueFaFetch(label, url) {
+  const next = faChain.then(async () => {
+    const since = Date.now() - lastFaCallTs;
+    if (since < FA_MIN_INTERVAL_MS) {
+      const wait = FA_MIN_INTERVAL_MS - since;
+      console.log(`  [throttle] waiting ${wait}ms before ${label}`);
+      await sleep(wait);
+    }
+    lastFaCallTs = Date.now();
+    return fetch(url, { headers: { "x-apikey": FA_API_KEY } });
+  });
+  // Chain continues even if this call rejects, so a failure doesn't stall the queue.
+  faChain = next.then(() => {}, () => {});
+  return next;
+}
+
+// In-flight request dedup: if two callers want the same cache key while a
+// fetch is pending, the second awaits the first's promise instead of firing
+// another FA call. This is what kills the cascade-of-429s when a page reload
+// races with an in-progress retry.
+const inflightFetches = {};
+
 async function fetchAirportFlights(airport, endpoint, startStr, endStr) {
-  const cacheKey = `${airport}-${endpoint}-${startStr}`;
+  // max_pages is part of the cache key so a config bump invalidates stale caches
+  const maxPages = 6;
+  const cacheKey = `${airport}-${endpoint}-${startStr}-p${maxPages}`;
   const cached = airportCache[cacheKey];
   const age = cached ? Date.now() - cached.ts : Infinity;
 
-  // Fresh cache hit: return immediately
   if (cached && age < AIRPORT_CACHE_TTL) {
     console.log(`  [cache hit] ${airport}/${endpoint} (age ${Math.round(age/1000)}s)`);
     return { data: cached.data, fromCache: true };
   }
 
-  // Throttle FA calls to stay under rate limit
-  const sinceLastCall = Date.now() - lastFaCallTs;
-  if (sinceLastCall < FA_MIN_INTERVAL_MS) {
-    const wait = FA_MIN_INTERVAL_MS - sinceLastCall;
-    console.log(`  [throttle] waiting ${wait}ms before ${airport}/${endpoint}`);
-    await sleep(wait);
+  if (inflightFetches[cacheKey]) {
+    console.log(`  [join in-flight] ${airport}/${endpoint}`);
+    return await inflightFetches[cacheKey];
   }
-  lastFaCallTs = Date.now();
 
-  // max_pages=6 covers ~90 flights per endpoint — safe for small/regional airports
-  // even on busy multi-carrier days (GRR, AZO).
-  const maxPages = 6;
-  // type=Airline filters out GA/private traffic
-  try {
-    const resp = await fetch(
-      `${FA_BASE}/airports/${airport}/flights/${endpoint}?start=${startStr}&end=${endStr}&max_pages=${maxPages}&type=Airline`,
-      { headers: { "x-apikey": FA_API_KEY } }
-    );
-    if (!resp.ok) {
-      const txt = await resp.text().catch(() => "");
-      console.error(`  [fetch fail] ${endpoint} ${resp.status}: ${txt.substring(0,100)}`);
-      // Fall back to stale cache if available
+  const url = `${FA_BASE}/airports/${airport}/flights/${endpoint}?start=${startStr}&end=${endStr}&max_pages=${maxPages}&type=Airline`;
+
+  const promise = (async () => {
+    try {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const resp = await enqueueFaFetch(`${airport}/${endpoint}`, url);
+          if (resp.ok) {
+            const data = await resp.json();
+            const flights = data[endpoint] || data.flights || [];
+            const truncated = data.links && data.links.next ? " [TRUNCATED — more pages available]" : "";
+            console.log(`  [fetched] ${airport}/${endpoint}: ${flights.length} flights (max_pages=${maxPages})${truncated}`);
+            airportCache[cacheKey] = { ts: Date.now(), data: flights };
+            return { data: flights, fromCache: false };
+          }
+          const txt = await resp.text().catch(() => "");
+          console.log(`  [fetch fail] ${airport}/${endpoint} ${resp.status} (attempt ${attempt}): ${txt.substring(0,120)}`);
+          if (resp.status === 429 && attempt === 1) {
+            console.log(`  [retry] backing off 30s before retrying ${airport}/${endpoint}`);
+            await sleep(30000);
+            continue;
+          }
+          break;
+        } catch (e) {
+          console.log(`  [fetch error] ${airport}/${endpoint} (attempt ${attempt}): ${e.message}`);
+          if (attempt === 1) { await sleep(2000); continue; }
+          break;
+        }
+      }
       if (cached && age < AIRPORT_CACHE_STALE_TTL) {
         console.log(`  [stale fallback] ${airport}/${endpoint} (age ${Math.round(age/1000)}s)`);
         return { data: cached.data, fromCache: true, stale: true };
       }
       return { data: [], fromCache: false };
+    } finally {
+      delete inflightFetches[cacheKey];
     }
-    const data = await resp.json();
-    const flights = data[endpoint] || data.flights || [];
-    console.log(`  [fetched] ${airport}/${endpoint}: ${flights.length} flights (max_pages=${maxPages})`);
-    airportCache[cacheKey] = { ts: Date.now(), data: flights };
-    return { data: flights, fromCache: false };
-  } catch (e) {
-    console.error(`  [fetch error] ${endpoint}: ${e.message}`);
-    if (cached && age < AIRPORT_CACHE_STALE_TTL) {
-      return { data: cached.data, fromCache: true, stale: true };
-    }
-    return { data: [], fromCache: false };
-  }
+  })();
+
+  inflightFetches[cacheKey] = promise;
+  return await promise;
 }
 
 app.get("/api/commute/:from/:to/:date", async (req, res) => {
@@ -541,7 +573,30 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
              a.code === filterIata ||
              a.code === filterIcao;
     });
-    console.log(`  filtered to ${routeFlights.length} flights matching ${filterField}=${filterIata}/${filterIcao}`);
+    // Strict date-window filter: FA endpoints sometimes return adjacent days,
+    // so drop anything whose scheduled departure falls outside [startStr, endStr).
+    const startMs = new Date(startStr).getTime();
+    const endMs = new Date(endStr).getTime();
+    const dateFilteredFlights = routeFlights.filter(f => {
+      const t = f.scheduled_out || f.scheduled_off || f.scheduled_in;
+      if (!t) return false;
+      const tMs = new Date(t).getTime();
+      return tMs >= startMs && tMs < endMs;
+    });
+    const droppedByDate = routeFlights.length - dateFilteredFlights.length;
+
+    console.log(`  pipeline: ${allFlights.length} raw → ${uniqueFlights.length} unique → ${deduped.length} after codeshare-collapse → ${routeFlights.length} matching ${filterField}=${filterIata}/${filterIcao} → ${dateFilteredFlights.length} within date window${droppedByDate ? ` (dropped ${droppedByDate} off-date)` : ""}`);
+    // Log the origin/destination distribution of flights that did NOT match, to surface filter bugs
+    const droppedByFilter = deduped.filter(f => !routeFlights.includes(f));
+    if (droppedByFilter.length && routeFlights.length < 5) {
+      const counts = {};
+      droppedByFilter.forEach(f => {
+        const a = f[filterField];
+        const code = a ? (a.code_iata || a.code_icao || a.code || "?") : "(none)";
+        counts[code] = (counts[code] || 0) + 1;
+      });
+      console.log(`  dropped-by-filter ${filterField} distribution:`, counts);
+    }
 
     // Simplify response - prefer AA/AAL marketing ident over operator callsign
     // For each flight, check if there's an AA codeshare and use that instead
@@ -625,7 +680,7 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
       return f.operator_iata || (f.operator || "").substring(0, 2);
     }
 
-    const simplified = routeFlights.map(f => ({
+    const simplified = dateFilteredFlights.map(f => ({
       ident: getDisplayIdent(f),
       ident_icao: f.ident_icao || f.ident,
       flight_number: f.flight_number,
