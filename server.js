@@ -4,10 +4,8 @@ const fs = require("fs");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const HA_URL = process.env.HA_URL;
-const HA_TOKEN = process.env.HA_TOKEN;
+const ICS_URL = process.env.ICS_URL || "https://cal.mikegoebel.net/l11jmGRN9wHOpdlWjST8WFdgYHKigEJl6G4W-GIdCuQ.ics";
 const FA_API_KEY = process.env.FA_API_KEY;
-const CALENDAR_ENTITY = process.env.CALENDAR_ENTITY || "calendar.american_airlines_schedule";
 const FA_BASE = "https://aeroapi.flightaware.com/aeroapi";
 const CACHE_DIR = process.env.CACHE_DIR || "/app/data";
 const REG_CACHE_FILE = path.join(CACHE_DIR, "reg-cache.json");
@@ -37,19 +35,112 @@ function saveCache(file, data) {
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
 
-// --- HA Calendar ---
+// --- ICS calendar feed ---
+// Pulls events from a public ICS URL and returns them in the same shape the
+// frontend's parseEvent expects: { summary, description, start, end } where
+// start/end are ISO 8601 strings.
+
+function unescapeIcsText(s) {
+  return s.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
+}
+
+// Convert a wall-clock time in a named IANA zone to a UTC ISO string.
+// Uses Intl to derive the zone's UTC offset for that instant. Off by an hour
+// during DST transitions in rare cases — acceptable for flight schedules.
+function wallTimeToUtcIso(y, mo, d, h, mi, s, tz) {
+  const utcGuess = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const parts = {};
+  fmt.formatToParts(utcGuess).forEach(p => parts[p.type] = p.value);
+  const tzWallMs = Date.UTC(
+    +parts.year, +parts.month - 1, +parts.day,
+    +parts.hour === 24 ? 0 : +parts.hour, +parts.minute, +parts.second
+  );
+  const offsetMs = tzWallMs - utcGuess.getTime();
+  const wantedWallUtc = Date.UTC(y, mo - 1, d, h, mi, s);
+  return new Date(wantedWallUtc - offsetMs).toISOString();
+}
+
+function parseIcsDate(value, params) {
+  const m = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/);
+  if (!m) {
+    const dm = value.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (dm) return `${dm[1]}-${dm[2]}-${dm[3]}T00:00:00Z`;
+    return null;
+  }
+  const [, y, mo, d, h, mi, s, z] = m;
+  if (z === "Z") return `${y}-${mo}-${d}T${h}:${mi}:${s}Z`;
+  const tzMatch = (params || "").match(/TZID=([^;:]+)/);
+  if (tzMatch) {
+    try { return wallTimeToUtcIso(+y, +mo, +d, +h, +mi, +s, tzMatch[1]); }
+    catch (e) { /* fall through to floating */ }
+  }
+  return `${y}-${mo}-${d}T${h}:${mi}:${s}Z`;
+}
+
+function parseIcs(text) {
+  // Unfold continuation lines (RFC 5545: lines starting with space/tab continue the prior line)
+  const unfolded = text.replace(/\r?\n[ \t]/g, "");
+  const lines = unfolded.split(/\r?\n/);
+  const events = [];
+  let cur = null;
+  for (const line of lines) {
+    if (line === "BEGIN:VEVENT") { cur = {}; continue; }
+    if (line === "END:VEVENT") { if (cur) events.push(cur); cur = null; continue; }
+    if (!cur) continue;
+    const colon = line.indexOf(":");
+    if (colon === -1) continue;
+    const head = line.substring(0, colon);
+    const value = line.substring(colon + 1);
+    const semi = head.indexOf(";");
+    const name = semi === -1 ? head : head.substring(0, semi);
+    const params = semi === -1 ? "" : head.substring(semi + 1);
+    switch (name) {
+      case "SUMMARY":     cur.summary = unescapeIcsText(value); break;
+      case "DESCRIPTION": cur.description = unescapeIcsText(value); break;
+      case "DTSTART":     cur.start = parseIcsDate(value, params); break;
+      case "DTEND":       cur.end = parseIcsDate(value, params); break;
+      case "UID":         cur.uid = value; break;
+    }
+  }
+  return events;
+}
+
+let icsCache = null;
+const ICS_CACHE_TTL = 5 * 60 * 1000;
+
 app.get("/api/flights", async (req, res) => {
-  if (!HA_URL || !HA_TOKEN) return res.status(500).json({ error: "HA_URL or HA_TOKEN not configured" });
+  if (!ICS_URL) return res.status(500).json({ error: "ICS_URL not configured" });
   try {
-    const now = new Date();
-    const start = new Date(now.getTime() - 90 * 864e5).toISOString();
-    const end = new Date(now.getTime() + 90 * 864e5).toISOString();
-    const url = `${HA_URL}/api/calendars/${CALENDAR_ENTITY}?start=${start}&end=${end}`;
-    const resp = await fetch(url, { headers: { Authorization: `Bearer ${HA_TOKEN}` } });
-    if (!resp.ok) throw new Error(`HA returned ${resp.status}`);
-    const events = await resp.json();
+    if (icsCache && Date.now() - icsCache.ts < ICS_CACHE_TTL) {
+      return res.json(icsCache.events);
+    }
+    const resp = await fetch(ICS_URL);
+    if (!resp.ok) throw new Error(`ICS feed returned ${resp.status}`);
+    const text = await resp.text();
+    const all = parseIcs(text);
+    // Match the previous ±90-day window so the frontend isn't flooded with
+    // years of historical legs from a long-lived calendar.
+    const winStart = Date.now() - 90 * 864e5;
+    const winEnd = Date.now() + 90 * 864e5;
+    const events = all.filter(e => {
+      if (!e.start) return false;
+      const t = new Date(e.start).getTime();
+      return t >= winStart && t <= winEnd;
+    });
+    console.log(`ICS: parsed ${all.length} events, ${events.length} in ±90d window`);
+    icsCache = { ts: Date.now(), events };
     res.json(events);
   } catch (e) {
+    console.error("ICS fetch failed:", e.message);
+    if (icsCache) {
+      console.log("Serving stale ICS cache");
+      return res.json(icsCache.events);
+    }
     res.status(500).json({ error: e.message });
   }
 });
@@ -727,7 +818,6 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Flight tracker running on port ${PORT}`);
-  console.log(`HA_URL: ${HA_URL ? "configured" : "NOT SET"}`);
+  console.log(`ICS_URL: ${ICS_URL ? "configured" : "NOT SET"}`);
   console.log(`FA_API_KEY: ${FA_API_KEY ? "configured" : "NOT SET"}`);
-  console.log(`Calendar: ${CALENDAR_ENTITY}`);
 });
