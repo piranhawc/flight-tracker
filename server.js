@@ -342,6 +342,24 @@ app.get("/api/track/:flightNum", async (req, res) => {
   }
 });
 
+// Lightweight endpoint that looks up only the inbound aircraft for a given
+// registration + destination — used by trip-leg rows to show inbound status
+// without paying the full /api/track cost (which also fetches target
+// position+track). Relies on the already-cached registration from the
+// frontend to skip the /flights/{ident} call entirely.
+app.get("/api/inbound", async (req, res) => {
+  if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
+  const reg = req.query.reg;
+  const dest = (req.query.dest || "").toUpperCase(); // = our leg's origin
+  if (!reg) return res.status(400).json({ error: "reg required" });
+  try {
+    const inbound = await fetchAircraftInbound(reg, null, dest || null);
+    res.json({ inbound });
+  } catch (e) {
+    res.json({ inbound: null, error: e.message });
+  }
+});
+
 // Look up the most recent flight for an aircraft (the "inbound" relative to
 // our outbound) and its current position. Heavily cached — the aircraft's
 // recent-flights list is stable for minutes; the position changes faster.

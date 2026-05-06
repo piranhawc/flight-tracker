@@ -124,7 +124,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-06.3</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-06.5</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -279,6 +279,8 @@ async function fetchRegistrations(trip) {
   renderTrips();
   // Now fetch photos for any registrations we got
   fetchPhotos(legs);
+  // ...and look up inbound aircraft status for upcoming non-DH legs.
+  fetchInboundForTrip(trip);
 }
 
 async function fetchPhotos(legs) {
@@ -302,6 +304,52 @@ async function fetchPhotos(legs) {
 function getRegForLeg(l) {
   var key = l.num + "-" + new Date(l.start).toISOString().split("T")[0];
   return regCache[key] || null;
+}
+
+// Per-leg inbound aircraft info (light fetch — uses /api/inbound which only
+// hits the cached aircraft+position endpoints, not the full /api/track).
+// Cached on the frontend for 60 sec to avoid spamming on re-renders.
+var inboundInfoCache = {};
+function getInboundForLeg(l) {
+  var key = l.num + "-" + l.dep + "-" + l.arr;
+  var entry = inboundInfoCache[key];
+  if (!entry || !entry.data) return null;
+  return entry.data.inbound || null;
+}
+function fetchInboundForLeg(l) {
+  var reg = getRegForLeg(l);
+  if (!reg || !reg.registration) return Promise.resolve(null);
+  var key = l.num + "-" + l.dep + "-" + l.arr;
+  var entry = inboundInfoCache[key];
+  if (entry && Date.now() - entry.fetchedAt < 60 * 1000) {
+    return Promise.resolve(entry.data);
+  }
+  return fetch("/api/inbound?reg=" + encodeURIComponent(reg.registration) +
+               "&dest=" + encodeURIComponent(l.dep))
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) {
+      if (d) inboundInfoCache[key] = { data: d, fetchedAt: Date.now() };
+      return d;
+    })
+    .catch(function() { return null; });
+}
+// Fetch inbound info for upcoming non-DH legs of a trip (within ~12h).
+// Triggers a re-render when each result arrives so the leg row updates live.
+function fetchInboundForTrip(trip) {
+  if (!trip || !trip.legs) return;
+  var now = new Date();
+  var horizon = new Date(now.getTime() + 12 * 60 * 60 * 1000);
+  trip.legs.forEach(function(l) {
+    if (l.isDH) return;
+    var s = new Date(l.start);
+    if (s <= now || s >= horizon) return;
+    // Skip the leg that the live tracker is already actively following
+    if (testMode && testMode.flight && testMode.flight.flight_number &&
+        String(testMode.flight.flight_number) === String(l.num)) return;
+    fetchInboundForLeg(l).then(function(d) {
+      if (d && d.inbound) renderTrips();
+    });
+  });
 }
 
 function getPhotoForReg(reg) {
@@ -477,11 +525,13 @@ function drawTestFlight() {
           (ib.ident_iata || ib.ident) + " from " + ibOrig;
         if (ib.actual_in) {
           detailHtml += " · landed " + new Date(ib.actual_in).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+          if (ib.gate_destination) detailHtml += " at " + ib.gate_destination;
         } else if (ib.estimated_in || ib.scheduled_in) {
           var eta = ib.estimated_in || ib.scheduled_in;
           var minsOut = Math.round((new Date(eta) - new Date()) / 60000);
           detailHtml += minsOut > 0 ? " · ETA " + new Date(eta).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) + " (" + minsOut + " min)"
                                     : " · arriving";
+          if (ib.gate_destination) detailHtml += " → " + ib.gate_destination;
         }
         detailHtml += "</span>";
       }
@@ -539,10 +589,9 @@ function drawTestFlight() {
       }
     }
 
-    // For an ARRIVED flight: if FA's live position passes a sanity check
+    // For an ARRIVED flight (our own): if FA's live position passes sanity
     // (within 8 km of destination AND groundspeed < 8), prefer it — that's
-    // literally where the plane is parked right now. Don't override a manual
-    // override though; that's been explicitly hard-pinned by the user.
+    // where the plane is parked right now. Doesn't override a manual override.
     if (gateIsArrival && gateChipSource !== "override" && position && position.last_position && oCodeForGate && AP[oCodeForGate]) {
       var lp = position.last_position;
       if (lp.latitude != null && lp.longitude != null) {
@@ -558,7 +607,31 @@ function drawTestFlight() {
       }
     }
 
+    // For PRE-DEPARTURE: if the inbound aircraft has actually arrived at our
+    // origin (FA shows actual_in) AND its destination gate matches the chip
+    // gate, its current position IS the gate. Most accurate live signal.
+    // Sanity: within 8 km of origin, groundspeed < 8. Doesn't override a
+    // manual override.
+    if (!gateIsArrival && gateChipSource !== "override" &&
+        testMode.inbound && testMode.inbound.flight && inboundPos && oCodeForGate && AP[oCodeForGate]) {
+      var inbF = testMode.inbound.flight;
+      var inbGateMatch = inbF.gate_destination &&
+        String(inbF.gate_destination).toUpperCase() === String(gateCode).toUpperCase();
+      if (inbF.actual_in && inbGateMatch) {
+        var dLatNb = inboundPos.latitude - AP[oCodeForGate].lat;
+        var dLonNb = inboundPos.longitude - AP[oCodeForGate].lon;
+        var distKmNb = Math.sqrt(dLatNb*dLatNb*111*111 + dLonNb*dLonNb*85*85);
+        var lowSpeedNb = (typeof inboundPos.groundspeed !== "number") || inboundPos.groundspeed < 8;
+        if (distKmNb < 8 && lowSpeedNb) {
+          gateLat = inboundPos.latitude;
+          gateLon = inboundPos.longitude;
+          gateChipSource = "inbound-live";
+        }
+      }
+    }
+
     // Pre-dep fallback: inbound aircraft position if at our origin airport
+    // but NOT yet arrived (taxiing in). Only kicks in when no better source.
     if (gateLat === null && !gateIsArrival && inboundPos && oCodeForGate && AP[oCodeForGate]) {
       var dLatI = inboundPos.latitude - AP[oCodeForGate].lat;
       var dLonI = inboundPos.longitude - AP[oCodeForGate].lon;
@@ -1006,6 +1079,44 @@ function renderTripCard(trip, idx) {
       'https://www.flightradar24.com/data/aircraft/' + reg.registration.toLowerCase() :
       'https://www.flightradar24.com/data/flights/aa' + l.num;
 
+    // Inbound aircraft status (where the plane that'll fly this leg is now).
+    // Only meaningful for upcoming non-DH legs.
+    var inboundHtml = "";
+    if (!l.isDH && legDate > new Date()) {
+      var ib = getInboundForLeg(l);
+      if (ib && ib.flight) {
+        var ibF = ib.flight;
+        var ibIdent = ibF.ident_iata || ibF.ident || "?";
+        var ibOrig = (ibF.origin && (ibF.origin.code_iata || ibF.origin.code)) || "?";
+        var ibStatus, ibColor = "#888";
+        if (ibF.actual_in) {
+          var landed = new Date(ibF.actual_in).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+          ibStatus = "landed " + landed + (ibF.gate_destination ? " at " + ibF.gate_destination : "");
+          ibColor = "#06d6a0";
+        } else if (ibF.estimated_in || ibF.scheduled_in) {
+          var ibEta = ibF.estimated_in || ibF.scheduled_in;
+          var ibMins = Math.round((new Date(ibEta) - new Date()) / 60000);
+          if (ibMins > 0) {
+            ibStatus = "ETA " + new Date(ibEta).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) + " (" + ibMins + "m)" +
+              (ibF.gate_destination ? " → " + ibF.gate_destination : "");
+            ibColor = ibMins < 60 ? "#ffd166" : "#888";
+          } else {
+            ibStatus = "arriving" + (ibF.gate_destination ? " → " + ibF.gate_destination : "");
+            ibColor = "#06d6a0";
+          }
+        } else if (ibF.cancelled) {
+          ibStatus = "cancelled"; ibColor = "#f44";
+        } else {
+          ibStatus = ibF.status || "scheduled";
+        }
+        var ibFaUrl = "https://www.flightaware.com/live/flight/" + (ibF.ident_icao || ibF.ident);
+        inboundHtml = '<div class="leg-details" style="color:' + ibColor + '">' +
+          '↳ Inbound <a href="' + ibFaUrl + '" target="_blank" onclick="event.stopPropagation()" style="color:inherit;text-decoration:underline">' + ibIdent + '</a>' +
+          ' from ' + ibOrig + ' · ' + ibStatus +
+          '</div>';
+      }
+    }
+
     legsHtml += '<div class="leg '+(l.isDH?"dh":"")+' '+(isActiveLeg(l)?"active-leg":"")+'">' +
       '<div class="leg-row1">' +
         '<span class="fnum">'+(l.isDH?"DH ":"")+'AA'+l.num+'</span>' +
@@ -1019,6 +1130,7 @@ function renderTripCard(trip, idx) {
         '</span>' +
       '</div>' +
       detailsHtml +
+      inboundHtml +
       photoHtml +
     '</div>';
   });
@@ -1329,6 +1441,13 @@ initMap();
 initCommutePanel();
 loadFlights();
 setInterval(loadFlights, 300000);
+// Refresh inbound info for the currently selected trip every 2 min so the
+// leg row's "Inbound: ETA" countdown stays accurate.
+setInterval(function() {
+  if (selectedIdx !== null && filteredTrips[selectedIdx]) {
+    fetchInboundForTrip(filteredTrips[selectedIdx]);
+  }
+}, 2 * 60 * 1000);
 </script>
 </body>
 </html>
