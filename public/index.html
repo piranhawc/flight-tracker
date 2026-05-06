@@ -121,7 +121,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.5</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.6</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -510,17 +510,31 @@ function drawTestFlight() {
   // the inbound aircraft's destination gate (same physical spot).
   var gateCode = flight.gate_origin ||
     (testMode.inbound && testMode.inbound.flight && testMode.inbound.flight.gate_destination) || null;
+  var gateLat = null, gateLon = null;
   if (gateCode && !isArrived) {
     var oCodeForGate = flight.origin && flight.origin.code_iata;
-    var gateLat = null, gateLon = null;
-    // If the inbound is physically at our origin airport (≤30 km), its
-    // position IS the gate; pin the label there. Otherwise drop the label
-    // at the airport center so the user still sees which gate it'll be.
-    if (inboundPos && oCodeForGate && AP[oCodeForGate]) {
+
+    // Position priority:
+    //   1) Real gate coordinates from OSM (looked up async, cached)
+    //   2) Inbound aircraft's current position if it's at our origin airport
+    //   3) Airport center
+    if (oCodeForGate && AP[oCodeForGate]) {
+      var gkey = oCodeForGate + "-" + gateCode;
+      var cachedCoord = gateCoordCache[gkey];
+      if (cachedCoord === undefined) {
+        // Not yet fetched — kick off async lookup, redraw on result
+        lookupGateCoord(oCodeForGate, gateCode, AP[oCodeForGate].lat, AP[oCodeForGate].lon)
+          .then(function() { if (testMode && testMode.flight) drawMap(); });
+      } else if (cachedCoord) {
+        gateLat = cachedCoord.lat; gateLon = cachedCoord.lon;
+      }
+    }
+    if (gateLat === null && inboundPos && oCodeForGate && AP[oCodeForGate]) {
       var dLat = inboundPos.latitude - AP[oCodeForGate].lat;
       var dLon = inboundPos.longitude - AP[oCodeForGate].lon;
-      var distKm = Math.sqrt(dLat*dLat*111*111 + dLon*dLon*85*85);
-      if (distKm < 30) { gateLat = inboundPos.latitude; gateLon = inboundPos.longitude; }
+      if (Math.sqrt(dLat*dLat*111*111 + dLon*dLon*85*85) < 30) {
+        gateLat = inboundPos.latitude; gateLon = inboundPos.longitude;
+      }
     }
     if (gateLat === null && oCodeForGate && AP[oCodeForGate]) {
       gateLat = AP[oCodeForGate].lat; gateLon = AP[oCodeForGate].lon;
@@ -558,6 +572,18 @@ function drawTestFlight() {
     var dCode = flight.destination.code_iata;
     if (AP[dCode]) map.setView([AP[dCode].lat, AP[dCode].lon], 16);
     else if (bounds.length) map.fitBounds(bounds, {padding:[50,50], maxZoom:8});
+  } else if (gateLat !== null) {
+    // We know the actual gate position. Show it together with the inbound
+    // aircraft when both are at the airport; otherwise zoom in on the gate.
+    if (inboundAtOrigin) {
+      map.fitBounds([[gateLat, gateLon], [inboundPos.latitude, inboundPos.longitude]],
+                    {padding:[60,60], maxZoom:17});
+    } else if (inboundPos && oCode && AP[oCode]) {
+      map.fitBounds([[gateLat, gateLon], [inboundPos.latitude, inboundPos.longitude]],
+                    {padding:[60,60], maxZoom:10});
+    } else {
+      map.setView([gateLat, gateLon], 17);
+    }
   } else if (inboundAtOrigin) {
     map.setView([inboundPos.latitude, inboundPos.longitude], 17);
   } else if (inboundPos && oCode && AP[oCode]) {
@@ -596,6 +622,21 @@ async function testTrack() {
       } catch(e) {}
     }, 30000);
   } catch(e) { showError(e.message); }
+}
+
+// Cached gate-coord lookups so we don't refetch on every drawMap.
+// Value is the {lat, lon, ref} object on hit, null on miss, undefined when
+// not yet looked up (kicks off async fetch).
+var gateCoordCache = {};
+function lookupGateCoord(airport, gate, lat, lon) {
+  var key = airport + "-" + gate;
+  if (gateCoordCache[key] !== undefined) return Promise.resolve(gateCoordCache[key]);
+  return fetch("/api/gate?airport=" + encodeURIComponent(airport) +
+               "&gate=" + encodeURIComponent(gate) +
+               "&lat=" + lat + "&lon=" + lon)
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) { gateCoordCache[key] = d || null; return gateCoordCache[key]; })
+    .catch(function() { gateCoordCache[key] = null; return null; });
 }
 
 function clearTest() {

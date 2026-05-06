@@ -10,6 +10,7 @@ const FA_BASE = "https://aeroapi.flightaware.com/aeroapi";
 const CACHE_DIR = process.env.CACHE_DIR || "/app/data";
 const REG_CACHE_FILE = path.join(CACHE_DIR, "reg-cache.json");
 const PHOTO_CACHE_FILE = path.join(CACHE_DIR, "photo-cache.json");
+const GATE_CACHE_FILE = path.join(CACHE_DIR, "gate-cache.json");
 
 // --- Persistent cache helpers ---
 function loadCache(file) {
@@ -555,6 +556,76 @@ app.get("/api/photo/:reg", async (req, res) => {
   } catch (e) {
     res.json({ thumbnail: null, full: null });
   }
+});
+
+// --- Gate location lookup via OpenStreetMap (Overpass API) ---
+// Caches each airport's full gate dataset on disk. Gate positions are stable,
+// so once we've fetched an airport, we never refetch unless the cache is wiped.
+const gateCache = loadCache(GATE_CACHE_FILE);
+console.log(`Loaded gate data for ${Object.keys(gateCache).length} airports`);
+function saveGateCache() { saveCache(GATE_CACHE_FILE, gateCache); }
+
+const inflightGateFetches = {};
+async function fetchAirportGates(airportKey, lat, lon) {
+  if (gateCache[airportKey]) return gateCache[airportKey];
+  if (inflightGateFetches[airportKey]) return await inflightGateFetches[airportKey];
+
+  const promise = (async () => {
+    const query = `[out:json][timeout:25];(node["aeroway"="gate"](around:6000,${lat},${lon});way["aeroway"="gate"](around:6000,${lat},${lon}););out center;`;
+    try {
+      const resp = await fetch("https://overpass-api.de/api/interpreter", {
+        method: "POST",
+        body: "data=" + encodeURIComponent(query),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      });
+      if (!resp.ok) throw new Error("Overpass returned " + resp.status);
+      const data = await resp.json();
+      const gates = (data.elements || []).map(e => ({
+        ref: (e.tags && (e.tags.ref || e.tags.name)) || null,
+        lat: e.lat != null ? e.lat : (e.center && e.center.lat),
+        lon: e.lon != null ? e.lon : (e.center && e.center.lon),
+      })).filter(g => g.ref && g.lat != null && g.lon != null);
+      const result = { fetchedAt: Date.now(), gates };
+      gateCache[airportKey] = result;
+      saveGateCache();
+      console.log(`Gates: cached ${gates.length} gates for ${airportKey}`);
+      return result;
+    } catch (e) {
+      console.error(`Overpass query failed for ${airportKey}:`, e.message);
+      // Cache the empty result briefly via in-memory only, so transient
+      // Overpass failures don't poison the on-disk cache.
+      return { fetchedAt: Date.now(), gates: [], transient: true };
+    } finally {
+      delete inflightGateFetches[airportKey];
+    }
+  })();
+  inflightGateFetches[airportKey] = promise;
+  return await promise;
+}
+
+app.get("/api/gate", async (req, res) => {
+  const { airport, gate, lat, lon } = req.query;
+  if (!airport || !gate) return res.status(400).json({ error: "airport and gate required" });
+  const airportKey = airport.toUpperCase();
+  let airportData = gateCache[airportKey];
+  if (!airportData) {
+    if (!lat || !lon) return res.status(400).json({ error: "lat and lon required for first lookup" });
+    airportData = await fetchAirportGates(airportKey, lat, lon);
+  }
+  const gateUpper = String(gate).toUpperCase().trim();
+  let match = airportData.gates.find(g => g.ref.toUpperCase() === gateUpper);
+  if (!match) {
+    // Some OSM tagging drops the alpha prefix (gate "H15" tagged as "15")
+    const numOnly = gateUpper.replace(/^[A-Z]+/, "");
+    if (numOnly && numOnly !== gateUpper) {
+      match = airportData.gates.find(g => g.ref.toUpperCase() === numOnly);
+    }
+  }
+  if (!match) {
+    match = airportData.gates.find(g => g.ref.toUpperCase().includes(gateUpper));
+  }
+  if (match) return res.json({ lat: match.lat, lon: match.lon, ref: match.ref });
+  res.status(404).json({ error: "gate not found", requested: gate, candidates: airportData.gates.length });
 });
 
 // --- Commute schedule: all flights between two airports for a given date ---
