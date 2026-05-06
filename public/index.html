@@ -121,7 +121,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.4</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.5</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -600,7 +600,7 @@ async function testTrack() {
 
 function clearTest() {
   testMode = null;
-  if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+  if (liveInterval) { clearTimeout(liveInterval); clearInterval(liveInterval); liveInterval = null; }
   document.getElementById("test-input").value = "";
   document.getElementById("live-info").style.display = "none";
   drawMap();
@@ -647,28 +647,46 @@ async function loadFlights() {
 
 async function checkActiveLeg(legs) {
   var now = new Date();
-  var PRE_DEPART_MS = 45 * 60 * 1000; // 45 minutes before departure
-  var POST_ARRIVE_MS = 30 * 60 * 1000; // 30 minutes after scheduled arrival
-  var active = legs.find(function(l) {
-    var s = new Date(l.start);
-    var e = new Date(l.end);
-    var earlyStart = new Date(s.getTime() - PRE_DEPART_MS);
-    var lateEnd = new Date(e.getTime() + POST_ARRIVE_MS);
-    return now >= earlyStart && now <= lateEnd && !l.isDH;
+  var PRE_DEPART_MS = 45 * 60 * 1000;       // tight active window: 45 min before
+  var POST_ARRIVE_MS = 30 * 60 * 1000;      // ...to 30 min after scheduled arrival
+  var FAR_LOOKAHEAD_MS = 8 * 60 * 60 * 1000; // fall back to next leg within ~8 hr
+
+  var sorted = legs.slice().sort(function(a, b) {
+    return new Date(a.start) - new Date(b.start);
   });
-  // If no active leg, clear any running tracking
+
+  // Tight active window first
+  var active = sorted.find(function(l) {
+    if (l.isDH) return false;
+    var s = new Date(l.start), e = new Date(l.end);
+    return now >= new Date(s.getTime() - PRE_DEPART_MS) &&
+           now <= new Date(e.getTime() + POST_ARRIVE_MS);
+  });
+
+  // Fall back to the next non-DH leg within the lookahead window so the
+  // tracker shows tonight's flight even when it's still hours away.
   if (!active) {
-    if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+    active = sorted.find(function(l) {
+      if (l.isDH) return false;
+      var s = new Date(l.start);
+      return s > now && (s.getTime() - now.getTime() < FAR_LOOKAHEAD_MS);
+    });
+  }
+
+  if (!active) {
+    if (liveInterval) { clearTimeout(liveInterval); clearInterval(liveInterval); liveInterval = null; }
     if (testMode && !document.getElementById("test-input").value) {
-      // Only clear if user didn't manually set a test flight
       testMode = null;
       document.getElementById("live-info").style.display = "none";
       drawMap();
     }
     return;
   }
-  // Pass dep/arr so the server picks the FA flight matching this leg's route,
-  // not a different operation of the same flight number from another day.
+
+  await fetchAndShowActive(active);
+}
+
+async function fetchAndShowActive(active) {
   var routeQuery = "?dep=" + encodeURIComponent(active.dep) + "&arr=" + encodeURIComponent(active.arr);
   try {
     var resp = await fetch("/api/track/" + active.num + routeQuery);
@@ -677,19 +695,24 @@ async function checkActiveLeg(legs) {
       if (data.flight) {
         testMode = data;
         drawMap();
-        if (liveInterval) clearInterval(liveInterval);
-        liveInterval = setInterval(async function() {
-          try {
-            var r = await fetch("/api/track/" + active.num + routeQuery);
-            if (r.ok) {
-              var d = await r.json();
-              if (d.flight) { testMode = d; drawMap(); }
-            }
-          } catch(e) {}
-        }, 30000);
       }
     }
-  } catch(e) {}
+  } catch (e) {}
+  scheduleNextActivePoll(active);
+}
+
+// Adaptive poll cadence based on time-to-departure. Aggressive close in,
+// gentle far out — keeps long pre-tracking sessions affordable on FA quota.
+function scheduleNextActivePoll(active) {
+  if (liveInterval) { clearTimeout(liveInterval); clearInterval(liveInterval); }
+  var minsToDep = (new Date(active.start).getTime() - Date.now()) / 60000;
+  var pollMs;
+  if (minsToDep < 15) pollMs = 30 * 1000;       // close in or in flight
+  else if (minsToDep < 60) pollMs = 90 * 1000;  // within an hour
+  else pollMs = 5 * 60 * 1000;                  // farther out
+  liveInterval = setTimeout(function() {
+    fetchAndShowActive(active);
+  }, pollMs);
 }
 
 // Trip qualifies for a filter based on whether it has any leg in that bucket,
