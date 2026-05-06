@@ -121,7 +121,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.3</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.4</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -489,9 +489,11 @@ function drawTestFlight() {
 
   // Drop a dimmer marker for the inbound aircraft (where the plane physically
   // is right now — at the gate, taxiing, or still en route to our origin).
+  var inboundPos = null;
   if (testMode.inbound && testMode.inbound.position && testMode.inbound.position.last_position) {
     var ip = testMode.inbound.position.last_position;
     if (ip.latitude && ip.longitude) {
+      inboundPos = ip;
       var ihdg = ip.heading || 0;
       L.marker([ip.latitude, ip.longitude], {
         icon: L.divIcon({
@@ -504,23 +506,65 @@ function drawTestFlight() {
     }
   }
 
+  // Gate label marker: prefer this flight's listed origin gate; fall back to
+  // the inbound aircraft's destination gate (same physical spot).
+  var gateCode = flight.gate_origin ||
+    (testMode.inbound && testMode.inbound.flight && testMode.inbound.flight.gate_destination) || null;
+  if (gateCode && !isArrived) {
+    var oCodeForGate = flight.origin && flight.origin.code_iata;
+    var gateLat = null, gateLon = null;
+    // If the inbound is physically at our origin airport (≤30 km), its
+    // position IS the gate; pin the label there. Otherwise drop the label
+    // at the airport center so the user still sees which gate it'll be.
+    if (inboundPos && oCodeForGate && AP[oCodeForGate]) {
+      var dLat = inboundPos.latitude - AP[oCodeForGate].lat;
+      var dLon = inboundPos.longitude - AP[oCodeForGate].lon;
+      var distKm = Math.sqrt(dLat*dLat*111*111 + dLon*dLon*85*85);
+      if (distKm < 30) { gateLat = inboundPos.latitude; gateLon = inboundPos.longitude; }
+    }
+    if (gateLat === null && oCodeForGate && AP[oCodeForGate]) {
+      gateLat = AP[oCodeForGate].lat; gateLon = AP[oCodeForGate].lon;
+    }
+    if (gateLat !== null) {
+      L.marker([gateLat, gateLon], {
+        icon: L.divIcon({
+          className: "",
+          html: '<div style="background:#e63946;color:#fff;font:700 11px/1 monospace;padding:3px 7px;border-radius:3px;box-shadow:0 0 6px rgba(0,0,0,.7);white-space:nowrap;letter-spacing:.5px">' + gateCode + '</div>',
+          iconSize: null, iconAnchor: [-12, -12],
+        })
+      }).addTo(layerGroup);
+    }
+  }
+
   // Zoom strategy:
-  //   - Plane has live position → fit bounds tight enough to see it on the ground (maxZoom 15)
-  //   - Arrived (no live position) → terminal-level zoom on destination
-  //   - Pre-departure / taxi-out without live position → terminal-level zoom on origin
+  //   - Plane has live position → fit bounds, allow gate-level zoom on the ground
+  //   - Arrived (no live position) → terminal zoom on destination
+  //   - Pre-dep, inbound parked at origin → tight zoom on the gate (zoom 17)
+  //   - Pre-dep, inbound en route → fit origin + inbound so user sees the inbound coming
+  //   - Pre-dep, no inbound info → terminal zoom on origin
   var hasLivePos = position && position.last_position && position.last_position.latitude;
   var isArrivedFlight = flight.progress_percent >= 100 || flight.actual_in;
-  var TERMINAL_ZOOM = 16;
+  var oCode = flight.origin && flight.origin.code_iata;
+  var inboundAtOrigin = false;
+  if (inboundPos && oCode && AP[oCode]) {
+    var dLat2 = inboundPos.latitude - AP[oCode].lat;
+    var dLon2 = inboundPos.longitude - AP[oCode].lon;
+    inboundAtOrigin = Math.sqrt(dLat2*dLat2*111*111 + dLon2*dLon2*85*85) < 30;
+  }
 
   if (hasLivePos && bounds.length) {
     map.fitBounds(bounds, {padding:[50,50], maxZoom:16});
   } else if (isArrivedFlight && flight.destination) {
     var dCode = flight.destination.code_iata;
-    if (AP[dCode]) map.setView([AP[dCode].lat, AP[dCode].lon], TERMINAL_ZOOM);
+    if (AP[dCode]) map.setView([AP[dCode].lat, AP[dCode].lon], 16);
     else if (bounds.length) map.fitBounds(bounds, {padding:[50,50], maxZoom:8});
+  } else if (inboundAtOrigin) {
+    map.setView([inboundPos.latitude, inboundPos.longitude], 17);
+  } else if (inboundPos && oCode && AP[oCode]) {
+    map.fitBounds([[AP[oCode].lat, AP[oCode].lon], [inboundPos.latitude, inboundPos.longitude]],
+                  {padding:[60,60], maxZoom:10});
   } else if (flight.origin) {
-    var oCode = flight.origin.code_iata;
-    if (AP[oCode]) map.setView([AP[oCode].lat, AP[oCode].lon], TERMINAL_ZOOM);
+    if (AP[oCode]) map.setView([AP[oCode].lat, AP[oCode].lon], 16);
     else if (bounds.length) map.fitBounds(bounds, {padding:[50,50], maxZoom:8});
   } else if (bounds.length) {
     map.fitBounds(bounds, {padding:[50,50], maxZoom:8});

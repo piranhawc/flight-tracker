@@ -313,7 +313,10 @@ app.get("/api/track/:flightNum", async (req, res) => {
 // our outbound) and its current position. Heavily cached — the aircraft's
 // recent-flights list is stable for minutes; the position changes faster.
 const aircraftCache = {};
-const AIRCRAFT_CACHE_TTL = 5 * 60 * 1000;
+// 90 sec keeps gate-change detection responsive — FA updates gate_destination
+// on the inbound flight as soon as it changes, and we want to surface that
+// quickly without hammering the API.
+const AIRCRAFT_CACHE_TTL = 90 * 1000;
 const inboundPositionCache = {};
 const INBOUND_POSITION_TTL = 25 * 1000;
 
