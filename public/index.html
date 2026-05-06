@@ -93,6 +93,9 @@
   .commute-spinner { width:10px; height:10px; border:1.5px solid #1a3028; border-top-color:#06d6a0; border-radius:50%; animation:spin 0.7s linear infinite; display:inline-block; }
   .commute-cache-info { padding:4px 14px; font-size:8px; color:#333; letter-spacing:1px; text-transform:uppercase; text-align:right; }
   .commute-cache-info.stale { color:#ffd166; }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#06d6a0; color:#000; padding:8px 14px; border-radius:4px; font-size:11px; font-weight:700; letter-spacing:.5px; opacity:0; transition:opacity .3s; z-index:9999; pointer-events:none; box-shadow:0 2px 8px rgba(0,0,0,.5); }
+  #toast.show { opacity:1; }
+  #toast.error { background:#e63946; color:#fff; }
   @keyframes spin { to { transform:rotate(360deg); } }
   @media (max-width: 600px) {
     #commute-body { max-height:180px; }
@@ -121,7 +124,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.8</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-06.3</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -506,46 +509,82 @@ function drawTestFlight() {
     }
   }
 
-  // Gate label marker: prefer this flight's listed origin gate; fall back to
-  // the inbound aircraft's destination gate (same physical spot).
-  var gateCode = flight.gate_origin ||
-    (testMode.inbound && testMode.inbound.flight && testMode.inbound.flight.gate_destination) || null;
-  var gateLat = null, gateLon = null;
-  if (gateCode && !isArrived) {
-    var oCodeForGate = flight.origin && flight.origin.code_iata;
+  // Gate label marker. Pre-dep shows ORIGIN gate; arrived shows DESTINATION
+  // gate. Position priority depends on phase — see below.
+  var gateCode, oCodeForGate, gateIsArrival;
+  if (isArrived) {
+    gateCode = flight.gate_destination || null;
+    oCodeForGate = flight.destination && flight.destination.code_iata;
+    gateIsArrival = true;
+  } else {
+    gateCode = flight.gate_origin ||
+      (testMode.inbound && testMode.inbound.flight && testMode.inbound.flight.gate_destination) || null;
+    oCodeForGate = flight.origin && flight.origin.code_iata;
+    gateIsArrival = false;
+  }
 
-    // Position priority:
-    //   1) Real gate coordinates from OSM (looked up async, cached)
-    //   2) Inbound aircraft's current position if it's at our origin airport
-    //   3) Airport center
+  var gateLat = null, gateLon = null, gateChipSource = "?";
+  if (gateCode) {
+
+    // Async lookup of override / CDA / learned / OSM coord for this gate
     if (oCodeForGate && AP[oCodeForGate]) {
       var gkey = oCodeForGate + "-" + gateCode;
       var cachedCoord = gateCoordCache[gkey];
       if (cachedCoord === undefined) {
-        // Not yet fetched — kick off async lookup, redraw on result
         lookupGateCoord(oCodeForGate, gateCode, AP[oCodeForGate].lat, AP[oCodeForGate].lon)
           .then(function() { if (testMode && testMode.flight) drawMap(); });
       } else if (cachedCoord) {
         gateLat = cachedCoord.lat; gateLon = cachedCoord.lon;
+        gateChipSource = cachedCoord.source || "?";
       }
     }
-    if (gateLat === null && inboundPos && oCodeForGate && AP[oCodeForGate]) {
-      var dLat = inboundPos.latitude - AP[oCodeForGate].lat;
-      var dLon = inboundPos.longitude - AP[oCodeForGate].lon;
-      if (Math.sqrt(dLat*dLat*111*111 + dLon*dLon*85*85) < 30) {
-        gateLat = inboundPos.latitude; gateLon = inboundPos.longitude;
+
+    // For an ARRIVED flight: if FA's live position passes a sanity check
+    // (within 8 km of destination AND groundspeed < 8), prefer it — that's
+    // literally where the plane is parked right now. Don't override a manual
+    // override though; that's been explicitly hard-pinned by the user.
+    if (gateIsArrival && gateChipSource !== "override" && position && position.last_position && oCodeForGate && AP[oCodeForGate]) {
+      var lp = position.last_position;
+      if (lp.latitude != null && lp.longitude != null) {
+        var dLatA = lp.latitude - AP[oCodeForGate].lat;
+        var dLonA = lp.longitude - AP[oCodeForGate].lon;
+        var distKmA = Math.sqrt(dLatA*dLatA*111*111 + dLonA*dLonA*85*85);
+        var lowSpeed = (typeof lp.groundspeed !== "number") || lp.groundspeed < 8;
+        if (distKmA < 8 && lowSpeed) {
+          gateLat = lp.latitude;
+          gateLon = lp.longitude;
+          gateChipSource = "live";
+        }
       }
     }
+
+    // Pre-dep fallback: inbound aircraft position if at our origin airport
+    if (gateLat === null && !gateIsArrival && inboundPos && oCodeForGate && AP[oCodeForGate]) {
+      var dLatI = inboundPos.latitude - AP[oCodeForGate].lat;
+      var dLonI = inboundPos.longitude - AP[oCodeForGate].lon;
+      if (Math.sqrt(dLatI*dLatI*111*111 + dLonI*dLonI*85*85) < 30) {
+        gateLat = inboundPos.latitude;
+        gateLon = inboundPos.longitude;
+        gateChipSource = "inbound";
+      }
+    }
+
+    // Final fallback: airport center
     if (gateLat === null && oCodeForGate && AP[oCodeForGate]) {
-      gateLat = AP[oCodeForGate].lat; gateLon = AP[oCodeForGate].lon;
+      gateLat = AP[oCodeForGate].lat;
+      gateLon = AP[oCodeForGate].lon;
+      gateChipSource = "airport";
     }
     if (gateLat !== null) {
+      var src = gateChipSource;
       var gateChip = L.marker([gateLat, gateLon], {
         draggable: true,
-        title: "Drag to correct this gate's position (saved as override)",
+        title: "Gate " + gateCode + " (source: " + src + ")\nDrag to correct · Click to verify on OpenStreetMap",
         icon: L.divIcon({
           className: "",
-          html: '<div style="background:#e63946;color:#fff;font:700 11px/1 monospace;padding:3px 7px;border-radius:3px;box-shadow:0 0 6px rgba(0,0,0,.7);white-space:nowrap;letter-spacing:.5px;cursor:move">' + gateCode + '</div>',
+          html: '<div style="background:#e63946;color:#fff;font:700 11px/1 monospace;padding:3px 7px;border-radius:3px;box-shadow:0 0 6px rgba(0,0,0,.7);white-space:nowrap;letter-spacing:.5px;cursor:move">' + gateCode +
+            (src && src !== "?" ? '<span style="opacity:.6;font-size:8px;font-weight:600;margin-left:5px">' + src + '</span>' : '') +
+          '</div>',
           iconSize: null, iconAnchor: [-12, -12],
         })
       });
@@ -553,11 +592,24 @@ function drawTestFlight() {
       gateChip.on("dragend", function(e) {
         var p = e.target.getLatLng();
         gateCoordCache[dragAirport + "-" + dragGate] = { lat: p.lat, lon: p.lng, source: "override" };
+        showToast("Saving gate " + dragGate + "…");
         fetch("/api/gate/override", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ airport: dragAirport, gate: dragGate, lat: p.lat, lon: p.lng }),
-        }).catch(function() {});
+        }).then(function(r) {
+          if (r.ok) showToast("Saved " + dragAirport + " " + dragGate + " override");
+          else showToast("Save failed (HTTP " + r.status + ")", {error: true});
+        }).catch(function() {
+          showToast("Save failed (network)", {error: true});
+        });
+      });
+      // Click chip → open the coords in OpenStreetMap so the user can verify
+      // visually whether the position truly is at the right physical building.
+      gateChip.on("click", function(e) {
+        var p = e.target.getLatLng();
+        var url = "https://www.openstreetmap.org/?mlat=" + p.lat.toFixed(6) + "&mlon=" + p.lng.toFixed(6) + "#map=19/" + p.lat.toFixed(6) + "/" + p.lng.toFixed(6);
+        window.open(url, "_blank");
       });
       gateChip.addTo(layerGroup);
     }
@@ -580,7 +632,11 @@ function drawTestFlight() {
   }
 
   if (hasLivePos && bounds.length) {
-    map.fitBounds(bounds, {padding:[50,50], maxZoom:16});
+    // En-route or taxiing — fit the bounds (route + plane), but if we also
+    // have a gate chip, allow zoom 17 so the user sees the plane settle.
+    map.fitBounds(bounds, {padding:[50,50], maxZoom: gateLat !== null ? 17 : 16});
+  } else if (isArrivedFlight && gateLat !== null) {
+    map.setView([gateLat, gateLon], 17);
   } else if (isArrivedFlight && flight.destination) {
     var dCode = flight.destination.code_iata;
     if (AP[dCode]) map.setView([AP[dCode].lat, AP[dCode].lon], 16);
@@ -635,6 +691,21 @@ async function testTrack() {
       } catch(e) {}
     }, 30000);
   } catch(e) { showError(e.message); }
+}
+
+// Lightweight toast for transient confirmations / errors.
+function showToast(msg, opts) {
+  var t = document.getElementById("toast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "toast";
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.classList.toggle("error", !!(opts && opts.error));
+  t.classList.add("show");
+  if (t._timer) clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.classList.remove("show"); }, 3000);
 }
 
 // Cached gate-coord lookups so we don't refetch on every drawMap.
@@ -709,9 +780,12 @@ async function checkActiveLeg(legs) {
     return new Date(a.start) - new Date(b.start);
   });
 
-  // Tight active window first
+  // Tight active window first. If we already have testMode showing the
+  // flight as arrived (actual_in set), that one's done — don't re-pick it.
   var active = sorted.find(function(l) {
     if (l.isDH) return false;
+    if (testMode && testMode.flight && testMode.flight.actual_in &&
+        String(testMode.flight.flight_number) === String(l.num)) return false;
     var s = new Date(l.start), e = new Date(l.end);
     return now >= new Date(s.getTime() - PRE_DEPART_MS) &&
            now <= new Date(e.getTime() + POST_ARRIVE_MS);
@@ -740,8 +814,14 @@ async function checkActiveLeg(legs) {
   await fetchAndShowActive(active);
 }
 
+// Tracks when we first observed actual_in for the current leg, so we can
+// keep polling for ~3 min after arrival to capture a stable gate position.
+// Resets back to null whenever a poll shows the flight not-yet-arrived.
+var arrivedFirstSeenAt = null;
+
 async function fetchAndShowActive(active) {
   var routeQuery = "?dep=" + encodeURIComponent(active.dep) + "&arr=" + encodeURIComponent(active.arr);
+  var done = false;
   try {
     var resp = await fetch("/api/track/" + active.num + routeQuery);
     if (resp.ok) {
@@ -749,21 +829,35 @@ async function fetchAndShowActive(active) {
       if (data.flight) {
         testMode = data;
         drawMap();
+        if (data.flight.actual_in) {
+          if (!arrivedFirstSeenAt) arrivedFirstSeenAt = Date.now();
+          // Keep polling for 3 min post-arrival so the plane settles at the
+          // gate and we get a stable position for the chip + auto-learn.
+          if (Date.now() - arrivedFirstSeenAt > 3 * 60 * 1000) {
+            done = true;
+            if (liveInterval) { clearTimeout(liveInterval); clearInterval(liveInterval); liveInterval = null; }
+          }
+        } else {
+          arrivedFirstSeenAt = null;
+        }
       }
     }
   } catch (e) {}
-  scheduleNextActivePoll(active);
+  if (!done) scheduleNextActivePoll(active);
 }
 
-// Adaptive poll cadence based on time-to-departure. Aggressive close in,
-// gentle far out — keeps long pre-tracking sessions affordable on FA quota.
+// Adaptive poll cadence based on time-to-departure (and arrival state).
+// Aggressive close in, gentle far out — keeps long pre-tracking sessions
+// affordable on FA quota.
 function scheduleNextActivePoll(active) {
   if (liveInterval) { clearTimeout(liveInterval); clearInterval(liveInterval); }
   var minsToDep = (new Date(active.start).getTime() - Date.now()) / 60000;
   var pollMs;
-  if (minsToDep < 15) pollMs = 30 * 1000;       // close in or in flight
-  else if (minsToDep < 60) pollMs = 90 * 1000;  // within an hour
-  else pollMs = 5 * 60 * 1000;                  // farther out
+  if (testMode && testMode.flight && testMode.flight.actual_in) {
+    pollMs = 60 * 1000;                          // post-arrival: settle the gate position
+  } else if (minsToDep < 15) pollMs = 30 * 1000; // close in or in flight
+  else if (minsToDep < 60) pollMs = 90 * 1000;   // within an hour
+  else pollMs = 5 * 60 * 1000;                   // farther out
   liveInterval = setTimeout(function() {
     fetchAndShowActive(active);
   }, pollMs);

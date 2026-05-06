@@ -316,6 +316,21 @@ app.get("/api/track/:flightNum", async (req, res) => {
       }
     }
 
+    // Same auto-learn for OUR flight after it has arrived at the destination
+    // gate. This lets us record gate positions for airports we fly into, not
+    // just our home base. learnGatePosition's median+outlier-rejection
+    // serves as the second sanity check on top of the speed/airport gates.
+    if (target.actual_in && target.gate_destination && position && position.last_position) {
+      const lp = position.last_position;
+      if (lp.latitude != null && lp.longitude != null) {
+        const lowSpeed = typeof lp.groundspeed !== "number" || lp.groundspeed < 8;
+        if (lowSpeed) {
+          const dk = target.destination && (target.destination.code_iata || target.destination.code);
+          if (dk) learnGatePosition(dk, target.gate_destination, lp.latitude, lp.longitude);
+        }
+      }
+    }
+
     res.json({
       flight: target,
       position,
@@ -595,6 +610,24 @@ function saveGateLearned() { saveCache(GATE_LEARNED_FILE, gateLearned); }
 const gateOverrides = loadCache(GATE_OVERRIDES_FILE);
 console.log(`Loaded gate overrides for ${Object.keys(gateOverrides).length} airports`);
 
+// Authoritative gate data baked into the project. Sourced from airport
+// operators' own GIS portals (e.g., Chicago Department of Aviation publishes
+// a Chicago_Ohare_Gates feature service with airline gate centerlines).
+// This sits above OSM and learned data in the lookup priority — it's the
+// closest thing to an official source we can ship without manual entry.
+const GATES_SEED_FILE = path.join(__dirname, "gates-seed.json");
+let gateSeed = {};
+try {
+  if (fs.existsSync(GATES_SEED_FILE)) {
+    gateSeed = JSON.parse(fs.readFileSync(GATES_SEED_FILE, "utf8"));
+    const airports = Object.keys(gateSeed);
+    const total = airports.reduce((s, a) => s + Object.keys(gateSeed[a]).length, 0);
+    console.log(`Loaded ${total} authoritative gate positions across ${airports.length} airport keys`);
+  }
+} catch (e) {
+  console.error("Failed to load gates-seed.json:", e.message);
+}
+
 // Record an observation of an aircraft physically at a known gate. Each
 // (airport, gate) keeps a rolling window of recent samples; we return the
 // median so transient outliers (mis-typed gates, taxi-thru data) don't poison
@@ -693,7 +726,14 @@ app.get("/api/gate", async (req, res) => {
     return res.json({ lat: o.lat, lon: o.lon, ref: gateUpper, source: "override" });
   }
 
-  // 2) Learned from observations
+  // 2) Authoritative seed data shipped with the project (e.g., CDA-published
+  //    gate positions for ORD).
+  if (gateSeed[airportKey] && gateSeed[airportKey][gateUpper]) {
+    const s = gateSeed[airportKey][gateUpper];
+    return res.json({ lat: s.lat, lon: s.lon, ref: gateUpper, source: "cda" });
+  }
+
+  // 3) Learned from observations
   if (gateLearned[airportKey] && gateLearned[airportKey][gateUpper]) {
     const entry = gateLearned[airportKey][gateUpper];
     if (entry.samples && entry.samples.length) {
@@ -702,7 +742,7 @@ app.get("/api/gate", async (req, res) => {
     }
   }
 
-  // 3) OSM
+  // 4) OSM
   let airportData = gateCache[airportKey];
   if (!airportData || airportData.queryVersion !== GATE_QUERY_VERSION) {
     if (!lat || !lon) return res.status(400).json({ error: "lat and lon required for first OSM lookup" });
