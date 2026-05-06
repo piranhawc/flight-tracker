@@ -281,15 +281,100 @@ app.get("/api/track/:flightNum", async (req, res) => {
       }
     }
 
+    // For pre-departure flights with a known tail, look up where the
+    // aircraft physically IS right now — usually the inbound leg into our
+    // origin. If it's at the gate, that position IS the gate location.
+    let inbound = null;
+    const isPreDeparture = !target.actual_out && target.progress_percent < 100;
+    if (isPreDeparture && target.registration) {
+      try {
+        inbound = await fetchAircraftInbound(
+          target.registration,
+          target.fa_flight_id,
+          target.origin && (target.origin.code_iata || target.origin.code)
+        );
+      } catch (e) {
+        console.log(`  [inbound lookup] error for ${target.registration}: ${e.message}`);
+      }
+    }
+
     res.json({
       flight: target,
       position,
       track,
+      inbound,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// Look up the most recent flight for an aircraft (the "inbound" relative to
+// our outbound) and its current position. Heavily cached — the aircraft's
+// recent-flights list is stable for minutes; the position changes faster.
+const aircraftCache = {};
+const AIRCRAFT_CACHE_TTL = 5 * 60 * 1000;
+const inboundPositionCache = {};
+const INBOUND_POSITION_TTL = 25 * 1000;
+
+async function fetchAircraftInbound(registration, ownFaFlightId, ownOriginCode) {
+  const cacheKey = `aircraft-${registration}`;
+  let aircraftFlights;
+  const cached = aircraftCache[cacheKey];
+  if (cached && Date.now() - cached.ts < AIRCRAFT_CACHE_TTL) {
+    aircraftFlights = cached.data;
+  } else {
+    const resp = await fetch(
+      `${FA_BASE}/aircraft/${registration}/flights?max_pages=1`,
+      { headers: { "x-apikey": FA_API_KEY } }
+    );
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    aircraftFlights = data.flights || [];
+    aircraftCache[cacheKey] = { ts: Date.now(), data: aircraftFlights };
+  }
+
+  // Pick the inbound: most recent non-cancelled flight that's not us.
+  // Prefer one whose destination matches our outbound origin (the actual
+  // inbound). Fall back to any recent flight if no exact match.
+  const destMatches = (f) => {
+    if (!ownOriginCode || !f.destination) return true;
+    const dCode = f.destination.code_iata || f.destination.code;
+    return dCode === ownOriginCode || dCode === ("K" + ownOriginCode);
+  };
+  let inboundFlight = aircraftFlights.find(f =>
+    f.fa_flight_id !== ownFaFlightId && !f.cancelled && destMatches(f)
+  );
+  if (!inboundFlight) {
+    inboundFlight = aircraftFlights.find(f =>
+      f.fa_flight_id !== ownFaFlightId && !f.cancelled
+    );
+  }
+  if (!inboundFlight) return null;
+
+  // Position with short cache so 30s frontend polls don't stack FA calls
+  let position = null;
+  const posKey = `pos-${inboundFlight.fa_flight_id}`;
+  const posCached = inboundPositionCache[posKey];
+  if (posCached && Date.now() - posCached.ts < INBOUND_POSITION_TTL) {
+    position = posCached.data;
+  } else {
+    try {
+      const pResp = await fetch(
+        `${FA_BASE}/flights/${inboundFlight.fa_flight_id}/position`,
+        { headers: { "x-apikey": FA_API_KEY } }
+      );
+      if (pResp.ok) {
+        position = await pResp.json();
+        inboundPositionCache[posKey] = { ts: Date.now(), data: position };
+      }
+    } catch (e) {
+      console.log(`  [inbound position] fetch failed: ${e.message}`);
+    }
+  }
+
+  return { flight: inboundFlight, position };
+}
 
 // --- Test endpoint: track any ICAO ident ---
 app.get("/api/test-track/:ident", async (req, res) => {

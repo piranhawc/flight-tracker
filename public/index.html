@@ -121,7 +121,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.2</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.3</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -466,9 +466,42 @@ function drawTestFlight() {
         "Status: " + statusText +
         (flight.gate_origin ? "<br>Gate: " + flight.gate_origin : "") +
         (flight.registration ? "<br>Tail: " + flight.registration : "");
+      // Inbound aircraft info — where the plane physically is right now
+      if (testMode.inbound && testMode.inbound.flight) {
+        var ib = testMode.inbound.flight;
+        var ibOrig = ib.origin && (ib.origin.code_iata || ib.origin.code) || "?";
+        detailHtml += "<br><span style='color:#888'>Inbound: " +
+          (ib.ident_iata || ib.ident) + " from " + ibOrig;
+        if (ib.actual_in) {
+          detailHtml += " · landed " + new Date(ib.actual_in).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+        } else if (ib.estimated_in || ib.scheduled_in) {
+          var eta = ib.estimated_in || ib.scheduled_in;
+          var minsOut = Math.round((new Date(eta) - new Date()) / 60000);
+          detailHtml += minsOut > 0 ? " · ETA " + new Date(eta).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) + " (" + minsOut + " min)"
+                                    : " · arriving";
+        }
+        detailHtml += "</span>";
+      }
     }
     document.getElementById("live-detail").innerHTML = detailHtml;
 
+  }
+
+  // Drop a dimmer marker for the inbound aircraft (where the plane physically
+  // is right now — at the gate, taxiing, or still en route to our origin).
+  if (testMode.inbound && testMode.inbound.position && testMode.inbound.position.last_position) {
+    var ip = testMode.inbound.position.last_position;
+    if (ip.latitude && ip.longitude) {
+      var ihdg = ip.heading || 0;
+      L.marker([ip.latitude, ip.longitude], {
+        icon: L.divIcon({
+          className: "",
+          html: '<div title="Inbound aircraft" style="font-size:18px;opacity:.55;transform:rotate(' + ihdg + 'deg);filter:drop-shadow(0 0 3px rgba(150,150,150,.5))">✈</div>',
+          iconSize: [20,20], iconAnchor: [10,10],
+        })
+      }).addTo(layerGroup);
+      bounds.push([ip.latitude, ip.longitude]);
+    }
   }
 
   // Zoom strategy:
