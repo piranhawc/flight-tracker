@@ -121,7 +121,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.7</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.8</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -540,13 +540,26 @@ function drawTestFlight() {
       gateLat = AP[oCodeForGate].lat; gateLon = AP[oCodeForGate].lon;
     }
     if (gateLat !== null) {
-      L.marker([gateLat, gateLon], {
+      var gateChip = L.marker([gateLat, gateLon], {
+        draggable: true,
+        title: "Drag to correct this gate's position (saved as override)",
         icon: L.divIcon({
           className: "",
-          html: '<div style="background:#e63946;color:#fff;font:700 11px/1 monospace;padding:3px 7px;border-radius:3px;box-shadow:0 0 6px rgba(0,0,0,.7);white-space:nowrap;letter-spacing:.5px">' + gateCode + '</div>',
+          html: '<div style="background:#e63946;color:#fff;font:700 11px/1 monospace;padding:3px 7px;border-radius:3px;box-shadow:0 0 6px rgba(0,0,0,.7);white-space:nowrap;letter-spacing:.5px;cursor:move">' + gateCode + '</div>',
           iconSize: null, iconAnchor: [-12, -12],
         })
-      }).addTo(layerGroup);
+      });
+      var dragAirport = oCodeForGate, dragGate = gateCode;
+      gateChip.on("dragend", function(e) {
+        var p = e.target.getLatLng();
+        gateCoordCache[dragAirport + "-" + dragGate] = { lat: p.lat, lon: p.lng, source: "override" };
+        fetch("/api/gate/override", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ airport: dragAirport, gate: dragGate, lat: p.lat, lon: p.lng }),
+        }).catch(function() {});
+      });
+      gateChip.addTo(layerGroup);
     }
   }
 

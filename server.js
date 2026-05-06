@@ -714,6 +714,47 @@ app.get("/api/gate", async (req, res) => {
   res.status(404).json({ error: "gate not found", requested: gate, candidates: airportData.gates.length });
 });
 
+// User pins a corrected gate position by dragging the chip on the map. Saved
+// as a hard override so future loads use this exact lat/lon for that gate.
+app.post("/api/gate/override", (req, res) => {
+  const { airport, gate, lat, lon } = req.body || {};
+  if (!airport || !gate || lat == null || lon == null) {
+    return res.status(400).json({ error: "airport, gate, lat, lon required" });
+  }
+  const latNum = Number(lat), lonNum = Number(lon);
+  if (Number.isNaN(latNum) || Number.isNaN(lonNum)) {
+    return res.status(400).json({ error: "lat/lon must be numeric" });
+  }
+  const ak = String(airport).toUpperCase();
+  const gk = String(gate).toUpperCase().trim();
+  if (!gateOverrides[ak]) gateOverrides[ak] = {};
+  gateOverrides[ak][gk] = { lat: latNum, lon: lonNum };
+  saveCache(GATE_OVERRIDES_FILE, gateOverrides);
+  console.log(`Gate override saved: ${ak}/${gk} = ${latNum.toFixed(5)},${lonNum.toFixed(5)}`);
+  res.json({ ok: true, source: "override" });
+});
+
+// Drop a saved override (or learned data) — useful if it gets stuck on a
+// wrong position after experimentation.
+app.delete("/api/gate/override", (req, res) => {
+  const { airport, gate } = req.query;
+  if (!airport || !gate) return res.status(400).json({ error: "airport and gate required" });
+  const ak = String(airport).toUpperCase();
+  const gk = String(gate).toUpperCase().trim();
+  let removed = false;
+  if (gateOverrides[ak] && gateOverrides[ak][gk]) {
+    delete gateOverrides[ak][gk];
+    saveCache(GATE_OVERRIDES_FILE, gateOverrides);
+    removed = true;
+  }
+  if (gateLearned[ak] && gateLearned[ak][gk]) {
+    delete gateLearned[ak][gk];
+    saveGateLearned();
+    removed = true;
+  }
+  res.json({ ok: true, removed });
+});
+
 // --- Commute schedule: all flights between two airports for a given date ---
 // Returns combined scheduled + actual flights with status/times
 // Strategy: query the SMALLER airport's arrivals/departures (avoids pagination hell at ORD)
