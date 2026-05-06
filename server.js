@@ -203,17 +203,42 @@ app.get("/api/track/:flightNum", async (req, res) => {
     const now = new Date();
     const nowMs = now.getTime();
 
+    // If the caller passed dep/arr (the user's actual leg), restrict to FA
+    // flights matching that route. AA flight numbers can be reused on
+    // different routes across days, so without this filter we sometimes pick
+    // the wrong operation (e.g. PIT-XXX instead of the user's ORD-XXX).
+    const reqDep = (req.query.dep || "").toUpperCase();
+    const reqArr = (req.query.arr || "").toUpperCase();
+    const allFlights = fData.flights || [];
+    let candidates = allFlights;
+    if (reqDep && reqArr) {
+      const codeMatches = (ap, code) => {
+        if (!ap) return false;
+        return ap.code_iata === code || ap.code_icao === code ||
+               ap.code === code || ap.code === ("K" + code);
+      };
+      const matched = allFlights.filter(f =>
+        codeMatches(f.origin, reqDep) && codeMatches(f.destination, reqArr)
+      );
+      if (matched.length > 0) {
+        candidates = matched;
+        console.log(`Track AAL${req.params.flightNum}: filtered ${allFlights.length} → ${matched.length} matching ${reqDep}-${reqArr}`);
+      } else {
+        console.log(`Track AAL${req.params.flightNum}: no FA flight matches ${reqDep}-${reqArr}, using all ${allFlights.length}`);
+      }
+    }
+
     // Priority:
     // 1) Currently en-route (has position data, 0 < progress < 100)
     // 2) Very recently arrived (within last 30 min) - transponder still on
     // 3) Scheduled to depart within the next 24 hours (handles pre-departure)
     // 4) Most recent non-cancelled flight as fallback
 
-    const enRoute = fData.flights.find(
+    const enRoute = candidates.find(
       (f) => f.progress_percent > 0 && f.progress_percent < 100 && !f.cancelled
     );
 
-    const recentlyArrived = fData.flights.find((f) => {
+    const recentlyArrived = candidates.find((f) => {
       if (f.cancelled || !f.actual_in) return false;
       const arrivedMs = new Date(f.actual_in).getTime();
       const sinceArrived = nowMs - arrivedMs;
@@ -221,7 +246,7 @@ app.get("/api/track/:flightNum", async (req, res) => {
       return sinceArrived >= 0 && sinceArrived < 30 * 60 * 1000;
     });
 
-    const upcomingScheduled = fData.flights.find((f) => {
+    const upcomingScheduled = candidates.find((f) => {
       if (f.cancelled || f.actual_out || f.progress_percent >= 100) return false;
       const schedOut = new Date(f.scheduled_out || f.scheduled_off || 0).getTime();
       if (!schedOut) return false;
@@ -230,7 +255,7 @@ app.get("/api/track/:flightNum", async (req, res) => {
       return untilDep > -60 * 60 * 1000 && untilDep < 24 * 60 * 60 * 1000;
     });
 
-    const target = enRoute || recentlyArrived || upcomingScheduled || fData.flights.find((f) => !f.cancelled);
+    const target = enRoute || recentlyArrived || upcomingScheduled || candidates.find((f) => !f.cancelled);
     if (!target) return res.status(404).json({ error: "No flight found" });
 
     const targetType = enRoute ? "en-route" : recentlyArrived ? "recently-arrived" : upcomingScheduled ? "upcoming" : "fallback";

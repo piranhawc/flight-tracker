@@ -121,7 +121,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.1</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-05.2</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -590,8 +590,11 @@ async function checkActiveLeg(legs) {
     }
     return;
   }
+  // Pass dep/arr so the server picks the FA flight matching this leg's route,
+  // not a different operation of the same flight number from another day.
+  var routeQuery = "?dep=" + encodeURIComponent(active.dep) + "&arr=" + encodeURIComponent(active.arr);
   try {
-    var resp = await fetch("/api/track/" + active.num);
+    var resp = await fetch("/api/track/" + active.num + routeQuery);
     if (resp.ok) {
       var data = await resp.json();
       if (data.flight) {
@@ -600,7 +603,7 @@ async function checkActiveLeg(legs) {
         if (liveInterval) clearInterval(liveInterval);
         liveInterval = setInterval(async function() {
           try {
-            var r = await fetch("/api/track/" + active.num);
+            var r = await fetch("/api/track/" + active.num + routeQuery);
             if (r.ok) {
               var d = await r.json();
               if (d.flight) { testMode = d; drawMap(); }
@@ -613,19 +616,16 @@ async function checkActiveLeg(legs) {
 }
 
 // Trip qualifies for a filter based on whether it has any leg in that bucket,
-// not whether the whole trip is. An in-progress trip with completed and
-// upcoming legs appears in BOTH "upcoming" and "past", with the trip card
-// showing only the relevant legs in each context.
-function tripTodayStart() {
-  var t = new Date(); t.setHours(0,0,0,0); return t;
-}
+// not whether the whole trip is. The cutoff is "right now" — a leg that has
+// already landed counts as past even if it was today, so this morning's
+// completed legs move out of upcoming as soon as they arrive.
 function tripHasPastLegs(t) {
-  var todayStart = tripTodayStart();
-  return t.legs.some(function(l) { return new Date(l.end) < todayStart; });
+  var now = new Date();
+  return t.legs.some(function(l) { return new Date(l.end) < now; });
 }
 function tripHasUpcomingLegs(t) {
-  var todayStart = tripTodayStart();
-  return t.legs.some(function(l) { return new Date(l.start) >= todayStart; });
+  var now = new Date();
+  return t.legs.some(function(l) { return new Date(l.end) >= now; });
 }
 
 function applyFilter() {
@@ -680,20 +680,19 @@ function renderTripCard(trip, idx) {
   var sel = selectedIdx === idx;
   var isActiveLeg = function(l) { var s=new Date(l.start),e=new Date(l.end); return now>=s && now<=e; };
 
-  // Pick which legs to display based on the active filter. A trip in progress
-  // shows its completed legs under "past" and its today/future legs under
-  // "upcoming"; "all" shows everything.
-  var todayStart = new Date(); todayStart.setHours(0,0,0,0);
+  // Pick which legs to display based on the active filter. The cutoff is
+  // "right now": a leg that has already landed is past even if it was today.
+  // In-progress legs (departed but not yet arrived) belong to upcoming.
   var visibleLegs;
   var hiddenLabel = "";
   if (filter === "past") {
-    visibleLegs = trip.legs.filter(function(l) { return new Date(l.end) < todayStart; });
+    visibleLegs = trip.legs.filter(function(l) { return new Date(l.end) < now; });
     var hiddenUpcoming = trip.legs.length - visibleLegs.length;
     if (hiddenUpcoming > 0) {
       hiddenLabel = hiddenUpcoming + ' upcoming leg' + (hiddenUpcoming > 1 ? 's' : '') + ' — see Upcoming tab';
     }
   } else if (filter === "upcoming") {
-    visibleLegs = trip.legs.filter(function(l) { return new Date(l.start) >= todayStart; });
+    visibleLegs = trip.legs.filter(function(l) { return new Date(l.end) >= now; });
     var hiddenCompleted = trip.legs.length - visibleLegs.length;
     if (hiddenCompleted > 0) {
       hiddenLabel = hiddenCompleted + ' completed leg' + (hiddenCompleted > 1 ? 's' : '') + ' — see Past tab';
