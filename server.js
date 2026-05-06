@@ -11,6 +11,8 @@ const CACHE_DIR = process.env.CACHE_DIR || "/app/data";
 const REG_CACHE_FILE = path.join(CACHE_DIR, "reg-cache.json");
 const PHOTO_CACHE_FILE = path.join(CACHE_DIR, "photo-cache.json");
 const GATE_CACHE_FILE = path.join(CACHE_DIR, "gate-cache.json");
+const GATE_LEARNED_FILE = path.join(CACHE_DIR, "gate-learned.json");
+const GATE_OVERRIDES_FILE = path.join(CACHE_DIR, "gate-overrides.json");
 
 // --- Persistent cache helpers ---
 function loadCache(file) {
@@ -299,6 +301,21 @@ app.get("/api/track/:flightNum", async (req, res) => {
       }
     }
 
+    // Auto-learn: if the inbound is parked (or near-stationary) at our
+    // origin airport and FA published its destination gate, record that
+    // observation. Over time this builds a real-world gate→coord map that
+    // beats anything OSM has.
+    if (inbound && inbound.flight && inbound.flight.gate_destination && inbound.position && inbound.position.last_position) {
+      const ip = inbound.position.last_position;
+      if (ip.latitude != null && ip.longitude != null) {
+        const isParked = inbound.flight.actual_in || (typeof ip.groundspeed === "number" && ip.groundspeed < 8);
+        if (isParked) {
+          const ak = (target.origin && (target.origin.code_iata || target.origin.code)) || null;
+          if (ak) learnGatePosition(ak, inbound.flight.gate_destination, ip.latitude, ip.longitude);
+        }
+      }
+    }
+
     res.json({
       flight: target,
       position,
@@ -558,20 +575,67 @@ app.get("/api/photo/:reg", async (req, res) => {
   }
 });
 
-// --- Gate location lookup via OpenStreetMap (Overpass API) ---
-// Caches each airport's full gate dataset on disk. Gate positions are stable,
-// so once we've fetched an airport, we never refetch unless the cache is wiped.
+// --- Gate location lookup ---
+// Three sources, in priority order:
+//   1. Manual overrides (gate-overrides.json — user-editable)
+//   2. Learned positions (gate-learned.json — auto-recorded from inbound
+//      aircraft observed at the gate; converges to real coords over time)
+//   3. OpenStreetMap via Overpass (best-effort, often inaccurate at large hubs)
+// Falls back to the airport center on the frontend if all three miss.
+
+const GATE_QUERY_VERSION = 2; // bump to invalidate the on-disk OSM cache
 const gateCache = loadCache(GATE_CACHE_FILE);
 console.log(`Loaded gate data for ${Object.keys(gateCache).length} airports`);
 function saveGateCache() { saveCache(GATE_CACHE_FILE, gateCache); }
 
+const gateLearned = loadCache(GATE_LEARNED_FILE);
+console.log(`Loaded learned gates for ${Object.keys(gateLearned).length} airports`);
+function saveGateLearned() { saveCache(GATE_LEARNED_FILE, gateLearned); }
+
+const gateOverrides = loadCache(GATE_OVERRIDES_FILE);
+console.log(`Loaded gate overrides for ${Object.keys(gateOverrides).length} airports`);
+
+// Record an observation of an aircraft physically at a known gate. Each
+// (airport, gate) keeps a rolling window of recent samples; we return the
+// median so transient outliers (mis-typed gates, taxi-thru data) don't poison
+// the position. Reject samples that are obviously an outlier vs. existing
+// learned data.
+function learnGatePosition(airportKey, gateCode, lat, lon) {
+  if (!airportKey || !gateCode || lat == null || lon == null) return;
+  const ak = airportKey.toUpperCase();
+  const gk = String(gateCode).toUpperCase().trim();
+  if (!gateLearned[ak]) gateLearned[ak] = {};
+  const entry = gateLearned[ak][gk] || { samples: [] };
+  // Outlier rejection: if we already have data, ignore samples > 250m away
+  if (entry.samples.length >= 3) {
+    const cur = medianPos(entry.samples);
+    const dLat = lat - cur.lat, dLon = lon - cur.lon;
+    const distM = Math.sqrt(dLat*dLat*111000*111000 + dLon*dLon*85000*85000);
+    if (distM > 250) return;
+  }
+  entry.samples.push({ lat, lon, ts: Date.now() });
+  if (entry.samples.length > 8) entry.samples = entry.samples.slice(-8);
+  gateLearned[ak][gk] = entry;
+  saveGateLearned();
+  console.log(`Gate learn: ${ak}/${gk} sample ${entry.samples.length} → ${lat.toFixed(5)},${lon.toFixed(5)}`);
+}
+function medianPos(samples) {
+  const lats = samples.map(s => s.lat).sort((a,b) => a-b);
+  const lons = samples.map(s => s.lon).sort((a,b) => a-b);
+  const m = Math.floor(samples.length / 2);
+  return { lat: lats[m], lon: lons[m] };
+}
+
 const inflightGateFetches = {};
 async function fetchAirportGates(airportKey, lat, lon) {
-  if (gateCache[airportKey]) return gateCache[airportKey];
+  const cached = gateCache[airportKey];
+  if (cached && cached.queryVersion === GATE_QUERY_VERSION) return cached;
   if (inflightGateFetches[airportKey]) return await inflightGateFetches[airportKey];
 
   const promise = (async () => {
-    const query = `[out:json][timeout:25];(node["aeroway"="gate"](around:6000,${lat},${lon});way["aeroway"="gate"](around:6000,${lat},${lon}););out center;`;
+    // Include parking_position too — at busy airports it's often more
+    // accurately tagged with airline gate codes than the gate node.
+    const query = `[out:json][timeout:25];(node["aeroway"="gate"](around:6000,${lat},${lon});way["aeroway"="gate"](around:6000,${lat},${lon});node["aeroway"="parking_position"](around:6000,${lat},${lon});way["aeroway"="parking_position"](around:6000,${lat},${lon}););out center;`;
     try {
       const resp = await fetch("https://overpass-api.de/api/interpreter", {
         method: "POST",
@@ -584,16 +648,15 @@ async function fetchAirportGates(airportKey, lat, lon) {
         ref: (e.tags && (e.tags.ref || e.tags.name)) || null,
         lat: e.lat != null ? e.lat : (e.center && e.center.lat),
         lon: e.lon != null ? e.lon : (e.center && e.center.lon),
+        kind: e.tags && e.tags.aeroway,
       })).filter(g => g.ref && g.lat != null && g.lon != null);
-      const result = { fetchedAt: Date.now(), gates };
+      const result = { fetchedAt: Date.now(), queryVersion: GATE_QUERY_VERSION, gates };
       gateCache[airportKey] = result;
       saveGateCache();
-      console.log(`Gates: cached ${gates.length} gates for ${airportKey}`);
+      console.log(`Gates: cached ${gates.length} elements for ${airportKey} (v${GATE_QUERY_VERSION})`);
       return result;
     } catch (e) {
       console.error(`Overpass query failed for ${airportKey}:`, e.message);
-      // Cache the empty result briefly via in-memory only, so transient
-      // Overpass failures don't poison the on-disk cache.
       return { fetchedAt: Date.now(), gates: [], transient: true };
     } finally {
       delete inflightGateFetches[airportKey];
@@ -603,28 +666,51 @@ async function fetchAirportGates(airportKey, lat, lon) {
   return await promise;
 }
 
+function findOsmGate(airportData, gateUpper) {
+  if (!airportData) return null;
+  const exact = airportData.gates.filter(g => g.ref.toUpperCase() === gateUpper);
+  if (exact.length) {
+    // Prefer parking_position over gate (the parking spot is what we want)
+    return exact.find(g => g.kind === "parking_position") || exact[0];
+  }
+  const numOnly = gateUpper.replace(/^[A-Z]+/, "");
+  if (numOnly && numOnly !== gateUpper) {
+    const numMatch = airportData.gates.filter(g => g.ref.toUpperCase() === numOnly);
+    if (numMatch.length) return numMatch.find(g => g.kind === "parking_position") || numMatch[0];
+  }
+  return airportData.gates.find(g => g.ref.toUpperCase().includes(gateUpper)) || null;
+}
+
 app.get("/api/gate", async (req, res) => {
   const { airport, gate, lat, lon } = req.query;
   if (!airport || !gate) return res.status(400).json({ error: "airport and gate required" });
   const airportKey = airport.toUpperCase();
-  let airportData = gateCache[airportKey];
-  if (!airportData) {
-    if (!lat || !lon) return res.status(400).json({ error: "lat and lon required for first lookup" });
-    airportData = await fetchAirportGates(airportKey, lat, lon);
-  }
   const gateUpper = String(gate).toUpperCase().trim();
-  let match = airportData.gates.find(g => g.ref.toUpperCase() === gateUpper);
-  if (!match) {
-    // Some OSM tagging drops the alpha prefix (gate "H15" tagged as "15")
-    const numOnly = gateUpper.replace(/^[A-Z]+/, "");
-    if (numOnly && numOnly !== gateUpper) {
-      match = airportData.gates.find(g => g.ref.toUpperCase() === numOnly);
+
+  // 1) Manual override
+  if (gateOverrides[airportKey] && gateOverrides[airportKey][gateUpper]) {
+    const o = gateOverrides[airportKey][gateUpper];
+    return res.json({ lat: o.lat, lon: o.lon, ref: gateUpper, source: "override" });
+  }
+
+  // 2) Learned from observations
+  if (gateLearned[airportKey] && gateLearned[airportKey][gateUpper]) {
+    const entry = gateLearned[airportKey][gateUpper];
+    if (entry.samples && entry.samples.length) {
+      const m = medianPos(entry.samples);
+      return res.json({ lat: m.lat, lon: m.lon, ref: gateUpper, source: "learned", samples: entry.samples.length });
     }
   }
-  if (!match) {
-    match = airportData.gates.find(g => g.ref.toUpperCase().includes(gateUpper));
+
+  // 3) OSM
+  let airportData = gateCache[airportKey];
+  if (!airportData || airportData.queryVersion !== GATE_QUERY_VERSION) {
+    if (!lat || !lon) return res.status(400).json({ error: "lat and lon required for first OSM lookup" });
+    airportData = await fetchAirportGates(airportKey, lat, lon);
   }
-  if (match) return res.json({ lat: match.lat, lon: match.lon, ref: match.ref });
+  const match = findOsmGate(airportData, gateUpper);
+  if (match) return res.json({ lat: match.lat, lon: match.lon, ref: match.ref, source: "osm" });
+
   res.status(404).json({ error: "gate not found", requested: gate, candidates: airportData.gates.length });
 });
 
