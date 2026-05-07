@@ -124,7 +124,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-06.5</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-07.1</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -306,6 +306,47 @@ function getRegForLeg(l) {
   return regCache[key] || null;
 }
 
+// Manually-pinned inbound aircraft for the map ("Show on map" link). Drawn
+// as a faded plane + dashed track line alongside everything else.
+var ghostInbound = null; // { inbound, track, legKey }
+
+function showInboundOnMap(legNum, legDep, legArr) {
+  // Find the leg to get its registration
+  var regObj = null;
+  for (var i = 0; i < allTrips.length && !regObj; i++) {
+    for (var j = 0; j < allTrips[i].legs.length; j++) {
+      var l = allTrips[i].legs[j];
+      if (l.num === legNum && l.dep === legDep && l.arr === legArr) {
+        regObj = getRegForLeg(l);
+        break;
+      }
+    }
+  }
+  if (!regObj || !regObj.registration) return;
+  var legKey = legNum + "-" + legDep + "-" + legArr;
+  // Toggle off if same leg clicked again
+  if (ghostInbound && ghostInbound.legKey === legKey) {
+    ghostInbound = null;
+    drawMap();
+    return;
+  }
+  fetch("/api/inbound?reg=" + encodeURIComponent(regObj.registration) +
+        "&dest=" + encodeURIComponent(legDep) + "&track=1")
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) {
+      if (!d || !d.inbound) return;
+      ghostInbound = { inbound: d.inbound, track: d.track, legKey: legKey, originCode: legDep };
+      drawMap();
+    })
+    .catch(function() {});
+}
+function clearGhostInbound() {
+  ghostInbound = null;
+  var btn = document.getElementById("ghost-clear-btn");
+  if (btn) btn.remove();
+  drawMap();
+}
+
 // Per-leg inbound aircraft info (light fetch — uses /api/inbound which only
 // hits the cached aircraft+position endpoints, not the full /api/track).
 // Cached on the frontend for 60 sec to avoid spamming on re-renders.
@@ -427,11 +468,59 @@ function drawMap() {
   });
 
   if (testMode) drawTestFlight();
-  if (bounds.length && !testMode) map.fitBounds(bounds,{padding:[40,40],maxZoom:6});
-  else if (!hasSel && !testMode && all.length) {
+  if (ghostInbound) drawGhostInbound();
+  if (bounds.length && !testMode && !ghostInbound) map.fitBounds(bounds,{padding:[40,40],maxZoom:6});
+  else if (!hasSel && !testMode && !ghostInbound && all.length) {
     const ab=[];
     all.forEach(f=>{const d=AP[f.dep],a=AP[f.arr];if(d&&a)ab.push([d.lat,d.lon],[a.lat,a.lon]);});
     if(ab.length) map.fitBounds(ab,{padding:[30,30],maxZoom:5});
+  }
+}
+
+// Render the manually-pinned inbound aircraft (clicked "📍 map" on a leg row).
+// Faded plane + dashed track so it doesn't compete visually with the active
+// tracker, but enough to see where the inbound is and what it's flown.
+function drawGhostInbound() {
+  if (!ghostInbound || !ghostInbound.inbound) return;
+  var inb = ghostInbound.inbound;
+  var pos = inb.position && inb.position.last_position;
+  var trk = ghostInbound.track;
+  var ghostBounds = [];
+
+  // Small badge in the upper-right of the map area to clear the ghost
+  if (!document.getElementById("ghost-clear-btn")) {
+    var btn = document.createElement("div");
+    btn.id = "ghost-clear-btn";
+    btn.innerHTML = "Inbound: " + (inb.flight.ident_iata || inb.flight.ident || "?") + " ✕";
+    btn.style.cssText = "position:absolute;top:40px;right:8px;background:rgba(0,0,0,.85);color:#9bb;padding:4px 8px;border-radius:3px;font:600 10px monospace;cursor:pointer;z-index:1000;border:1px solid #234";
+    btn.title = "Clear ghost inbound";
+    btn.onclick = clearGhostInbound;
+    document.getElementById("map-wrap").appendChild(btn);
+  }
+
+  if (trk && trk.positions && trk.positions.length > 1) {
+    var pts = trk.positions.map(function(p) { return [p.latitude, p.longitude]; });
+    L.polyline(pts, { color: "#9bb", weight: 2, opacity: 0.55, dashArray: "5 5" }).addTo(layerGroup);
+    ghostBounds = ghostBounds.concat(pts);
+  }
+  if (pos && pos.latitude != null) {
+    var hdg = pos.heading || 0;
+    L.marker([pos.latitude, pos.longitude], {
+      title: "Inbound: " + (inb.flight.ident_iata || inb.flight.ident || "?"),
+      icon: L.divIcon({
+        className: "",
+        html: '<div style="font-size:24px;opacity:.55;transform:rotate(' + hdg + 'deg);filter:drop-shadow(0 0 4px rgba(150,200,255,.8))">✈</div>',
+        iconSize: [28,28], iconAnchor: [14,14],
+      })
+    }).addTo(layerGroup);
+    ghostBounds.push([pos.latitude, pos.longitude]);
+  }
+  // Anchor map: include destination airport (= our origin) for context
+  if (ghostInbound.originCode && AP[ghostInbound.originCode]) {
+    ghostBounds.push([AP[ghostInbound.originCode].lat, AP[ghostInbound.originCode].lon]);
+  }
+  if (ghostBounds.length && !testMode) {
+    map.fitBounds(ghostBounds, { padding:[60,60], maxZoom: 12 });
   }
 }
 
@@ -1110,9 +1199,14 @@ function renderTripCard(trip, idx) {
           ibStatus = ibF.status || "scheduled";
         }
         var ibFaUrl = "https://www.flightaware.com/live/flight/" + (ibF.ident_icao || ibF.ident);
+        var ghostKey = l.num + "-" + l.dep + "-" + l.arr;
+        var isGhostActive = ghostInbound && ghostInbound.legKey === ghostKey;
         inboundHtml = '<div class="leg-details" style="color:' + ibColor + '">' +
           '↳ Inbound <a href="' + ibFaUrl + '" target="_blank" onclick="event.stopPropagation()" style="color:inherit;text-decoration:underline">' + ibIdent + '</a>' +
           ' from ' + ibOrig + ' · ' + ibStatus +
+          ' <a href="javascript:void(0)" onclick="event.stopPropagation();showInboundOnMap(\'' + l.num + '\',\'' + l.dep + '\',\'' + l.arr + '\')" ' +
+            'style="color:' + (isGhostActive ? "#06d6a0" : "#888") + ';text-decoration:underline;margin-left:4px" ' +
+            'title="' + (isGhostActive ? "Hide" : "Show") + ' on map">' + (isGhostActive ? '✕ map' : '📍 map') + '</a>' +
           '</div>';
       }
     }

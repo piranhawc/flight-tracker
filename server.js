@@ -351,10 +351,23 @@ app.get("/api/inbound", async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   const reg = req.query.reg;
   const dest = (req.query.dest || "").toUpperCase(); // = our leg's origin
+  const wantTrack = req.query.track === "1";
   if (!reg) return res.status(400).json({ error: "reg required" });
   try {
     const inbound = await fetchAircraftInbound(reg, null, dest || null);
-    res.json({ inbound });
+    let track = null;
+    if (wantTrack && inbound && inbound.flight && inbound.flight.fa_flight_id) {
+      try {
+        const tResp = await fetch(
+          `${FA_BASE}/flights/${inbound.flight.fa_flight_id}/track`,
+          { headers: { "x-apikey": FA_API_KEY } }
+        );
+        if (tResp.ok) track = await tResp.json();
+      } catch (e) {
+        console.log(`  [inbound track] fetch failed: ${e.message}`);
+      }
+    }
+    res.json({ inbound, track });
   } catch (e) {
     res.json({ inbound: null, error: e.message });
   }
