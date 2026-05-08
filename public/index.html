@@ -147,7 +147,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-08.4</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-08.5</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
@@ -1660,14 +1660,32 @@ function isoDay(d) {
 function buildCalDayMap() {
   var map = {};
   allTrips.forEach(function(t) {
+    if (!t.legs.length) return;
+    // Step 1: per-day leg data — gives the day its actual flight info
     t.legs.forEach(function(l) {
       var d = new Date(l.start);
       var key = isoDay(d);
-      if (!map[key]) map[key] = { work:false, dh:false, legs:[] };
+      if (!map[key]) map[key] = { work:false, dh:false, layover:false, legs:[] };
       if (l.isDH) map[key].dh = true;
       else map[key].work = true;
       map[key].legs.push(l);
     });
+    // Step 2: mark every day between first leg start and last leg end as
+    // "on duty" — covers layover days where no flight is scheduled but the
+    // pilot is still on the trip.
+    var first = new Date(t.legs[0].start);
+    var last = new Date(t.legs[t.legs.length - 1].end);
+    var cursor = new Date(first.getFullYear(), first.getMonth(), first.getDate());
+    var endDay = new Date(last.getFullYear(), last.getMonth(), last.getDate());
+    while (cursor <= endDay) {
+      var k = isoDay(cursor);
+      if (!map[k]) map[k] = { work:false, dh:false, layover:false, legs:[] };
+      if (!map[k].work && !map[k].dh) {
+        map[k].work = true;
+        map[k].layover = true;
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
   });
   return map;
 }
@@ -1726,9 +1744,16 @@ function renderCalMonth(year, month, dayMap, todayKey) {
     else cls += " off";
     if (key === todayKey) cls += " today";
     var click = info ? 'onclick="jumpToCalDay(\'' + key + '\')"' : "";
-    var titleStr = info ? info.legs.map(function(l) {
-      return (l.isDH ? "DH " : "") + "AA" + l.num + " " + l.dep + "→" + l.arr;
-    }).join(" · ") : "";
+    var titleStr = "";
+    if (info) {
+      if (info.legs.length) {
+        titleStr = info.legs.map(function(l) {
+          return (l.isDH ? "DH " : "") + "AA" + l.num + " " + l.dep + "→" + l.arr;
+        }).join(" · ");
+      } else if (info.layover) {
+        titleStr = "Layover (on trip, no flight today)";
+      }
+    }
     cells.push('<div class="' + cls + '" ' + click + ' title="' + titleStr.replace(/"/g, "&quot;") + '">' + d + '</div>');
   }
   while (cells.length % 7 !== 0) cells.push('<div class="cal-day empty"></div>');
