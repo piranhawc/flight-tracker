@@ -400,39 +400,26 @@ async function fetchAircraftInbound(registration, ownFaFlightId, ownOriginCode) 
     aircraftFlights = cached.data;
     console.log(`[inbound] ${registration} → cached (${aircraftFlights.length} flights, age ${Math.round((Date.now()-cached.ts)/1000)}s)`);
   } else {
-    // /aircraft/{ident}/flights isn't in the Personal tier (returns 404).
-    // /flights/search is, and accepts an aircraft-registration filter via FA's
-    // query DSL. Try a couple of common filter syntaxes — FA's docs are
-    // inconsistent about whether it's "-tailnumber", "-aircraft", or "-ident".
-    const filterCandidates = [
-      "-tailnumber " + registration,
-      "-ident " + registration,
-      "-aircraft " + registration,
-    ];
-    aircraftFlights = null;
-    for (const filter of filterCandidates) {
-      const url = `${FA_BASE}/flights/search?query=${encodeURIComponent(filter)}&max_pages=1`;
-      const resp = await fetch(url, { headers: { "x-apikey": FA_API_KEY } });
-      if (!resp.ok) {
-        const txt = await resp.text().catch(() => "");
-        console.log(`[inbound] ${registration} search "${filter}" FA ${resp.status}: ${txt.substring(0,160)}`);
-        continue;
-      }
-      const data = await resp.json();
-      const flights = data.flights || [];
-      console.log(`[inbound] ${registration} search "${filter}" → ${flights.length} flights`);
-      if (flights.length > 0) {
-        aircraftFlights = flights;
-        break;
-      }
-    }
-    if (!aircraftFlights) {
-      console.log(`[inbound] ${registration}: all search variants returned 0 or failed`);
+    // /aircraft/{ident}/flights isn't in the Personal tier (404), and
+    // /flights/search rejects every tail-filter syntax we tried. But the
+    // standard /flights/{ident} endpoint accepts registrations as the
+    // ident (per FA docs: ident may be flight number, hex code, or
+    // aircraft registration), and IS in Personal — we already use it for
+    // AAL1234 lookups elsewhere.
+    const url = `${FA_BASE}/flights/${encodeURIComponent(registration)}?max_pages=1`;
+    const resp = await fetch(url, { headers: { "x-apikey": FA_API_KEY } });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      console.log(`[inbound] ${registration} /flights/{reg} FA ${resp.status}: ${txt.substring(0,200)}`);
       return null;
     }
-    // /flights/search results can be in any order; sort newest-first by
-    // actual_out (or scheduled_out) so .find() picks the most recent
-    // matching flight as the inbound.
+    const data = await resp.json();
+    aircraftFlights = data.flights || [];
+    console.log(`[inbound] ${registration} → fetched ${aircraftFlights.length} flights via /flights/{reg}`);
+    if (aircraftFlights.length === 0) {
+      console.log(`[inbound] response keys: ${Object.keys(data).join(",")}`);
+    }
+    // Sort newest-first so .find() picks the most recent matching flight.
     aircraftFlights.sort((a, b) => {
       const ta = new Date(a.actual_out || a.scheduled_out || a.scheduled_off || 0).getTime();
       const tb = new Date(b.actual_out || b.scheduled_out || b.scheduled_off || 0).getTime();
