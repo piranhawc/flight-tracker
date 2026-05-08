@@ -1177,6 +1177,7 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
       progress_percent: f.progress_percent,
       origin_timezone: (f.origin && f.origin.timezone) || null,
       destination_timezone: (f.destination && f.destination.timezone) || null,
+      registration: f.registration || null,
     })).sort((a, b) => {
       const ta = new Date(a.scheduled_out || a.estimated_out || 0);
       const tb = new Date(b.scheduled_out || b.estimated_out || 0);

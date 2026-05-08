@@ -124,7 +124,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-07.1</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-08.1</span>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -310,8 +310,28 @@ function getRegForLeg(l) {
 // as a faded plane + dashed track line alongside everything else.
 var ghostInbound = null; // { inbound, track, legKey }
 
+// Generic ghost-inbound show: fetch by registration + dest, store under a key
+// so we can toggle off when the same source is clicked again. Used by both
+// the trip-leg map link and the commute panel map link.
+function showInboundFromReg(registration, destAirport, ghostKey) {
+  if (!registration || !destAirport) return;
+  if (ghostInbound && ghostInbound.legKey === ghostKey) {
+    clearGhostInbound();
+    return;
+  }
+  fetch("/api/inbound?reg=" + encodeURIComponent(registration) +
+        "&dest=" + encodeURIComponent(destAirport) + "&track=1")
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) {
+      if (!d || !d.inbound) return;
+      ghostInbound = { inbound: d.inbound, track: d.track, legKey: ghostKey, originCode: destAirport };
+      drawMap();
+    })
+    .catch(function() {});
+}
+
 function showInboundOnMap(legNum, legDep, legArr) {
-  // Find the leg to get its registration
+  // Look up the leg's registration from the cached registration data.
   var regObj = null;
   for (var i = 0; i < allTrips.length && !regObj; i++) {
     for (var j = 0; j < allTrips[i].legs.length; j++) {
@@ -323,23 +343,13 @@ function showInboundOnMap(legNum, legDep, legArr) {
     }
   }
   if (!regObj || !regObj.registration) return;
-  var legKey = legNum + "-" + legDep + "-" + legArr;
-  // Toggle off if same leg clicked again
-  if (ghostInbound && ghostInbound.legKey === legKey) {
-    ghostInbound = null;
-    drawMap();
-    return;
-  }
-  fetch("/api/inbound?reg=" + encodeURIComponent(regObj.registration) +
-        "&dest=" + encodeURIComponent(legDep) + "&track=1")
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(d) {
-      if (!d || !d.inbound) return;
-      ghostInbound = { inbound: d.inbound, track: d.track, legKey: legKey, originCode: legDep };
-      drawMap();
-    })
-    .catch(function() {});
+  showInboundFromReg(regObj.registration, legDep, legNum + "-" + legDep + "-" + legArr);
 }
+
+function showInboundForCommute(registration, fromAirport, ident) {
+  showInboundFromReg(registration, fromAirport, "commute-" + ident + "-" + fromAirport);
+}
+
 function clearGhostInbound() {
   ghostInbound = null;
   var btn = document.getElementById("ghost-clear-btn");
@@ -1408,10 +1418,11 @@ function getAirlineBadge(f) {
   return airlines[code] || { name: code, bg: "#333", fg: "#aaa" };
 }
 
-function renderCommuteFlights(flights) {
+function renderCommuteFlights(flights, route) {
   if (!flights || flights.length === 0) {
     return '<div class="commute-loading" style="padding:8px">No flights today</div>';
   }
+  var fromAirport = route ? route.from : "";
   return flights.map(function(f) {
     var tz = f.origin_timezone;
     var schedOut = fmtAirportTime(f.scheduled_out, tz);
@@ -1439,12 +1450,25 @@ function renderCommuteFlights(flights) {
     var airlineHtml = airline ?
       '<span class="c-airline" style="background:' + airline.bg + ';color:' + airline.fg + '">' + airline.name + '</span>' : '';
 
+    // Inbound map link — only meaningful for not-yet-departed flights with a known tail
+    var ghostKey = "commute-" + f.ident + "-" + fromAirport;
+    var isGhostActive = ghostInbound && ghostInbound.legKey === ghostKey;
+    var inboundLinkHtml = "";
+    if (f.registration && fromAirport && !f.actual_out && !f.cancelled) {
+      inboundLinkHtml = '<a href="javascript:void(0)" onclick="event.stopPropagation();showInboundForCommute(\'' +
+        f.registration + '\',\'' + fromAirport + '\',\'' + f.ident + '\')" ' +
+        'title="' + (isGhostActive ? "Hide" : "Show") + ' inbound aircraft on map" ' +
+        'style="color:' + (isGhostActive ? "#06d6a0" : "#888") + ';text-decoration:none;font-size:11px;margin-left:4px">' +
+        (isGhostActive ? '✕' : '📍') + '</a>';
+    }
+
     return '<div class="' + rowClass + '">' +
       airlineHtml +
       '<span class="c-ident">' + f.ident + '</span>' +
       timeHtml +
       (f.gate_origin ? '<span class="c-est">Gate ' + f.gate_origin + '</span>' : '') +
       '<span class="c-status ' + badge.cls + '">' + badge.text + '</span>' +
+      inboundLinkHtml +
     '</div>';
   }).join("");
 }
@@ -1476,7 +1500,7 @@ async function loadCommuteRoute(route, dateStr) {
         "Updated " + ageStr +
       '</div>';
     }
-    el.innerHTML = renderCommuteFlights(data.flights) + ageHtml;
+    el.innerHTML = renderCommuteFlights(data.flights, route) + ageHtml;
   } catch(e) {
     el.innerHTML = '<div class="commute-loading" style="padding:8px">Error</div>';
   }
