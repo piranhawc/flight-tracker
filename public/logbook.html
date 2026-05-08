@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pilot Logbook</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#ddd; font-family:'JetBrains Mono',monospace; min-height:100vh; }
+  #header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid #141414; }
+  #header .left { display:flex; align-items:center; gap:8px; }
+  #header .title { font-size:14px; font-weight:800; color:#e63946; letter-spacing:2px; }
+  #header .meta { font-size:9px; color:#444; }
+  #header .right { display:flex; gap:6px; align-items:center; }
+  .btn { background:transparent; border:1px solid #1a1a1a; color:#888; padding:4px 10px; border-radius:2px; cursor:pointer; font-size:10px; font-family:inherit; text-decoration:none; }
+  .btn:hover { border-color:#333; color:#bbb; }
+  .btn.primary { background:#1a0a0e; border-color:#e63946; color:#e63946; }
+  .btn.primary:hover { background:#280a0e; }
+
+  /* Login */
+  #login { max-width:340px; margin:80px auto; padding:24px; background:#0f0f0f; border:1px solid #1f1f1f; border-radius:6px; }
+  #login h2 { font-size:14px; color:#e63946; letter-spacing:2px; margin-bottom:14px; }
+  #login input { width:100%; padding:8px 10px; background:#080808; border:1px solid #222; color:#ddd; border-radius:3px; font-family:inherit; font-size:12px; margin-bottom:10px; }
+  #login button { width:100%; padding:8px; background:#e63946; border:none; color:#000; font-weight:700; border-radius:3px; cursor:pointer; font-family:inherit; }
+  #login .err { color:#f44; font-size:10px; margin-top:8px; min-height:14px; }
+
+  /* Main layout */
+  #app { display:none; }
+  #app.shown { display:block; }
+  #status { padding:6px 14px; font-size:10px; color:#06d6a0; min-height:18px; }
+  #main { display:flex; gap:14px; padding:0 14px 20px; }
+  #legs-pane { flex:2; min-width:0; }
+  #crew-pane { flex:1; min-width:280px; max-width:420px; }
+  @media (max-width:900px) { #main { flex-direction:column; } #crew-pane { max-width:none; } }
+
+  h2.section { font-size:12px; color:#e63946; letter-spacing:1.5px; margin-bottom:8px; padding:4px 0; border-bottom:1px solid #1a1a1a; }
+
+  /* Legs table */
+  table.legs { width:100%; border-collapse:collapse; font-size:10px; }
+  table.legs th { text-align:left; color:#666; font-weight:600; padding:6px 6px; border-bottom:1px solid #1a1a1a; font-size:9px; letter-spacing:.5px; text-transform:uppercase; }
+  table.legs td { padding:6px 6px; border-bottom:1px solid #141414; vertical-align:top; }
+  table.legs tr:hover td { background:#0e0e0e; }
+  table.legs .col-flight { color:#bbb; font-weight:700; }
+  table.legs .col-route { color:#888; }
+  table.legs .col-time { color:#aaa; font-size:10px; white-space:nowrap; }
+  table.legs .col-time .actual { color:#06d6a0; }
+  table.legs .col-time .sched { color:#666; }
+  table.legs .col-time .delta { color:#ffd166; font-size:9px; margin-left:4px; }
+  table.legs .col-aircraft { color:#888; font-size:9px; }
+  table.legs .col-crew { color:#ddd; }
+  table.legs .crew-pill { display:inline-block; padding:2px 6px; margin:1px 2px 1px 0; background:#1a1208; border:1px solid #2a1a08; color:#ffd166; border-radius:2px; font-size:9px; cursor:pointer; }
+  table.legs .crew-pill:hover { background:#281a08; }
+  table.legs .crew-pill.repeat { background:#0a2018; border-color:#0a4030; color:#06d6a0; }
+  table.legs .crew-edit { background:#080808; border:1px solid #222; color:#ddd; padding:3px 6px; font-size:9px; font-family:inherit; width:100%; border-radius:2px; }
+  table.legs .badge-dh { background:#222; color:#888; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; }
+
+  /* Crew list */
+  .crew-card { background:#0e0e0e; border:1px solid #1a1a1a; border-radius:4px; padding:10px 12px; margin-bottom:8px; }
+  .crew-card .crew-name { color:#ffd166; font-weight:700; font-size:12px; letter-spacing:.5px; }
+  .crew-card .crew-stats { color:#666; font-size:9px; margin-top:2px; }
+  .crew-card .crew-notes { width:100%; min-height:50px; margin-top:6px; padding:6px; background:#080808; border:1px solid #1a1a1a; color:#ccc; font-family:inherit; font-size:10px; border-radius:2px; resize:vertical; }
+  .crew-card .crew-flights { margin-top:6px; font-size:9px; color:#666; max-height:80px; overflow-y:auto; }
+  .crew-card .crew-flights .f { color:#888; padding:1px 0; }
+  .crew-card .crew-flights .f .d { color:#555; margin-right:6px; }
+
+  .empty { text-align:center; color:#444; font-size:10px; padding:30px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="left">
+    <span style="font-size:18px">📔</span>
+    <span class="title">PILOT LOG</span>
+    <span class="meta" id="meta-info"></span>
+  </div>
+  <div class="right">
+    <span class="meta" title="Build version">v2026-05-08.2</span>
+    <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
+    <button class="btn" id="sync-btn" onclick="runSync()" style="display:none">SYNC FROM CALENDAR + FA</button>
+    <button class="btn" id="logout-btn" onclick="logout()" style="display:none">LOGOUT</button>
+  </div>
+</div>
+
+<div id="login">
+  <h2>UNLOCK</h2>
+  <form id="login-form">
+    <input type="password" id="password" placeholder="password" autofocus autocomplete="current-password">
+    <button type="submit">SIGN IN</button>
+  </form>
+  <div class="err" id="login-err"></div>
+</div>
+
+<div id="app">
+  <div id="status"></div>
+  <div id="main">
+    <div id="legs-pane">
+      <h2 class="section">FLIGHTS</h2>
+      <div id="legs-host"></div>
+    </div>
+    <div id="crew-pane">
+      <h2 class="section">CREW</h2>
+      <div id="crew-host"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+var token = localStorage.getItem("logbook-token") || null;
+var legsData = [];
+var crewData = [];
+var crewIndex = {};
+var crewByDate = {}; // crewName → sorted list of flight dates flown together
+
+function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+function setStatus(msg, color) {
+  var s = document.getElementById("status");
+  s.textContent = msg || "";
+  s.style.color = color || "#06d6a0";
+}
+function logout() {
+  localStorage.removeItem("logbook-token");
+  token = null;
+  document.getElementById("app").classList.remove("shown");
+  document.getElementById("login").style.display = "block";
+  document.getElementById("logout-btn").style.display = "none";
+  document.getElementById("sync-btn").style.display = "none";
+}
+
+document.getElementById("login-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  var pw = document.getElementById("password").value;
+  document.getElementById("login-err").textContent = "";
+  var resp = await fetch("/api/logbook/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: pw }),
+  });
+  if (!resp.ok) {
+    document.getElementById("login-err").textContent = "incorrect password";
+    return;
+  }
+  var d = await resp.json();
+  token = d.token;
+  localStorage.setItem("logbook-token", token);
+  initApp();
+});
+
+async function initApp() {
+  var ok = await loadAll();
+  if (!ok) {
+    logout();
+    document.getElementById("login-err").textContent = "session expired — sign in again";
+    return;
+  }
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").classList.add("shown");
+  document.getElementById("logout-btn").style.display = "";
+  document.getElementById("sync-btn").style.display = "";
+}
+
+async function loadAll() {
+  var [legsResp, crewResp] = await Promise.all([
+    fetch("/api/logbook/legs", { headers: authHeaders() }),
+    fetch("/api/logbook/crew", { headers: authHeaders() }),
+  ]);
+  if (legsResp.status === 401 || crewResp.status === 401) return false;
+  legsData = (await legsResp.json()).legs || [];
+  crewData = (await crewResp.json()).crew || [];
+  buildCrewIndex();
+  document.getElementById("meta-info").textContent =
+    legsData.length + " legs · " + crewData.length + " crew";
+  renderLegs();
+  renderCrew();
+  return true;
+}
+
+function buildCrewIndex() {
+  crewIndex = {};
+  crewByDate = {};
+  crewData.forEach(function(c) {
+    crewIndex[c.name] = c;
+    crewByDate[c.name] = (c.flights || []).map(function(f) { return f.date; }).sort();
+  });
+}
+
+// "Have we flown with this person before THIS date" — to mark the pill green if so.
+function flownBeforeWith(name, thisDate) {
+  var dates = crewByDate[name];
+  if (!dates) return false;
+  for (var i = 0; i < dates.length; i++) {
+    if (dates[i] && dates[i] < thisDate) return true;
+  }
+  return false;
+}
+
+function fmtTime(iso, tz) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleTimeString("en-US", {
+      hour:"2-digit", minute:"2-digit", hour12:false, timeZone: tz || undefined
+    });
+  } catch (e) { return new Date(iso).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:false}); }
+}
+function gateToGate(leg) {
+  if (!leg.actual_out || !leg.actual_in) return null;
+  var ms = new Date(leg.actual_in) - new Date(leg.actual_out);
+  if (ms <= 0) return null;
+  var h = Math.floor(ms / 3600000);
+  var m = Math.round((ms % 3600000) / 60000);
+  return h + "h" + (m < 10 ? "0" : "") + m;
+}
+
+function renderLegs() {
+  var host = document.getElementById("legs-host");
+  if (!legsData.length) {
+    host.innerHTML = '<div class="empty">No legs yet. Click <b>SYNC FROM CALENDAR + FA</b> to import from your calendar.</div>';
+    return;
+  }
+  // Group legs by date for readability
+  var rows = ["<table class='legs'><thead><tr>" +
+    "<th>Date</th><th>Flight</th><th>Route</th>" +
+    "<th>Out</th><th>In</th><th>Gate-to-gate</th>" +
+    "<th>Aircraft</th><th>Crew</th></tr></thead><tbody>"];
+  legsData.forEach(function(l) {
+    var dateStr = l.date || (l.scheduled_out || "").split("T")[0] || "—";
+    var aircraft = (l.registration || "—") + (l.aircraft_type ? " · " + l.aircraft_type : "");
+    var actOut = l.actual_out ? fmtTime(l.actual_out) : "";
+    var schedOut = l.scheduled_out ? fmtTime(l.scheduled_out) : "—";
+    var actIn = l.actual_in ? fmtTime(l.actual_in) : "";
+    var schedIn = l.scheduled_in ? fmtTime(l.scheduled_in) : "—";
+    var g2g = gateToGate(l) || "—";
+    var dh = l.isDH ? '<span class="badge-dh">DH</span>' : '';
+
+    var crewPills = (l.crew || []).map(function(name) {
+      var seen = flownBeforeWith(name, l.date);
+      return '<span class="crew-pill ' + (seen ? "repeat" : "") + '" ' +
+        'onclick="scrollToCrew(\'' + name.replace(/'/g, "\\'") + '\')" ' +
+        'title="' + (seen ? "Flown together before" : "First flight together") + '">' +
+        name + '</span>';
+    }).join("");
+    var crewEditId = "crew-edit-" + l.id;
+
+    rows.push("<tr>" +
+      "<td>" + dateStr + "</td>" +
+      "<td class='col-flight'>" + (l.flight || "—") + dh + "</td>" +
+      "<td class='col-route'>" + (l.dep || "?") + "→" + (l.arr || "?") + "</td>" +
+      "<td class='col-time'>" + (actOut ? '<span class="actual">' + actOut + '</span>' : '<span class="sched">' + schedOut + '</span>') + "</td>" +
+      "<td class='col-time'>" + (actIn ? '<span class="actual">' + actIn + '</span>' : '<span class="sched">' + schedIn + '</span>') + "</td>" +
+      "<td class='col-time'>" + g2g + "</td>" +
+      "<td class='col-aircraft'>" + aircraft + "</td>" +
+      "<td class='col-crew'>" +
+        '<div>' + crewPills + '</div>' +
+        '<input class="crew-edit" id="' + crewEditId + '" placeholder="add crew (comma-separated)" ' +
+          'value="' + (l.crew || []).join(", ").replace(/"/g, "&quot;") + '" ' +
+          'onblur="saveCrewForLeg(\'' + l.id + '\', this.value)" ' +
+          'onkeydown="if(event.key===\'Enter\'){event.preventDefault();this.blur();}">' +
+      "</td>" +
+    "</tr>");
+  });
+  rows.push("</tbody></table>");
+  host.innerHTML = rows.join("");
+}
+
+async function saveCrewForLeg(legId, raw) {
+  var names = raw.split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+  // Optimistic local update
+  var leg = legsData.find(function(l) { return l.id === legId; });
+  if (leg) leg.crew = names;
+  var resp = await fetch("/api/logbook/legs/" + encodeURIComponent(legId), {
+    method: "POST",
+    headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()),
+    body: JSON.stringify({ crew: names }),
+  });
+  if (!resp.ok) {
+    setStatus("Failed to save crew", "#f44");
+    return;
+  }
+  // Reload crew side panel to reflect new flights together
+  await loadAll();
+  setStatus("Crew saved", "#06d6a0");
+  setTimeout(function() { setStatus(""); }, 2000);
+}
+
+function renderCrew() {
+  var host = document.getElementById("crew-host");
+  if (!crewData.length) {
+    host.innerHTML = '<div class="empty">Add crew to a flight to see history.</div>';
+    return;
+  }
+  host.innerHTML = crewData.map(function(c) {
+    var stats = (c.flights ? c.flights.length : 0) + " flight" + (c.flights && c.flights.length !== 1 ? "s" : "");
+    var range = c.firstSeen && c.lastSeen ?
+      (c.firstSeen === c.lastSeen ? c.firstSeen : c.firstSeen + " — " + c.lastSeen) : "";
+    var safeName = c.name.replace(/"/g, "&quot;");
+    var notesId = "notes-" + c.name.replace(/[^a-z0-9]/gi, "_");
+    var flightsHtml = (c.flights || []).slice(0, 12).map(function(f) {
+      return '<div class="f"><span class="d">' + f.date + '</span>' + f.flight + ' ' + f.dep + '→' + f.arr + '</div>';
+    }).join("");
+    return '<div class="crew-card" id="card-' + c.name.replace(/[^a-z0-9]/gi, "_") + '">' +
+      '<div class="crew-name">' + c.name + '</div>' +
+      '<div class="crew-stats">' + stats + (range ? " · " + range : "") + '</div>' +
+      '<textarea class="crew-notes" id="' + notesId + '" placeholder="notes about this person…" ' +
+        'onblur="saveCrewNotes(\'' + safeName + '\', this.value)">' +
+        (c.notes || "").replace(/</g, "&lt;") + '</textarea>' +
+      '<div class="crew-flights">' + flightsHtml +
+        ((c.flights && c.flights.length > 12) ? '<div class="f"><span class="d">…</span>' + (c.flights.length - 12) + ' more</div>' : '') +
+      '</div>' +
+    '</div>';
+  }).join("");
+}
+
+async function saveCrewNotes(name, notes) {
+  var resp = await fetch("/api/logbook/crew/" + encodeURIComponent(name), {
+    method: "POST",
+    headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()),
+    body: JSON.stringify({ notes: notes }),
+  });
+  if (!resp.ok) { setStatus("Failed to save notes", "#f44"); return; }
+  if (crewIndex[name]) crewIndex[name].notes = notes;
+  setStatus("Notes saved", "#06d6a0");
+  setTimeout(function() { setStatus(""); }, 1500);
+}
+
+function scrollToCrew(name) {
+  var id = "card-" + name.replace(/[^a-z0-9]/gi, "_");
+  var el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior:"smooth", block:"center" });
+    el.style.outline = "1px solid #ffd166";
+    setTimeout(function() { el.style.outline = ""; }, 1500);
+  }
+}
+
+// --- Sync flow: pull legs from ICS, fetch FA actual times, push to logbook ---
+function parseEventToLeg(ev) {
+  var s = ev.summary || "";
+  var m = s.match(/^AA\s+(\d{1,4})\s+(?:\(DH\)\s+)?([A-Z]{3})-([A-Z]{3})/);
+  if (!m) return null;
+  var num = m[1], dep = m[2], arr = m[3];
+  var isDH = s.includes("(DH)");
+  var date = (ev.start || "").split("T")[0];
+  if (!date) return null;
+  return {
+    id: date + "-AA" + num + "-" + dep + "-" + arr,
+    date: date,
+    flight: "AA" + num,
+    flight_number: num,
+    dep: dep,
+    arr: arr,
+    isDH: isDH,
+    scheduled_out: ev.start || null,
+    scheduled_in: ev.end || null,
+  };
+}
+
+async function runSync() {
+  document.getElementById("sync-btn").disabled = true;
+  setStatus("Loading calendar…");
+  // 1. Pull all events from /api/flights (already filtered to ±90 days server-side)
+  var resp = await fetch("/api/flights");
+  if (!resp.ok) { setStatus("Failed to load calendar", "#f44"); document.getElementById("sync-btn").disabled = false; return; }
+  var events = await resp.json();
+  var legs = events.map(parseEventToLeg).filter(Boolean);
+  setStatus("Found " + legs.length + " legs in calendar — saving…");
+  // 2. Bulk upsert into logbook
+  var bulk = await fetch("/api/logbook/legs", {
+    method:"POST",
+    headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()),
+    body: JSON.stringify({ legs: legs }),
+  });
+  if (!bulk.ok) { setStatus("Failed to save legs", "#f44"); document.getElementById("sync-btn").disabled = false; return; }
+  var bulkResult = await bulk.json();
+  setStatus("Saved " + bulkResult.created + " new, " + bulkResult.updated + " updated. Fetching FA actual times…");
+  // 3. Reload list
+  await loadAll();
+  // 4. Backfill FA actual times for past legs (last 14 days). Throttled by
+  // the server's FA queue. Walk newest-first.
+  var now = Date.now();
+  var pastLegs = legsData.filter(function(l) {
+    if (!l.date) return false;
+    var d = new Date(l.date).getTime();
+    var ageDays = (now - d) / 86400000;
+    if (ageDays < 0 || ageDays > 14) return false;     // past 14 days only
+    if (l.actual_in) return false;                     // already have data
+    return true;
+  });
+  var totalToFetch = pastLegs.length;
+  var done = 0;
+  for (var i = 0; i < pastLegs.length; i++) {
+    var l = pastLegs[i];
+    setStatus("Fetching FA: " + (done+1) + "/" + totalToFetch + " · " + l.flight + " " + l.date);
+    try {
+      var rResp = await fetch("/api/fa/registration/" + l.flight_number + "/" + l.date);
+      if (rResp.ok) {
+        var rd = await rResp.json();
+        // Persist FA fields back to the leg
+        await fetch("/api/logbook/legs/" + encodeURIComponent(l.id), {
+          method:"POST",
+          headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()),
+          body: JSON.stringify({
+            registration: rd.registration || null,
+            aircraft_type: rd.aircraft_type || null,
+            actual_out: rd.actual_out || null,
+            actual_off: rd.actual_off || null,
+            actual_on: rd.actual_on || null,
+            actual_in: rd.actual_in || null,
+            gate_origin: rd.gate_origin || null,
+            gate_destination: rd.gate_destination || null,
+          }),
+        });
+      }
+    } catch (e) {}
+    done++;
+  }
+  setStatus("Sync complete · " + done + " FA lookups done", "#06d6a0");
+  await loadAll();
+  setTimeout(function() { setStatus(""); }, 5000);
+  document.getElementById("sync-btn").disabled = false;
+}
+
+// Bootstrap
+if (token) {
+  initApp();
+} else {
+  document.getElementById("login").style.display = "block";
+}
+</script>
+</body>
+</html>

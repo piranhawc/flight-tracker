@@ -13,6 +13,9 @@ const PHOTO_CACHE_FILE = path.join(CACHE_DIR, "photo-cache.json");
 const GATE_CACHE_FILE = path.join(CACHE_DIR, "gate-cache.json");
 const GATE_LEARNED_FILE = path.join(CACHE_DIR, "gate-learned.json");
 const GATE_OVERRIDES_FILE = path.join(CACHE_DIR, "gate-overrides.json");
+const LOGBOOK_FILE = path.join(CACHE_DIR, "logbook.json");
+const CREW_FILE = path.join(CACHE_DIR, "crew.json");
+const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
 
 // --- Persistent cache helpers ---
 function loadCache(file) {
@@ -484,16 +487,24 @@ console.log(`Loaded ${Object.keys(regCache).length} cached registrations`);
 function saveRegCache() { saveCache(REG_CACHE_FILE, regCache); }
 
 // Tail numbers can change up until the aircraft pushes back, so refresh
-// the cache within the hour before scheduled departure.
+// the cache within the hour before scheduled departure. Also refresh once
+// for past flights that don't yet have actual_in stored — needed for the
+// logbook backfill which wants gate-to-gate times.
 const REG_REFRESH_WINDOW_MS = 60 * 60 * 1000;
 function shouldRefreshReg(cached, dateParam) {
   if (!cached) return true;
-  // Once actual_out is recorded, the tail is locked
-  if (cached.actual_out) return false;
-  // Anything more than a day old is settled
   const targetMs = new Date(dateParam).getTime();
-  if (Date.now() - targetMs > 24 * 60 * 60 * 1000) return false;
-  // Old cache entry (pre-refresh-window feature) — refresh once to populate scheduled_out/actual_out
+  const ageDays = (Date.now() - targetMs) / 86400000;
+  // Past flight (>1d ago): refresh once if we don't yet have actual_in.
+  if (ageDays > 1) {
+    // FA only retains flight history for ~14 days on the public endpoint,
+    // so don't keep retrying for very old data.
+    if (ageDays > 14) return false;
+    return !cached.actual_in;
+  }
+  // Future / today: settled if actual_out is recorded
+  if (cached.actual_out) return false;
+  // Old cache entry (pre-refresh-window feature) — refresh once
   if (!cached.scheduled_out) return true;
   // Within the hour before scheduled departure
   const msUntilDeparture = new Date(cached.scheduled_out).getTime() - Date.now();
@@ -548,8 +559,18 @@ app.get("/api/fa/registration/:flightNum/:date", async (req, res) => {
         filed_airspeed: f.filed_airspeed || null,
         filed_altitude: f.filed_altitude || null,
         route_distance: f.route_distance || null,
-        scheduled_out: f.scheduled_out || f.scheduled_off || null,
+        scheduled_out: f.scheduled_out || null,
+        scheduled_off: f.scheduled_off || null,
+        scheduled_on: f.scheduled_on || null,
+        scheduled_in: f.scheduled_in || null,
         actual_out: f.actual_out || null,
+        actual_off: f.actual_off || null,
+        actual_on: f.actual_on || null,
+        actual_in: f.actual_in || null,
+        gate_origin: f.gate_origin || null,
+        gate_destination: f.gate_destination || null,
+        terminal_origin: f.terminal_origin || null,
+        terminal_destination: f.terminal_destination || null,
       };
     }
 
@@ -567,7 +588,10 @@ app.get("/api/fa/registration/:flightNum/:date", async (req, res) => {
     const result = flight ? flightDetails(flight) : {
       registration: null, aircraft_type: null,
       filed_ete: null, filed_airspeed: null, filed_altitude: null, route_distance: null,
-      scheduled_out: null, actual_out: null,
+      scheduled_out: null, scheduled_off: null, scheduled_on: null, scheduled_in: null,
+      actual_out: null, actual_off: null, actual_on: null, actual_in: null,
+      gate_origin: null, gate_destination: null,
+      terminal_origin: null, terminal_destination: null,
     };
 
     // If FA had no record for this date but we previously had one, keep the old data
@@ -1199,8 +1223,114 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
   }
 });
 
+// --- Pilot logbook ---
+// Persistent JSON store of legs (with crew lists) and crewmembers (with notes).
+// Auth via single shared password env var. Sessions are in-memory tokens.
+const crypto = require("crypto");
+let logbook = loadCache(LOGBOOK_FILE);
+if (!logbook || !logbook.legs) logbook = { legs: {} };
+let crew = loadCache(CREW_FILE) || {};
+const logbookSessions = new Set();
+function saveLogbook() { saveCache(LOGBOOK_FILE, logbook); }
+function saveCrew() { saveCache(CREW_FILE, crew); }
+
+function logbookAuth(req, res, next) {
+  const auth = req.headers.authorization || "";
+  const token = auth.replace(/^Bearer /, "");
+  if (token && logbookSessions.has(token)) return next();
+  res.status(401).json({ error: "unauthorized" });
+}
+
+app.post("/api/logbook/auth", express.json(), (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password !== LOGBOOK_PASSWORD) {
+    return res.status(401).json({ error: "bad password" });
+  }
+  const token = crypto.randomBytes(24).toString("hex");
+  logbookSessions.add(token);
+  res.json({ token });
+});
+
+app.get("/api/logbook/legs", logbookAuth, (req, res) => {
+  const legs = Object.values(logbook.legs).sort((a, b) =>
+    (b.date || "").localeCompare(a.date || ""));
+  res.json({ legs });
+});
+
+// Upsert a leg. Used both by the manual editor (just crew/notes change)
+// and by the sync (creates entries from ICS / refreshes FA fields).
+app.post("/api/logbook/legs/:id", logbookAuth, express.json(), (req, res) => {
+  const { id } = req.params;
+  if (!logbook.legs[id]) logbook.legs[id] = { id };
+  Object.assign(logbook.legs[id], req.body || {});
+  logbook.legs[id].id = id;
+  saveLogbook();
+  res.json(logbook.legs[id]);
+});
+
+// Bulk create from a list of leg shapes (used by the sync flow)
+app.post("/api/logbook/legs", logbookAuth, express.json(), (req, res) => {
+  const { legs = [] } = req.body || {};
+  let created = 0, updated = 0;
+  for (const l of legs) {
+    if (!l || !l.id) continue;
+    if (logbook.legs[l.id]) {
+      // Don't clobber crew or notes on resync
+      const prev = logbook.legs[l.id];
+      logbook.legs[l.id] = Object.assign({}, l, {
+        crew: prev.crew || l.crew || [],
+        notes: prev.notes !== undefined ? prev.notes : l.notes,
+      });
+      updated++;
+    } else {
+      logbook.legs[l.id] = l;
+      created++;
+    }
+  }
+  saveLogbook();
+  res.json({ created, updated, total: Object.keys(logbook.legs).length });
+});
+
+app.get("/api/logbook/crew", logbookAuth, (req, res) => {
+  const stats = {};
+  Object.values(logbook.legs).forEach(leg => {
+    (leg.crew || []).forEach(rawName => {
+      const name = String(rawName).trim();
+      if (!name) return;
+      if (!stats[name]) stats[name] = { name, flights: [], firstSeen: leg.date, lastSeen: leg.date };
+      stats[name].flights.push({
+        id: leg.id, date: leg.date, flight: leg.flight,
+        dep: leg.dep, arr: leg.arr,
+      });
+      if ((leg.date || "") < stats[name].firstSeen) stats[name].firstSeen = leg.date;
+      if ((leg.date || "") > stats[name].lastSeen) stats[name].lastSeen = leg.date;
+    });
+  });
+  // Merge in stored notes (and surface crew that have notes but no flights)
+  Object.keys(crew).forEach(name => {
+    if (!stats[name]) stats[name] = { name, flights: [], firstSeen: null, lastSeen: null };
+    stats[name].notes = (crew[name] && crew[name].notes) || "";
+  });
+  Object.keys(stats).forEach(name => {
+    if (stats[name].notes === undefined) stats[name].notes = "";
+    stats[name].flights.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  });
+  const sorted = Object.values(stats).sort((a, b) =>
+    (b.lastSeen || "").localeCompare(a.lastSeen || ""));
+  res.json({ crew: sorted });
+});
+
+app.post("/api/logbook/crew/:name", logbookAuth, express.json(), (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!crew[name]) crew[name] = {};
+  if (req.body && req.body.notes !== undefined) crew[name].notes = String(req.body.notes);
+  saveCrew();
+  res.json({ name, ...crew[name] });
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Flight tracker running on port ${PORT}`);
   console.log(`ICS_URL: ${ICS_URL ? "configured" : "NOT SET"}`);
   console.log(`FA_API_KEY: ${FA_API_KEY ? "configured" : "NOT SET"}`);
+  console.log(`Logbook: ${Object.keys(logbook.legs).length} legs, ${Object.keys(crew).length} crew · password=${LOGBOOK_PASSWORD === "logbook" ? "DEFAULT — set LOGBOOK_PASSWORD env var" : "configured"}`);
 });

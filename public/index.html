@@ -93,6 +93,29 @@
   .commute-spinner { width:10px; height:10px; border:1.5px solid #1a3028; border-top-color:#06d6a0; border-radius:50%; animation:spin 0.7s linear infinite; display:inline-block; }
   .commute-cache-info { padding:4px 14px; font-size:8px; color:#333; letter-spacing:1px; text-transform:uppercase; text-align:right; }
   .commute-cache-info.stale { color:#ffd166; }
+  #cal-panel { background:#0c0c0c; border-top:1px solid #141414; flex-shrink:0; }
+  #cal-header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; cursor:pointer; user-select:none; }
+  #cal-header:hover { background:#111; }
+  #cal-title { font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
+  #cal-summary { flex:1; text-align:center; font-size:9px; color:#666; }
+  #cal-toggle { font-size:10px; color:#555; transition:transform .15s; }
+  #cal-panel.open #cal-toggle { transform:rotate(90deg); }
+  #cal-body { padding:8px 14px 14px; border-top:1px solid #141414; max-height:340px; overflow-y:auto; }
+  .cal-months { display:flex; gap:18px; flex-wrap:wrap; }
+  .cal-month { min-width:200px; flex:1; }
+  .cal-month-name { font-size:10px; font-weight:700; color:#bbb; padding:4px 0 6px; letter-spacing:1px; text-transform:uppercase; }
+  .cal-row { display:grid; grid-template-columns:repeat(7, 1fr); gap:2px; margin-bottom:2px; }
+  .cal-dow { color:#444; font-size:8px; text-align:center; padding:2px 0; font-weight:700; }
+  .cal-day { aspect-ratio:1; min-height:26px; font-size:10px; text-align:center; padding:4px 0; border-radius:2px; line-height:1; }
+  .cal-day.empty { visibility:hidden; }
+  .cal-day.off { background:#111; color:#444; }
+  .cal-day.work { background:rgba(230,57,70,.32); color:#fff; cursor:pointer; font-weight:700; }
+  .cal-day.work:hover { background:rgba(230,57,70,.55); }
+  .cal-day.dh { background:rgba(255,209,102,.18); color:#ffd166; cursor:pointer; }
+  .cal-day.dh:hover { background:rgba(255,209,102,.32); }
+  .cal-day.today { outline:1.5px solid #06d6a0; outline-offset:-1.5px; }
+  .cal-legend { display:flex; gap:14px; margin-top:8px; font-size:9px; color:#666; flex-wrap:wrap; }
+  .cal-legend span span { display:inline-block; width:10px; height:10px; vertical-align:middle; margin-right:4px; border-radius:1px; }
   #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#06d6a0; color:#000; padding:8px 14px; border-radius:4px; font-size:11px; font-weight:700; letter-spacing:.5px; opacity:0; transition:opacity .3s; z-index:9999; pointer-events:none; box-shadow:0 2px 8px rgba(0,0,0,.5); }
   #toast.show { opacity:1; }
   #toast.error { background:#e63946; color:#fff; }
@@ -124,7 +147,8 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-08.1</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-08.4</span>
+    <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -157,6 +181,16 @@
   <div id="bottom">
     <div id="filters"></div>
     <div id="trips"></div>
+  </div>
+  <div id="cal-panel" style="display:none">
+    <div id="cal-header" onclick="toggleCalendar()">
+      <span id="cal-title">SCHEDULE</span>
+      <span id="cal-summary"></span>
+      <span id="cal-toggle">▸</span>
+    </div>
+    <div id="cal-body" style="display:none">
+      <div id="cal-content"></div>
+    </div>
   </div>
 </div>
 
@@ -310,24 +344,66 @@ function getRegForLeg(l) {
 // as a faded plane + dashed track line alongside everything else.
 var ghostInbound = null; // { inbound, track, legKey }
 
+// Compute a human-readable on-time status for any flight object returned by FA.
+function flightStatusLabel(f) {
+  if (!f) return "no data";
+  if (f.cancelled) return "cancelled";
+  function fmt(iso, tz) {
+    return new Date(iso).toLocaleTimeString("en-US", {hour:"numeric",minute:"2-digit",hour12:false,timeZone:tz||undefined});
+  }
+  function deltaMin(actualIso, schedIso) {
+    return Math.round((new Date(actualIso) - new Date(schedIso)) / 60000);
+  }
+  // Already arrived
+  if (f.actual_in && f.scheduled_in) {
+    var d = deltaMin(f.actual_in, f.scheduled_in);
+    if (Math.abs(d) < 5) return "landed " + fmt(f.actual_in) + " (on time)";
+    return "landed " + fmt(f.actual_in) + " (" + Math.abs(d) + "m " + (d < 0 ? "early" : "late") + ")";
+  }
+  // Departed but not yet landed
+  if (f.estimated_in && f.scheduled_in) {
+    var de = deltaMin(f.estimated_in, f.scheduled_in);
+    var minsOut = Math.round((new Date(f.estimated_in) - Date.now()) / 60000);
+    var when = minsOut > 0 ? " ETA " + fmt(f.estimated_in) + " (" + minsOut + "m out)" : " arriving";
+    if (Math.abs(de) < 5) return "on time," + when;
+    return Math.abs(de) + "m " + (de < 0 ? "early" : "late") + "," + when;
+  }
+  if (f.scheduled_in) return "scheduled " + fmt(f.scheduled_in);
+  return f.status || "scheduled";
+}
+
 // Generic ghost-inbound show: fetch by registration + dest, store under a key
 // so we can toggle off when the same source is clicked again. Used by both
-// the trip-leg map link and the commute panel map link.
+// the trip-leg map link and the commute panel map link. Always provides
+// toast feedback so the click never silently no-ops.
 function showInboundFromReg(registration, destAirport, ghostKey) {
-  if (!registration || !destAirport) return;
-  if (ghostInbound && ghostInbound.legKey === ghostKey) {
-    clearGhostInbound();
+  if (!registration || !destAirport) {
+    showToast("Missing registration or airport", {error:true});
     return;
   }
+  if (ghostInbound && ghostInbound.legKey === ghostKey) {
+    clearGhostInbound();
+    showToast("Inbound cleared");
+    return;
+  }
+  showToast("Looking up inbound for " + registration + "…");
   fetch("/api/inbound?reg=" + encodeURIComponent(registration) +
         "&dest=" + encodeURIComponent(destAirport) + "&track=1")
     .then(function(r) { return r.ok ? r.json() : null; })
     .then(function(d) {
-      if (!d || !d.inbound) return;
+      if (!d || !d.inbound || !d.inbound.flight) {
+        showToast("No inbound aircraft found for " + registration, {error:true});
+        return;
+      }
+      var ib = d.inbound.flight;
       ghostInbound = { inbound: d.inbound, track: d.track, legKey: ghostKey, originCode: destAirport };
       drawMap();
+      var label = (ib.ident_iata || ib.ident || "?") +
+        (ib.origin && (ib.origin.code_iata || ib.origin.code) ? " from " + (ib.origin.code_iata || ib.origin.code) : "") +
+        " · " + flightStatusLabel(ib);
+      showToast(label);
     })
-    .catch(function() {});
+    .catch(function() { showToast("Inbound lookup failed", {error:true}); });
 }
 
 function showInboundOnMap(legNum, legDep, legArr) {
@@ -497,16 +573,23 @@ function drawGhostInbound() {
   var trk = ghostInbound.track;
   var ghostBounds = [];
 
-  // Small badge in the upper-right of the map area to clear the ghost
-  if (!document.getElementById("ghost-clear-btn")) {
-    var btn = document.createElement("div");
-    btn.id = "ghost-clear-btn";
-    btn.innerHTML = "Inbound: " + (inb.flight.ident_iata || inb.flight.ident || "?") + " ✕";
-    btn.style.cssText = "position:absolute;top:40px;right:8px;background:rgba(0,0,0,.85);color:#9bb;padding:4px 8px;border-radius:3px;font:600 10px monospace;cursor:pointer;z-index:1000;border:1px solid #234";
-    btn.title = "Clear ghost inbound";
-    btn.onclick = clearGhostInbound;
-    document.getElementById("map-wrap").appendChild(btn);
-  }
+  // Persistent badge in the upper-right of the map area: shows ident + status
+  // so the user can see early/late/ETA at a glance even when there's no live
+  // position to plot.
+  var existingBtn = document.getElementById("ghost-clear-btn");
+  if (existingBtn) existingBtn.remove();
+  var btn = document.createElement("div");
+  btn.id = "ghost-clear-btn";
+  var ident = inb.flight.ident_iata || inb.flight.ident || "?";
+  var orig = inb.flight.origin && (inb.flight.origin.code_iata || inb.flight.origin.code) || "";
+  var statusLabel = flightStatusLabel(inb.flight);
+  btn.innerHTML = '<span style="color:#9bb">Inbound ' + ident + (orig ? ' from ' + orig : '') + '</span>' +
+                  '<span style="color:#888;margin-left:6px">· ' + statusLabel + '</span>' +
+                  '<span style="color:#666;margin-left:8px">✕</span>';
+  btn.style.cssText = "position:absolute;top:40px;right:8px;background:rgba(0,0,0,.9);padding:5px 9px;border-radius:3px;font:600 10px monospace;cursor:pointer;z-index:1000;border:1px solid #234;max-width:340px";
+  btn.title = "Click to clear ghost inbound";
+  btn.onclick = clearGhostInbound;
+  document.getElementById("map-wrap").appendChild(btn);
 
   if (trk && trk.positions && trk.positions.length > 1) {
     var pts = trk.positions.map(function(p) { return [p.latitude, p.longitude]; });
@@ -531,6 +614,10 @@ function drawGhostInbound() {
   }
   if (ghostBounds.length && !testMode) {
     map.fitBounds(ghostBounds, { padding:[60,60], maxZoom: 12 });
+  } else if (!testMode && ghostInbound.originCode && AP[ghostInbound.originCode]) {
+    // No track or position available — at least pan to the destination so the
+    // user sees something change in response to the click.
+    map.setView([AP[ghostInbound.originCode].lat, AP[ghostInbound.originCode].lon], 11);
   }
 }
 
@@ -912,6 +999,7 @@ async function loadFlights() {
     allTrips = groupTrips(parsed);
     document.getElementById("leg-count").textContent = parsed.length + " legs · " + allTrips.length + " trips";
     applyFilter();
+    renderCalendar();
 
     // Auto-expand current trip and select today's legs, if any
     if (selectedIdx === null) {
@@ -1553,6 +1641,135 @@ function initCommutePanel() {
 
   if (commuteRefreshTimer) clearInterval(commuteRefreshTimer);
   commuteRefreshTimer = setInterval(loadAllCommutes, 3600000);
+}
+
+// --- Schedule calendar at the bottom of the page ---
+var calendarOpen = false;
+function toggleCalendar() {
+  calendarOpen = !calendarOpen;
+  var panel = document.getElementById("cal-panel");
+  var body = document.getElementById("cal-body");
+  if (calendarOpen) { panel.classList.add("open"); body.style.display = "block"; renderCalendar(); }
+  else { panel.classList.remove("open"); body.style.display = "none"; }
+}
+function isoDay(d) {
+  return d.getFullYear() + "-" +
+    String(d.getMonth() + 1).padStart(2, "0") + "-" +
+    String(d.getDate()).padStart(2, "0");
+}
+function buildCalDayMap() {
+  var map = {};
+  allTrips.forEach(function(t) {
+    t.legs.forEach(function(l) {
+      var d = new Date(l.start);
+      var key = isoDay(d);
+      if (!map[key]) map[key] = { work:false, dh:false, legs:[] };
+      if (l.isDH) map[key].dh = true;
+      else map[key].work = true;
+      map[key].legs.push(l);
+    });
+  });
+  return map;
+}
+function renderCalendar() {
+  document.getElementById("cal-panel").style.display = "block";
+  var dayMap = buildCalDayMap();
+  var now = new Date();
+  // Show prev month + current + next 2 = 4 months
+  var months = [];
+  for (var i = -1; i < 3; i++) {
+    var d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    months.push({ year: d.getFullYear(), month: d.getMonth() });
+  }
+  var todayKey = isoDay(now);
+
+  // Summary in header (count of working days in current calendar month)
+  var thisMonthKey = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0");
+  var workDays = 0, dhDays = 0;
+  Object.keys(dayMap).forEach(function(k) {
+    if (k.indexOf(thisMonthKey) === 0) {
+      if (dayMap[k].work) workDays++;
+      else if (dayMap[k].dh) dhDays++;
+    }
+  });
+  document.getElementById("cal-summary").textContent =
+    workDays + " working" + (dhDays ? " · " + dhDays + " DH" : "") + " this month";
+
+  if (!calendarOpen) return; // header populated, body skipped
+  var html = '<div class="cal-months">';
+  months.forEach(function(m) { html += renderCalMonth(m.year, m.month, dayMap, todayKey); });
+  html += '</div>';
+  html += '<div class="cal-legend">' +
+    '<span><span style="background:rgba(230,57,70,.55)"></span>Working</span>' +
+    '<span><span style="background:rgba(255,209,102,.32)"></span>Deadhead</span>' +
+    '<span><span style="background:#111"></span>Off</span>' +
+    '<span><span style="background:rgba(230,57,70,.55);outline:1.5px solid #06d6a0"></span>Today</span>' +
+    '</div>';
+  document.getElementById("cal-content").innerHTML = html;
+}
+function renderCalMonth(year, month, dayMap, todayKey) {
+  var monthName = new Date(year, month, 1).toLocaleString("en-US", {month:"long", year:"numeric"});
+  var startDow = new Date(year, month, 1).getDay();
+  var daysInMonth = new Date(year, month+1, 0).getDate();
+  var dows = ["S","M","T","W","T","F","S"];
+  var html = '<div class="cal-month">';
+  html += '<div class="cal-month-name">' + monthName + '</div>';
+  html += '<div class="cal-row">' + dows.map(function(d) { return '<div class="cal-dow">' + d + '</div>'; }).join("") + '</div>';
+  var cells = [];
+  for (var i = 0; i < startDow; i++) cells.push('<div class="cal-day empty"></div>');
+  for (var d = 1; d <= daysInMonth; d++) {
+    var key = year + "-" + String(month+1).padStart(2,"0") + "-" + String(d).padStart(2,"0");
+    var info = dayMap[key];
+    var cls = "cal-day";
+    if (info && info.work) cls += " work";
+    else if (info && info.dh) cls += " dh";
+    else cls += " off";
+    if (key === todayKey) cls += " today";
+    var click = info ? 'onclick="jumpToCalDay(\'' + key + '\')"' : "";
+    var titleStr = info ? info.legs.map(function(l) {
+      return (l.isDH ? "DH " : "") + "AA" + l.num + " " + l.dep + "→" + l.arr;
+    }).join(" · ") : "";
+    cells.push('<div class="' + cls + '" ' + click + ' title="' + titleStr.replace(/"/g, "&quot;") + '">' + d + '</div>');
+  }
+  while (cells.length % 7 !== 0) cells.push('<div class="cal-day empty"></div>');
+  for (var i = 0; i < cells.length; i += 7) {
+    html += '<div class="cal-row">' + cells.slice(i, i+7).join("") + '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+function jumpToCalDay(dateKey) {
+  var dayStr = new Date(dateKey + "T12:00:00").toDateString();
+  // Search in current filter first
+  var found = -1;
+  for (var i = 0; i < filteredTrips.length; i++) {
+    if (filteredTrips[i].legs.some(function(l) { return new Date(l.start).toDateString() === dayStr; })) {
+      found = i; break;
+    }
+  }
+  // If not in current filter, switch filter
+  if (found < 0) {
+    var allMatch = allTrips.find(function(t) {
+      return t.legs.some(function(l) { return new Date(l.start).toDateString() === dayStr; });
+    });
+    if (!allMatch) return;
+    var endsBefore = new Date(allMatch.legs[allMatch.legs.length-1].end) < new Date();
+    filter = endsBefore ? "past" : "upcoming";
+    applyFilter();
+    for (var i = 0; i < filteredTrips.length; i++) {
+      if (filteredTrips[i] === allMatch) { found = i; break; }
+    }
+  }
+  if (found < 0) return;
+  selectedIdx = found;
+  selectedDay = dayStr;
+  fetchRegistrations(filteredTrips[found]);
+  renderTrips();
+  drawMap();
+  setTimeout(function() {
+    var trips = document.querySelectorAll("#trips .trip");
+    if (trips[found]) trips[found].scrollIntoView({behavior:"smooth", block:"center"});
+  }, 80);
 }
 
 initMap();
