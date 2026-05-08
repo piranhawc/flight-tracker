@@ -356,6 +356,7 @@ app.get("/api/inbound", async (req, res) => {
   const dest = (req.query.dest || "").toUpperCase(); // = our leg's origin
   const wantTrack = req.query.track === "1";
   if (!reg) return res.status(400).json({ error: "reg required" });
+  console.log(`/api/inbound reg=${reg} dest=${dest} track=${wantTrack}`);
   try {
     const inbound = await fetchAircraftInbound(reg, null, dest || null);
     let track = null;
@@ -388,19 +389,30 @@ const inboundPositionCache = {};
 const INBOUND_POSITION_TTL = 25 * 1000;
 
 async function fetchAircraftInbound(registration, ownFaFlightId, ownOriginCode) {
+  if (!registration) {
+    console.log(`[inbound] called with no registration`);
+    return null;
+  }
   const cacheKey = `aircraft-${registration}`;
   let aircraftFlights;
   const cached = aircraftCache[cacheKey];
   if (cached && Date.now() - cached.ts < AIRCRAFT_CACHE_TTL) {
     aircraftFlights = cached.data;
+    console.log(`[inbound] ${registration} → cached (${aircraftFlights.length} flights, age ${Math.round((Date.now()-cached.ts)/1000)}s)`);
   } else {
-    const resp = await fetch(
-      `${FA_BASE}/aircraft/${registration}/flights?max_pages=1`,
-      { headers: { "x-apikey": FA_API_KEY } }
-    );
-    if (!resp.ok) return null;
+    const url = `${FA_BASE}/aircraft/${registration}/flights?max_pages=1`;
+    const resp = await fetch(url, { headers: { "x-apikey": FA_API_KEY } });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      console.log(`[inbound] ${registration} FA ${resp.status}: ${txt.substring(0,200)}`);
+      return null;
+    }
     const data = await resp.json();
     aircraftFlights = data.flights || [];
+    console.log(`[inbound] ${registration} → fetched ${aircraftFlights.length} flights from FA`);
+    if (aircraftFlights.length === 0) {
+      console.log(`[inbound] response keys: ${Object.keys(data).join(",")}`);
+    }
     aircraftCache[cacheKey] = { ts: Date.now(), data: aircraftFlights };
   }
 
@@ -420,7 +432,16 @@ async function fetchAircraftInbound(registration, ownFaFlightId, ownOriginCode) 
       f.fa_flight_id !== ownFaFlightId && !f.cancelled
     );
   }
-  if (!inboundFlight) return null;
+  if (!inboundFlight) {
+    const summary = aircraftFlights.slice(0, 5).map(f => {
+      const dCode = f.destination && (f.destination.code_iata || f.destination.code) || "?";
+      const oCode = f.origin && (f.origin.code_iata || f.origin.code) || "?";
+      return `${f.ident}/${oCode}-${dCode}${f.cancelled ? "(CXL)" : ""}`;
+    }).join(", ");
+    console.log(`[inbound] ${registration}: no match (own=${ownFaFlightId} dest=${ownOriginCode}); first 5: ${summary || "(none)"}`);
+    return null;
+  }
+  console.log(`[inbound] ${registration} → matched ${inboundFlight.ident} ${inboundFlight.origin?.code_iata || "?"}-${inboundFlight.destination?.code_iata || "?"}`);
 
   // Position with short cache so 30s frontend polls don't stack FA calls
   let position = null;
