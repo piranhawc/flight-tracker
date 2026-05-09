@@ -147,7 +147,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-08.9</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-09.1</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
@@ -569,13 +569,21 @@ function drawMap() {
 function drawGhostInbound() {
   if (!ghostInbound || !ghostInbound.inbound) return;
   var inb = ghostInbound.inbound;
-  var pos = inb.position && inb.position.last_position;
+  var livePos = inb.position && inb.position.last_position;
   var trk = ghostInbound.track;
   var ghostBounds = [];
 
-  // Persistent badge in the upper-right of the map area: shows ident + status
-  // so the user can see early/late/ETA at a glance even when there's no live
-  // position to plot.
+  // Resolve a position to plot. Priority:
+  //   1. live position from /position endpoint (fresh ADS-B)
+  //   2. last point of the inbound's track (where it was last seen — usually
+  //      the destination gate after landing, or wherever ADS-B last reported)
+  // Either way we draw an "✈" marker so the user sees something on the map.
+  var trkLast = (trk && trk.positions && trk.positions.length)
+    ? trk.positions[trk.positions.length - 1] : null;
+  var displayPos = (livePos && livePos.latitude != null) ? livePos : trkLast;
+  var isStale = !(livePos && livePos.latitude != null) && trkLast;
+
+  // Persistent badge in the upper-right of the map area: shows ident + status.
   var existingBtn = document.getElementById("ghost-clear-btn");
   if (existingBtn) existingBtn.remove();
   var btn = document.createElement("div");
@@ -583,13 +591,18 @@ function drawGhostInbound() {
   var ident = inb.flight.ident_iata || inb.flight.ident || "?";
   var orig = inb.flight.origin && (inb.flight.origin.code_iata || inb.flight.origin.code) || "";
   var statusLabel = flightStatusLabel(inb.flight);
-  var posMissing = !(pos && pos.latitude != null);
-  var trkMissing = !(trk && trk.positions && trk.positions.length > 1);
+  var posInfo = "";
+  if (isStale) {
+    var lastSeen = trkLast.timestamp ? new Date(trkLast.timestamp).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : "";
+    posInfo = '<span style="color:#ffd166;margin-left:6px">· last seen' + (lastSeen ? " " + lastSeen : "") + '</span>';
+  } else if (!displayPos) {
+    posInfo = '<span style="color:#ffd166;margin-left:6px">· no position data</span>';
+  }
   btn.innerHTML = '<span style="color:#9bb">Inbound ' + ident + (orig ? ' from ' + orig : '') + '</span>' +
                   '<span style="color:#888;margin-left:6px">· ' + statusLabel + '</span>' +
-                  (posMissing ? '<span style="color:#ffd166;margin-left:6px">· no live position</span>' : '') +
+                  posInfo +
                   '<span style="color:#666;margin-left:8px">✕</span>';
-  btn.style.cssText = "position:absolute;top:40px;right:8px;background:rgba(0,0,0,.9);padding:5px 9px;border-radius:3px;font:600 10px monospace;cursor:pointer;z-index:1000;border:1px solid #234;max-width:380px";
+  btn.style.cssText = "position:absolute;top:40px;right:8px;background:rgba(0,0,0,.9);padding:5px 9px;border-radius:3px;font:600 10px monospace;cursor:pointer;z-index:1000;border:1px solid #234;max-width:400px";
   btn.title = "Click to clear ghost inbound";
   btn.onclick = clearGhostInbound;
   document.getElementById("map-wrap").appendChild(btn);
@@ -599,17 +612,21 @@ function drawGhostInbound() {
     L.polyline(pts, { color: "#9bb", weight: 2, opacity: 0.55, dashArray: "5 5" }).addTo(layerGroup);
     ghostBounds = ghostBounds.concat(pts);
   }
-  if (pos && pos.latitude != null) {
-    var hdg = pos.heading || 0;
-    L.marker([pos.latitude, pos.longitude], {
-      title: "Inbound: " + (inb.flight.ident_iata || inb.flight.ident || "?"),
+  if (displayPos && displayPos.latitude != null) {
+    var hdg = displayPos.heading || 0;
+    // Stale (last-known) position renders dimmer to make it clear it's not live.
+    var opacity = isStale ? 0.4 : 0.55;
+    var glow = isStale ? "rgba(255,209,102,.6)" : "rgba(150,200,255,.8)";
+    L.marker([displayPos.latitude, displayPos.longitude], {
+      title: "Inbound " + ident + (isStale ? " (last known)" : "") +
+        (displayPos.timestamp ? " — " + new Date(displayPos.timestamp).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : ""),
       icon: L.divIcon({
         className: "",
-        html: '<div style="font-size:24px;opacity:.55;transform:rotate(' + hdg + 'deg);filter:drop-shadow(0 0 4px rgba(150,200,255,.8))">✈</div>',
+        html: '<div style="font-size:24px;opacity:' + opacity + ';transform:rotate(' + hdg + 'deg);filter:drop-shadow(0 0 4px ' + glow + ')">✈</div>',
         iconSize: [28,28], iconAnchor: [14,14],
       })
     }).addTo(layerGroup);
-    ghostBounds.push([pos.latitude, pos.longitude]);
+    ghostBounds.push([displayPos.latitude, displayPos.longitude]);
   }
   // Always include the destination airport in the bounds so a parked or
   // not-yet-departed inbound (no live position) at least pans the map to
