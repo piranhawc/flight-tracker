@@ -147,7 +147,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-09.1</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-09.2</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
@@ -607,23 +607,28 @@ function drawGhostInbound() {
   btn.onclick = clearGhostInbound;
   document.getElementById("map-wrap").appendChild(btn);
 
+  // Track polyline — the inbound's path so far. Bright cyan, dashed, with a
+  // soft glow so it stands out on the dark basemap without being garish.
   if (trk && trk.positions && trk.positions.length > 1) {
     var pts = trk.positions.map(function(p) { return [p.latitude, p.longitude]; });
-    L.polyline(pts, { color: "#9bb", weight: 2, opacity: 0.55, dashArray: "5 5" }).addTo(layerGroup);
+    // Halo underneath for contrast against light tile patches
+    L.polyline(pts, { color: "#000", weight: 6, opacity: 0.55 }).addTo(layerGroup);
+    L.polyline(pts, { color: "#5ec5ff", weight: 3, opacity: 0.95, dashArray: "10 6" }).addTo(layerGroup);
     ghostBounds = ghostBounds.concat(pts);
   }
+  // Plane marker — bigger, brighter, with a strong drop-shadow halo so it
+  // pops against the dark map. Stale (last-known) renders in yellow.
   if (displayPos && displayPos.latitude != null) {
     var hdg = displayPos.heading || 0;
-    // Stale (last-known) position renders dimmer to make it clear it's not live.
-    var opacity = isStale ? 0.4 : 0.55;
-    var glow = isStale ? "rgba(255,209,102,.6)" : "rgba(150,200,255,.8)";
+    var glow = isStale ? "rgba(255,209,102,1)" : "rgba(94,197,255,1)";
     L.marker([displayPos.latitude, displayPos.longitude], {
       title: "Inbound " + ident + (isStale ? " (last known)" : "") +
         (displayPos.timestamp ? " — " + new Date(displayPos.timestamp).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : ""),
       icon: L.divIcon({
         className: "",
-        html: '<div style="font-size:24px;opacity:' + opacity + ';transform:rotate(' + hdg + 'deg);filter:drop-shadow(0 0 4px ' + glow + ')">✈</div>',
-        iconSize: [28,28], iconAnchor: [14,14],
+        html: '<div style="font-size:34px;line-height:34px;opacity:.98;transform:rotate(' + hdg + 'deg);' +
+              'filter:drop-shadow(0 0 4px #000) drop-shadow(0 0 8px ' + glow + ') drop-shadow(0 0 2px ' + glow + ')">✈</div>',
+        iconSize: [40,40], iconAnchor: [20,20],
       })
     }).addTo(layerGroup);
     ghostBounds.push([displayPos.latitude, displayPos.longitude]);
