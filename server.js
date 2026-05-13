@@ -1319,17 +1319,40 @@ function normalizeLogbookLegKey(leg) {
   } else {
     return null;
   }
-  return { flightNum, date };
+  return { flightNum, date, dep: leg.dep || null, arr: leg.arr || null };
 }
+
+// apa-sabre often only reports crew CHANGES per leg (originating "*" /
+// boarding "-"). Continuing crew aren't repeated on subsequent legs. To get
+// the full operating crew at a given leg, walk the pairing from leg 0 to
+// the target leg, accumulating crew by emp_num. Latest record wins (so a
+// position swap on a later leg overrides).
+function getAccumulatedCrewForLeg(ep, seq, targetLegIdx) {
+  if (!crewCacheReady) return [];
+  const pairing = crewCache.getPairing(ep, seq);
+  if (!pairing || !pairing.legs.length) return [];
+  const accumulated = new Map();
+  for (let i = 0; i <= targetLegIdx && i < pairing.legs.length; i++) {
+    const leg = pairing.legs[i];
+    if (!leg || !leg.crew) continue;
+    for (const c of leg.crew) {
+      const k = c.emp_num || c.name;
+      if (!k) continue;
+      accumulated.set(k, c);
+    }
+  }
+  return Array.from(accumulated.values());
+}
+
 function getApaPilotsForLeg(leg) {
   if (!crewCacheReady) return [];
   const key = normalizeLogbookLegKey(leg);
   if (!key) return [];
-  const rows = crewCache.getLegByFlight(key.flightNum, key.date);
+  const rows = crewCache.getLegByFlight(key.flightNum, key.date, key.dep, key.arr);
   if (!rows.length) return [];
-  let raw;
-  try { raw = JSON.parse(rows[0].crew_json || "[]"); } catch (e) { return []; }
-  return raw
+  const row = rows[0];
+  const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
+  return crewRows
     .filter(c => c && PILOT_SEATS.has(c.seat) && c.name && c.name !== "OPEN")
     .filter(c => String(c.emp_num || "") !== LOGBOOK_USER_EMP_NUM)
     .map(apaCrewToDisplayName);
@@ -1565,23 +1588,25 @@ function parseCalendarEvent(event) {
 
 function getCrewForCalendarLeg(parsed) {
   if (!crewCacheReady || !parsed) return { crew: [], isDeadhead: false };
-  // Try (flight, date) first; fall back to (ep, seq, leg_idx) if that misses.
-  let crewRows = null;
-  const cacheRows = crewCache.getLegByFlight(parsed.flight, parsed.date);
-  if (cacheRows.length > 0) {
-    try { crewRows = JSON.parse(cacheRows[0].crew_json || "[]"); } catch (e) {}
-  }
-  if ((!crewRows || crewRows.length === 0) && parsed.ep && parsed.seq != null && parsed.leg_idx != null) {
-    const pairing = crewCache.getPairing(parsed.ep, parsed.seq);
-    if (pairing && pairing.legs[parsed.leg_idx]) crewRows = pairing.legs[parsed.leg_idx].crew;
-  }
-  if (!crewRows || crewRows.length === 0) return { crew: [], isDeadhead: false };
+  // Disambiguate by dep/arr — same flight number can have multiple legs on
+  // the same date (out-and-back), and the pure (flight, date) lookup would
+  // grab whichever row sqlite returned first.
+  const cacheRows = crewCache.getLegByFlight(parsed.flight, parsed.date, parsed.dep_apt, parsed.arr_apt);
+  if (cacheRows.length === 0) return { crew: [], isDeadhead: false };
+  const row = cacheRows[0];
+  // Accumulate crew through the pairing up to this leg.
+  const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
+  if (!crewRows.length) return { crew: [], isDeadhead: false };
 
-  // Deadhead detection: user emp not in operating crew.
+  // Deadhead detection: user not in accumulated operating crew.
   const userInCrew = crewRows.some(c => String(c.emp_num || "") === LOGBOOK_USER_EMP_NUM);
   if (!userInCrew) return { crew: [], isDeadhead: true };
 
-  return { crew: getApaPilotsForLeg({ flight_number: parsed.flight, date: parsed.date }), isDeadhead: false };
+  // Reuse getApaPilotsForLeg with the disambiguated key.
+  return {
+    crew: getApaPilotsForLeg({ flight_number: parsed.flight, date: parsed.date, dep: parsed.dep_apt, arr: parsed.arr_apt }),
+    isDeadhead: false,
+  };
 }
 
 function isCompleted(parsed) {

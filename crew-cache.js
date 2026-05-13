@@ -101,10 +101,19 @@ function getPairing(ep, seq) {
   };
 }
 
-function getLegByFlight(flightNum, date) {
+// Optional dep/arr disambiguates legs where the same flight number flies
+// multiple legs on the same date (e.g. an out-and-back on AA3148 on May 5).
+function getLegByFlight(flightNum, date, dep, arr) {
   if (!db) return [];
+  if (dep && arr) {
+    return db.prepare(`
+      SELECT * FROM crew_cache
+      WHERE flight = ? AND flight_date = ? AND dep_apt = ? AND arr_apt = ?
+      ORDER BY leg_idx
+    `).all(String(flightNum), date, String(dep).toUpperCase(), String(arr).toUpperCase());
+  }
   return db.prepare(`
-    SELECT * FROM crew_cache WHERE flight = ? AND flight_date = ?
+    SELECT * FROM crew_cache WHERE flight = ? AND flight_date = ? ORDER BY leg_idx
   `).all(String(flightNum), date);
 }
 
