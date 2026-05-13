@@ -1614,7 +1614,7 @@ function isCompleted(parsed) {
   return new Date(parsed.end).getTime() < (Date.now() - 30 * 60 * 1000);
 }
 
-async function importCompletedFlights({ force = false } = {}) {
+async function importCompletedFlights({ force = false, withActuals = true } = {}) {
   if (!crewCacheReady) {
     console.log("[auto-log] crew cache not ready, skipping");
     return { created: 0, updated: 0, skipped: 0, deadhead: 0, no_crew: 0, scanned: 0 };
@@ -1628,6 +1628,7 @@ async function importCompletedFlights({ force = false } = {}) {
   }
 
   let created = 0, updated = 0, skipped = 0, deadhead = 0, no_crew = 0, scanned = 0;
+  const touchedLegs = [];
   for (const event of events) {
     scanned++;
     const parsed = parseCalendarEvent(event);
@@ -1636,13 +1637,13 @@ async function importCompletedFlights({ force = false } = {}) {
 
     const existing = logbook.legs[parsed.leg_id];
     if (existing && !force) {
-      const userTouched = (existing.notes && String(existing.notes).trim()) ||
-                          (existing.crew && existing.crew.length > 0 && !existing._auto_filled);
+      // Skip ONLY if the user has typed in notes — crew alone shouldn't
+      // make us bail out of an auto-log refresh because the dedupe path
+      // can lose the _auto_filled flag and we'd never re-fill those legs.
+      const userTouched = existing.notes && String(existing.notes).trim();
       if (userTouched) { skipped++; continue; }
     }
 
-    // Skip deadheads regardless of crew lookup result (DH legs in the
-    // calendar are clearly marked too — belt and suspenders).
     if (parsed.isDH) { deadhead++; continue; }
     const { crew, isDeadhead } = getCrewForCalendarLeg(parsed);
     if (isDeadhead) { deadhead++; continue; }
@@ -1666,7 +1667,6 @@ async function importCompletedFlights({ force = false } = {}) {
 
     if (existing) {
       legRecord.notes = existing.notes || "";
-      // Keep any FA-fetched fields the user's calendar+FA sync may have set
       ["registration", "aircraft_type", "actual_out", "actual_off", "actual_on", "actual_in", "gate_origin", "gate_destination"].forEach(k => {
         if (existing[k] != null) legRecord[k] = existing[k];
       });
@@ -1677,15 +1677,53 @@ async function importCompletedFlights({ force = false } = {}) {
       created++;
     }
     if (crew.length === 0) no_crew++;
+    touchedLegs.push(logbook.legs[parsed.leg_id]);
   }
 
   if (created + updated > 0) saveLogbook();
-  // Always run dedupe — it's a no-op when there are no duplicates and
-  // catches anything left over from old composite-ID days or duplicate
-  // calendar publishes (scheduled vs actual time).
   const deduped = dedupeLogbookLegs();
   console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew} deduped=${deduped}`);
+
+  // Fire-and-forget FA actuals fetch for any past legs without actual_in.
+  // Throttled by the existing FA queue (10s gap). Doesn't block the response.
+  if (withActuals) backfillFaActuals(touchedLegs).catch(() => {});
+
   return { created, updated, skipped, deadhead, no_crew, scanned, deduped };
+}
+
+// Walk the given legs (or all logbook legs if none passed) and fetch
+// FlightAware gate-to-gate actuals for past flights ≤14 days that don't
+// already have actual_in. Used to fold the old SYNC FROM CALENDAR + FA
+// behavior into the import flow.
+async function backfillFaActuals(legs) {
+  const candidates = (legs && legs.length ? legs : Object.values(logbook.legs)).filter(l => {
+    if (!l || !l.date || l.actual_in) return false;
+    const d = new Date(l.date).getTime();
+    if (isNaN(d)) return false;
+    const ageDays = (Date.now() - d) / 86400000;
+    return ageDays >= 0 && ageDays <= 14;
+  });
+  if (!candidates.length) return;
+  console.log(`[fa-backfill] queueing ${candidates.length} legs for actual-times fetch`);
+  let updated = 0;
+  for (const leg of candidates) {
+    try {
+      const flightNum = (leg.flight_number || String(leg.flight || "").replace(/^(AAL|AA)/i, "")).replace(/^0+/, "") || "0";
+      // /api/fa/registration is the existing endpoint that also returns
+      // actuals; it goes through the FA throttle queue.
+      const r = await fetch(`http://127.0.0.1:${PORT}/api/fa/registration/${flightNum}/${leg.date}`);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (!d) continue;
+      let changed = false;
+      ["registration", "aircraft_type", "actual_out", "actual_off", "actual_on", "actual_in", "gate_origin", "gate_destination"].forEach(k => {
+        if (d[k] != null && leg[k] !== d[k]) { leg[k] = d[k]; changed = true; }
+      });
+      if (changed) updated++;
+    } catch (e) {}
+  }
+  if (updated > 0) saveLogbook();
+  console.log(`[fa-backfill] updated ${updated} of ${candidates.length} legs with FA actuals`);
 }
 
 // Walk every logbook leg with empty crew, fetch from the apa-sabre cache,

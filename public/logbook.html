@@ -76,11 +76,11 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-05-13.7</span>
+    <span class="meta" title="Build version">v2026-05-13.8</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
-    <button class="btn" id="import-btn" onclick="runImportFromCalendar()" style="display:none">📥 IMPORT FROM CALENDAR</button>
-    <button class="btn" id="sync-btn" onclick="runSync()" style="display:none">SYNC FROM CALENDAR + FA</button>
-    <button class="btn" id="sync-apa-btn" onclick="runSyncApaCrew()" style="display:none">⛏ SYNC APA CREW</button>
+    <button class="btn" id="import-btn" onclick="runImportFromCalendar()" style="display:none" title="Pull completed flights from calendar, fill crew from APA, fetch FA actuals for the last 14 days">📥 IMPORT FROM CALENDAR</button>
+    <button class="btn" id="import-force-btn" onclick="runImportFromCalendar(true)" style="display:none" title="Re-import everything, overwriting auto-filled crew (preserves notes)">⟳ FORCE</button>
+    <button class="btn" id="sync-apa-btn" onclick="runSyncApaCrew()" style="display:none" title="Fill crew on existing legs that have empty crew arrays">⛏ SYNC APA CREW</button>
     <button class="btn" id="logout-btn" onclick="logout()" style="display:none">LOGOUT</button>
   </div>
 </div>
@@ -139,9 +139,9 @@ function logout() {
   document.getElementById("app").classList.remove("shown");
   document.getElementById("login").style.display = "block";
   document.getElementById("logout-btn").style.display = "none";
-  document.getElementById("sync-btn").style.display = "none";
   document.getElementById("sync-apa-btn").style.display = "none";
   document.getElementById("import-btn").style.display = "none";
+  document.getElementById("import-force-btn").style.display = "none";
 }
 
 document.getElementById("login-form").addEventListener("submit", async function(e) {
@@ -173,9 +173,9 @@ async function initApp() {
   document.getElementById("login").style.display = "none";
   document.getElementById("app").classList.add("shown");
   document.getElementById("logout-btn").style.display = "";
-  document.getElementById("sync-btn").style.display = "";
   document.getElementById("sync-apa-btn").style.display = "";
   document.getElementById("import-btn").style.display = "";
+  document.getElementById("import-force-btn").style.display = "";
 }
 
 async function loadAll() {
@@ -377,9 +377,13 @@ function parseEventToLeg(ev) {
   };
 }
 
-async function runImportFromCalendar() {
-  if (!confirm("Import completed flights from the calendar? This creates logbook entries for past flights and auto-fills crew. Existing entries you've manually edited (notes or crew) will be preserved.")) return;
-  var btn = document.getElementById("import-btn");
+async function runImportFromCalendar(force) {
+  var prompt = force
+    ? "FORCE re-import: overwrites every leg's auto-filled crew with the latest from APA. Notes are preserved. Continue?"
+    : "Import completed flights from the calendar? Creates logbook entries, fills crew from APA, and queues FA gate-to-gate actuals for the last 14 days. Notes are preserved.";
+  if (!confirm(prompt)) return;
+  var btnId = force ? "import-force-btn" : "import-btn";
+  var btn = document.getElementById(btnId);
   btn.disabled = true;
   var original = btn.textContent;
   btn.textContent = "⏳ importing...";
@@ -387,12 +391,13 @@ async function runImportFromCalendar() {
     var r = await fetch("/api/logbook/import-from-calendar", {
       method: "POST",
       headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
-      body: JSON.stringify({ force: false }),
+      body: JSON.stringify({ force: !!force }),
     });
     var result = await r.json();
     if (r.ok) {
       setStatus("Import · " + result.created + " new · " + result.updated + " updated · " +
-                result.deadhead + " deadheads skipped · " + result.no_crew + " w/o crew", "#06d6a0");
+                result.deadhead + " DH skipped · " + result.no_crew + " w/o crew · " +
+                "FA actuals queued in background", "#06d6a0");
       await loadAll();
     } else {
       setStatus("Import failed: " + (result.error || r.status), "#f44");
@@ -402,7 +407,7 @@ async function runImportFromCalendar() {
   } finally {
     btn.disabled = false;
     btn.textContent = original;
-    setTimeout(function() { setStatus(""); }, 6000);
+    setTimeout(function() { setStatus(""); }, 8000);
   }
 }
 
@@ -432,71 +437,6 @@ async function runSyncApaCrew() {
     btn.textContent = originalText;
     setTimeout(function() { setStatus(""); }, 5000);
   }
-}
-
-async function runSync() {
-  document.getElementById("sync-btn").disabled = true;
-  setStatus("Loading calendar…");
-  // 1. Pull all events from /api/flights (already filtered to ±90 days server-side)
-  var resp = await fetch("/api/flights");
-  if (!resp.ok) { setStatus("Failed to load calendar", "#f44"); document.getElementById("sync-btn").disabled = false; return; }
-  var events = await resp.json();
-  var legs = events.map(parseEventToLeg).filter(Boolean);
-  setStatus("Found " + legs.length + " legs in calendar — saving…");
-  // 2. Bulk upsert into logbook
-  var bulk = await fetch("/api/logbook/legs", {
-    method:"POST",
-    headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()),
-    body: JSON.stringify({ legs: legs }),
-  });
-  if (!bulk.ok) { setStatus("Failed to save legs", "#f44"); document.getElementById("sync-btn").disabled = false; return; }
-  var bulkResult = await bulk.json();
-  setStatus("Saved " + bulkResult.created + " new, " + bulkResult.updated + " updated. Fetching FA actual times…");
-  // 3. Reload list
-  await loadAll();
-  // 4. Backfill FA actual times for past legs (last 14 days). Throttled by
-  // the server's FA queue. Walk newest-first.
-  var now = Date.now();
-  var pastLegs = legsData.filter(function(l) {
-    if (!l.date) return false;
-    var d = new Date(l.date).getTime();
-    var ageDays = (now - d) / 86400000;
-    if (ageDays < 0 || ageDays > 14) return false;     // past 14 days only
-    if (l.actual_in) return false;                     // already have data
-    return true;
-  });
-  var totalToFetch = pastLegs.length;
-  var done = 0;
-  for (var i = 0; i < pastLegs.length; i++) {
-    var l = pastLegs[i];
-    setStatus("Fetching FA: " + (done+1) + "/" + totalToFetch + " · " + l.flight + " " + l.date);
-    try {
-      var rResp = await fetch("/api/fa/registration/" + l.flight_number + "/" + l.date);
-      if (rResp.ok) {
-        var rd = await rResp.json();
-        // Persist FA fields back to the leg
-        await fetch("/api/logbook/legs/" + encodeURIComponent(l.id), {
-          method:"POST",
-          headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()),
-          body: JSON.stringify({
-            registration: rd.registration || null,
-            aircraft_type: rd.aircraft_type || null,
-            actual_out: rd.actual_out || null,
-            actual_off: rd.actual_off || null,
-            actual_on: rd.actual_on || null,
-            actual_in: rd.actual_in || null,
-            gate_origin: rd.gate_origin || null,
-            gate_destination: rd.gate_destination || null,
-          }),
-        });
-      }
-    } catch (e) {}
-    done++;
-  }
-  setStatus("Sync complete · " + done + " FA lookups done", "#06d6a0");
-  await loadAll();
-  setTimeout(function() { setStatus(""); }, 5000);
-  document.getElementById("sync-btn").disabled = false;
 }
 
 // Bootstrap
