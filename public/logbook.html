@@ -76,8 +76,9 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-05-13.3</span>
+    <span class="meta" title="Build version">v2026-05-13.4</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
+    <button class="btn" id="import-btn" onclick="runImportFromCalendar()" style="display:none">📥 IMPORT FROM CALENDAR</button>
     <button class="btn" id="sync-btn" onclick="runSync()" style="display:none">SYNC FROM CALENDAR + FA</button>
     <button class="btn" id="sync-apa-btn" onclick="runSyncApaCrew()" style="display:none">⛏ SYNC APA CREW</button>
     <button class="btn" id="logout-btn" onclick="logout()" style="display:none">LOGOUT</button>
@@ -140,6 +141,7 @@ function logout() {
   document.getElementById("logout-btn").style.display = "none";
   document.getElementById("sync-btn").style.display = "none";
   document.getElementById("sync-apa-btn").style.display = "none";
+  document.getElementById("import-btn").style.display = "none";
 }
 
 document.getElementById("login-form").addEventListener("submit", async function(e) {
@@ -173,6 +175,7 @@ async function initApp() {
   document.getElementById("logout-btn").style.display = "";
   document.getElementById("sync-btn").style.display = "";
   document.getElementById("sync-apa-btn").style.display = "";
+  document.getElementById("import-btn").style.display = "";
 }
 
 async function loadAll() {
@@ -360,7 +363,9 @@ function parseEventToLeg(ev) {
   var date = (ev.start || "").split("T")[0];
   if (!date) return null;
   return {
-    id: date + "-AA" + num + "-" + dep + "-" + arr,
+    // Prefer the calendar UID for idempotent IDs across re-imports; fall back
+    // to a deterministic composite if the event has no UID (rare).
+    id: ev.uid || (date + "-AA" + num + "-" + dep + "-" + arr),
     date: date,
     flight: "AA" + num,
     flight_number: num,
@@ -370,6 +375,35 @@ function parseEventToLeg(ev) {
     scheduled_out: ev.start || null,
     scheduled_in: ev.end || null,
   };
+}
+
+async function runImportFromCalendar() {
+  if (!confirm("Import completed flights from the calendar? This creates logbook entries for past flights and auto-fills crew. Existing entries you've manually edited (notes or crew) will be preserved.")) return;
+  var btn = document.getElementById("import-btn");
+  btn.disabled = true;
+  var original = btn.textContent;
+  btn.textContent = "⏳ importing...";
+  try {
+    var r = await fetch("/api/logbook/import-from-calendar", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ force: false }),
+    });
+    var result = await r.json();
+    if (r.ok) {
+      setStatus("Import · " + result.created + " new · " + result.updated + " updated · " +
+                result.deadhead + " deadheads skipped · " + result.no_crew + " w/o crew", "#06d6a0");
+      await loadAll();
+    } else {
+      setStatus("Import failed: " + (result.error || r.status), "#f44");
+    }
+  } catch (e) {
+    setStatus("Import error: " + e.message, "#f44");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+    setTimeout(function() { setStatus(""); }, 6000);
+  }
 }
 
 async function runSyncApaCrew() {

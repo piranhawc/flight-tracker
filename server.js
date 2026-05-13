@@ -122,34 +122,38 @@ function parseIcs(text) {
 let icsCache = null;
 const ICS_CACHE_TTL = 5 * 60 * 1000;
 
+// Returns the parsed +/- 90 day window of calendar events (cached). Used by
+// /api/flights and by server-side jobs (e.g. the auto-log poller) so they
+// don't have to round-trip through HTTP.
+async function getCachedCalendarEvents() {
+  if (!ICS_URL) throw new Error("ICS_URL not configured");
+  if (icsCache && Date.now() - icsCache.ts < ICS_CACHE_TTL) return icsCache.events;
+  const resp = await fetch(ICS_URL);
+  if (!resp.ok) {
+    if (icsCache) { console.log("Serving stale ICS cache"); return icsCache.events; }
+    throw new Error(`ICS feed returned ${resp.status}`);
+  }
+  const text = await resp.text();
+  const all = parseIcs(text);
+  const winStart = Date.now() - 90 * 864e5;
+  const winEnd = Date.now() + 90 * 864e5;
+  const events = all.filter(e => {
+    if (!e.start) return false;
+    const t = new Date(e.start).getTime();
+    return t >= winStart && t <= winEnd;
+  });
+  console.log(`ICS: parsed ${all.length} events, ${events.length} in ±90d window`);
+  icsCache = { ts: Date.now(), events };
+  return events;
+}
+
 app.get("/api/flights", async (req, res) => {
-  if (!ICS_URL) return res.status(500).json({ error: "ICS_URL not configured" });
   try {
-    if (icsCache && Date.now() - icsCache.ts < ICS_CACHE_TTL) {
-      return res.json(icsCache.events);
-    }
-    const resp = await fetch(ICS_URL);
-    if (!resp.ok) throw new Error(`ICS feed returned ${resp.status}`);
-    const text = await resp.text();
-    const all = parseIcs(text);
-    // Match the previous ±90-day window so the frontend isn't flooded with
-    // years of historical legs from a long-lived calendar.
-    const winStart = Date.now() - 90 * 864e5;
-    const winEnd = Date.now() + 90 * 864e5;
-    const events = all.filter(e => {
-      if (!e.start) return false;
-      const t = new Date(e.start).getTime();
-      return t >= winStart && t <= winEnd;
-    });
-    console.log(`ICS: parsed ${all.length} events, ${events.length} in ±90d window`);
-    icsCache = { ts: Date.now(), events };
+    const events = await getCachedCalendarEvents();
     res.json(events);
   } catch (e) {
     console.error("ICS fetch failed:", e.message);
-    if (icsCache) {
-      console.log("Serving stale ICS cache");
-      return res.json(icsCache.events);
-    }
+    if (icsCache) return res.json(icsCache.events);
     res.status(500).json({ error: e.message });
   }
 });
@@ -1448,6 +1452,146 @@ try {
   console.error(`[crew-cache] init failed: ${e.message} — crew endpoints will return 503`);
 }
 
+// --- Auto-log: import completed flights from the ICS calendar ---
+// Fires on a 30-min poller plus on-demand via /api/logbook/import-from-calendar.
+// Uses the calendar event UID as the leg ID so reruns are idempotent and
+// detects deadheads (user not in operating crew) so they're skipped.
+
+const UID_RE = /^HI-(\d{6})-(\d{4,5})-(\d+)-leg(\d{2})@/;
+const SUMMARY_RE = /^AA\s+(\d{1,4})\s+(?:\(DH\)\s+)?([A-Z]{3})-([A-Z]{3})/;
+
+function parseCalendarEvent(event) {
+  if (!event || !event.uid || !event.summary || !event.start) return null;
+  const sumMatch = SUMMARY_RE.exec(event.summary);
+  if (!sumMatch) return null;
+  const [, flightNum, depApt, arrApt] = sumMatch;
+  const isDH = /\(DH\)/.test(event.summary);
+
+  // UID is the canonical APA shape; some events may not match (older imports,
+  // non-pairing events). Fall back to a deterministic composite if needed.
+  const uidMatch = UID_RE.exec(event.uid);
+  let ep = null, seq = null, leg_idx = null;
+  if (uidMatch) {
+    ep = parseInt(uidMatch[1], 10);
+    seq = parseInt(uidMatch[2], 10);
+    leg_idx = parseInt(uidMatch[4], 10) - 1;
+  }
+
+  const startDate = new Date(event.start);
+  const endDate = new Date(event.end || event.start);
+  const flightDate = startDate.toISOString().slice(0, 10);
+
+  return {
+    leg_id: event.uid, // stable across runs — UID is what /api/flights returns
+    ep, seq, leg_idx,
+    flight: flightNum,
+    dep_apt: depApt,
+    arr_apt: arrApt,
+    isDH,
+    date: flightDate,
+    start: startDate.toISOString(),
+    end: endDate.toISOString(),
+    summary: event.summary,
+    description: event.description || "",
+  };
+}
+
+function getCrewForCalendarLeg(parsed) {
+  if (!crewCacheReady || !parsed) return { crew: [], isDeadhead: false };
+  // Try (flight, date) first; fall back to (ep, seq, leg_idx) if that misses.
+  let crewRows = null;
+  const cacheRows = crewCache.getLegByFlight(parsed.flight, parsed.date);
+  if (cacheRows.length > 0) {
+    try { crewRows = JSON.parse(cacheRows[0].crew_json || "[]"); } catch (e) {}
+  }
+  if ((!crewRows || crewRows.length === 0) && parsed.ep && parsed.seq != null && parsed.leg_idx != null) {
+    const pairing = crewCache.getPairing(parsed.ep, parsed.seq);
+    if (pairing && pairing.legs[parsed.leg_idx]) crewRows = pairing.legs[parsed.leg_idx].crew;
+  }
+  if (!crewRows || crewRows.length === 0) return { crew: [], isDeadhead: false };
+
+  // Deadhead detection: user emp not in operating crew.
+  const userInCrew = crewRows.some(c => String(c.emp_num || "") === LOGBOOK_USER_EMP_NUM);
+  if (!userInCrew) return { crew: [], isDeadhead: true };
+
+  return { crew: getApaPilotsForLeg({ flight_number: parsed.flight, date: parsed.date }), isDeadhead: false };
+}
+
+function isCompleted(parsed) {
+  if (!parsed || !parsed.end) return false;
+  return new Date(parsed.end).getTime() < (Date.now() - 30 * 60 * 1000);
+}
+
+async function importCompletedFlights({ force = false } = {}) {
+  if (!crewCacheReady) {
+    console.log("[auto-log] crew cache not ready, skipping");
+    return { created: 0, updated: 0, skipped: 0, deadhead: 0, no_crew: 0, scanned: 0 };
+  }
+  let events;
+  try {
+    events = await getCachedCalendarEvents();
+  } catch (e) {
+    console.error("[auto-log] could not fetch calendar:", e.message);
+    return { created: 0, updated: 0, skipped: 0, deadhead: 0, no_crew: 0, scanned: 0 };
+  }
+
+  let created = 0, updated = 0, skipped = 0, deadhead = 0, no_crew = 0, scanned = 0;
+  for (const event of events) {
+    scanned++;
+    const parsed = parseCalendarEvent(event);
+    if (!parsed) { skipped++; continue; }
+    if (!isCompleted(parsed)) { skipped++; continue; }
+
+    const existing = logbook.legs[parsed.leg_id];
+    if (existing && !force) {
+      const userTouched = (existing.notes && String(existing.notes).trim()) ||
+                          (existing.crew && existing.crew.length > 0 && !existing._auto_filled);
+      if (userTouched) { skipped++; continue; }
+    }
+
+    // Skip deadheads regardless of crew lookup result (DH legs in the
+    // calendar are clearly marked too — belt and suspenders).
+    if (parsed.isDH) { deadhead++; continue; }
+    const { crew, isDeadhead } = getCrewForCalendarLeg(parsed);
+    if (isDeadhead) { deadhead++; continue; }
+
+    const legRecord = {
+      id: parsed.leg_id,
+      flight: "AA" + parsed.flight,
+      flight_number: parsed.flight,
+      date: parsed.date,
+      dep: parsed.dep_apt,
+      arr: parsed.arr_apt,
+      isDH: false,
+      scheduled_out: parsed.start,
+      scheduled_in: parsed.end,
+      ep: parsed.ep,
+      seq: parsed.seq,
+      crew,
+      _auto_filled: true,
+      _source: "auto-log",
+    };
+
+    if (existing) {
+      legRecord.notes = existing.notes || "";
+      // Keep any FA-fetched fields the user's calendar+FA sync may have set
+      ["registration", "aircraft_type", "actual_out", "actual_off", "actual_on", "actual_in", "gate_origin", "gate_destination"].forEach(k => {
+        if (existing[k] != null) legRecord[k] = existing[k];
+      });
+      Object.assign(existing, legRecord);
+      updated++;
+    } else {
+      logbook.legs[parsed.leg_id] = legRecord;
+      created++;
+    }
+    if (crew.length === 0) no_crew++;
+  }
+
+  if (created + updated > 0) saveLogbook();
+  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew}`);
+  return { created, updated, skipped, deadhead, no_crew, scanned };
+}
+
 // Walk every logbook leg with empty crew, fetch from the apa-sabre cache,
 // persist names. Runs automatically after crew cache refresh and after
 // logbook bulk-upserts so crew shows up without user action.
@@ -1509,6 +1653,11 @@ if (crewCacheReady) {
   setTimeout(() => { autoSyncLogbookCrewFromApa(); }, 1000);
   setTimeout(() => { refreshCrewCache().catch(() => {}); }, 5000);
   setInterval(() => { refreshCrewCache().catch(() => {}); }, 12 * 60 * 60 * 1000);
+  // Auto-log poller: scan the calendar every 30 min for completed flights
+  // and create logbook entries (with crew). 60 sec after boot for the first
+  // pass so the crew cache has a chance to settle.
+  setTimeout(() => { importCompletedFlights().catch(() => {}); }, 60 * 1000);
+  setInterval(() => { importCompletedFlights().catch(() => {}); }, 30 * 60 * 1000);
 }
 
 app.get("/api/crew/health", async (req, res) => {
@@ -1570,6 +1719,17 @@ app.post("/api/crew/refresh-all", logbookAuth, (req, res) => {
   if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
   refreshCrewCache().catch(() => {});
   res.json({ ok: true, message: "refresh started in background" });
+});
+
+// One-shot manual import / backfill of completed flights from the calendar.
+app.post("/api/logbook/import-from-calendar", logbookAuth, express.json(), async (req, res) => {
+  const force = !!(req.body && req.body.force);
+  try {
+    const result = await importCompletedFlights({ force });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, "0.0.0.0", () => {
