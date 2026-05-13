@@ -1452,6 +1452,53 @@ try {
   console.error(`[crew-cache] init failed: ${e.message} — crew endpoints will return 503`);
 }
 
+// Collapse logbook legs that represent the same physical flight but were
+// stored under different IDs (e.g. old composite "YYYY-MM-DD-AAxxxx-DEP-ARR"
+// and new calendar-UID format). Keeps the entry with the most user data
+// (notes > crew > anything) and removes the rest.
+function dedupeLogbookLegs() {
+  const groups = {};
+  for (const [id, leg] of Object.entries(logbook.legs)) {
+    if (!leg || !leg.date) continue;
+    const flightKey = String(leg.flight || leg.flight_number || "").replace(/^(AAL|AA)/i, "").replace(/^0+/, "");
+    if (!flightKey) continue;
+    const key = `${flightKey}|${leg.date}|${leg.dep || ""}|${leg.arr || ""}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ id, leg });
+  }
+  let removed = 0;
+  for (const key in groups) {
+    const items = groups[key];
+    if (items.length < 2) continue;
+    // Best = has notes, then has crew, then is auto-filled (canonical UID-based one)
+    const sorted = items.slice().sort((a, b) => {
+      const score = (l) =>
+        ((l.notes && String(l.notes).trim()) ? 4 : 0) +
+        ((l.crew && l.crew.length) ? 2 : 0) +
+        (l._auto_filled ? 1 : 0);
+      return score(b.leg) - score(a.leg);
+    });
+    const keep = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      // Carry over any fields the loser had but the winner didn't
+      ["notes", "registration", "aircraft_type", "actual_out", "actual_off", "actual_on", "actual_in", "gate_origin", "gate_destination", "ep", "seq"].forEach(k => {
+        if (keep.leg[k] == null && sorted[i].leg[k] != null) keep.leg[k] = sorted[i].leg[k];
+      });
+      // Merge crew if winner is empty but loser has it
+      if ((!keep.leg.crew || !keep.leg.crew.length) && sorted[i].leg.crew && sorted[i].leg.crew.length) {
+        keep.leg.crew = sorted[i].leg.crew;
+      }
+      delete logbook.legs[sorted[i].id];
+      removed++;
+    }
+  }
+  if (removed > 0) {
+    saveLogbook();
+    console.log(`[logbook dedupe] removed ${removed} duplicate legs`);
+  }
+  return removed;
+}
+
 // --- Auto-log: import completed flights from the ICS calendar ---
 // Fires on a 30-min poller plus on-demand via /api/logbook/import-from-calendar.
 // Uses the calendar event UID as the leg ID so reruns are idempotent and
@@ -1608,8 +1655,12 @@ async function importCompletedFlights({ force = false } = {}) {
   }
 
   if (created + updated > 0) saveLogbook();
-  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew}`);
-  return { created, updated, skipped, deadhead, no_crew, scanned };
+  // Always run dedupe — it's a no-op when there are no duplicates and
+  // catches anything left over from old composite-ID days or duplicate
+  // calendar publishes (scheduled vs actual time).
+  const deduped = dedupeLogbookLegs();
+  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew} deduped=${deduped}`);
+  return { created, updated, skipped, deadhead, no_crew, scanned, deduped };
 }
 
 // Walk every logbook leg with empty crew, fetch from the apa-sabre cache,
@@ -1668,6 +1719,9 @@ async function refreshCrewCache() {
 // the logbook so newly cached pilot lists land on matching legs without the
 // user needing to click anything.
 if (crewCacheReady) {
+  // One-shot dedupe of any legacy duplicate logbook entries on boot
+  // (composite ID + UID, or scheduled-vs-actual calendar dupes).
+  setTimeout(() => { dedupeLogbookLegs(); }, 500);
   // Sync against whatever's already on disk before the network fetch in case
   // legs were added since last refresh.
   setTimeout(() => { autoSyncLogbookCrewFromApa(); }, 1000);
@@ -1750,6 +1804,12 @@ app.post("/api/logbook/import-from-calendar", logbookAuth, express.json(), async
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Manual dedupe (auto-log already calls this, but expose it too).
+app.post("/api/logbook/dedupe", logbookAuth, (req, res) => {
+  const removed = dedupeLogbookLegs();
+  res.json({ removed, total: Object.keys(logbook.legs).length });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
