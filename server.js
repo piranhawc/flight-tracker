@@ -1393,7 +1393,10 @@ app.post("/api/logbook/legs", logbookAuth, express.json(), (req, res) => {
     }
   }
   saveLogbook();
-  res.json({ created, updated, total: Object.keys(logbook.legs).length });
+  // Newly created legs come in with empty crew[] — fill from APA cache now
+  // so the user doesn't have to click ⛏ SYNC APA CREW.
+  const synced = autoSyncLogbookCrewFromApa();
+  res.json({ created, updated, total: Object.keys(logbook.legs).length, apa_synced: synced });
 });
 
 app.get("/api/logbook/crew", logbookAuth, (req, res) => {
@@ -1445,6 +1448,26 @@ try {
   console.error(`[crew-cache] init failed: ${e.message} — crew endpoints will return 503`);
 }
 
+// Walk every logbook leg with empty crew, fetch from the apa-sabre cache,
+// persist names. Runs automatically after crew cache refresh and after
+// logbook bulk-upserts so crew shows up without user action.
+function autoSyncLogbookCrewFromApa() {
+  if (!crewCacheReady) return { updated: 0, skipped: 0, no_data: 0 };
+  let updated = 0, skipped = 0, no_data = 0;
+  for (const leg of Object.values(logbook.legs)) {
+    if (leg.crew && leg.crew.length > 0) { skipped++; continue; }
+    const apaCrew = getApaPilotsForLeg(leg);
+    if (!apaCrew.length) { no_data++; continue; }
+    leg.crew = apaCrew;
+    updated++;
+  }
+  if (updated > 0) {
+    saveLogbook();
+    console.log(`[logbook auto-sync] ${updated} legs filled from APA · ${skipped} already had crew · ${no_data} no APA data`);
+  }
+  return { updated, skipped, no_data };
+}
+
 async function refreshCrewCache() {
   if (!crewCacheReady) return;
   console.log("[crew-cache] starting refresh");
@@ -1469,14 +1492,21 @@ async function refreshCrewCache() {
       }
     }
     console.log(`[crew-cache] refresh complete (${crewCache.countAll()} legs cached)`);
+    // Push freshly cached pilot lists into any matching logbook legs
+    autoSyncLogbookCrewFromApa();
   } catch (err) {
     console.error(`[crew-cache] refresh failed: ${err.message}`);
   }
 }
 
 // Initial fetch 5 sec after startup so the apa-sabre-service has time to be
-// ready. Then refresh every 12 hours.
+// ready. Then refresh every 12 hours. Each successful refresh also auto-syncs
+// the logbook so newly cached pilot lists land on matching legs without the
+// user needing to click anything.
 if (crewCacheReady) {
+  // Sync against whatever's already on disk before the network fetch in case
+  // legs were added since last refresh.
+  setTimeout(() => { autoSyncLogbookCrewFromApa(); }, 1000);
   setTimeout(() => { refreshCrewCache().catch(() => {}); }, 5000);
   setInterval(() => { refreshCrewCache().catch(() => {}); }, 12 * 60 * 60 * 1000);
 }
@@ -1491,7 +1521,9 @@ app.get("/api/crew/health", async (req, res) => {
   }
 });
 
-app.get("/api/crew/:ep/:seq", (req, res) => {
+// Crew endpoints are private — same auth as the logbook (LOGBOOK_PASSWORD →
+// bearer token). Personal data; not for the public flight-tracker page.
+app.get("/api/crew/:ep/:seq", logbookAuth, (req, res) => {
   if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
   const ep = parseInt(req.params.ep, 10);
   const seq = parseInt(req.params.seq, 10);
@@ -1501,7 +1533,7 @@ app.get("/api/crew/:ep/:seq", (req, res) => {
   res.json(data);
 });
 
-app.post("/api/crew/:ep/:seq/refresh", async (req, res) => {
+app.post("/api/crew/:ep/:seq/refresh", logbookAuth, async (req, res) => {
   if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
   const ep = parseInt(req.params.ep, 10);
   const seq = parseInt(req.params.seq, 10);
@@ -1510,6 +1542,7 @@ app.post("/api/crew/:ep/:seq/refresh", async (req, res) => {
     const pairing = await apa.getPairingCrew(ep, seq);
     if (pairing && pairing.legs) {
       crewCache.upsertPairing(pairing);
+      autoSyncLogbookCrewFromApa();
       return res.json({ ok: true, legs: pairing.legs.length });
     }
     res.status(502).json({ error: "no data returned" });
@@ -1518,7 +1551,7 @@ app.post("/api/crew/:ep/:seq/refresh", async (req, res) => {
   }
 });
 
-app.get("/api/crew/flight/:flightNum/:date", (req, res) => {
+app.get("/api/crew/flight/:flightNum/:date", logbookAuth, (req, res) => {
   if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
   const rows = crewCache.getLegByFlight(req.params.flightNum, req.params.date);
   if (rows.length === 0) return res.status(404).json({ error: "not in cache" });
@@ -1533,7 +1566,7 @@ app.get("/api/crew/flight/:flightNum/:date", (req, res) => {
   })));
 });
 
-app.post("/api/crew/refresh-all", (req, res) => {
+app.post("/api/crew/refresh-all", logbookAuth, (req, res) => {
   if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
   refreshCrewCache().catch(() => {});
   res.json({ ok: true, message: "refresh started in background" });
