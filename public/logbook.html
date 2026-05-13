@@ -76,9 +76,10 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-05-08.2</span>
+    <span class="meta" title="Build version">v2026-05-13.2</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <button class="btn" id="sync-btn" onclick="runSync()" style="display:none">SYNC FROM CALENDAR + FA</button>
+    <button class="btn" id="sync-apa-btn" onclick="runSyncApaCrew()" style="display:none">⛏ SYNC APA CREW</button>
     <button class="btn" id="logout-btn" onclick="logout()" style="display:none">LOGOUT</button>
   </div>
 </div>
@@ -114,6 +115,18 @@ var crewIndex = {};
 var crewByDate = {}; // crewName → sorted list of flight dates flown together
 
 function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+
+// Display helper: shouty-caps names from Sabre ("HOLDING BT") become
+// "Holding Bt"; APA-derived friendly names ("Brent Holding") pass through.
+// Storage stays as raw — this only affects rendering.
+function lbTitleCase(s) {
+  return String(s || "").toLowerCase().replace(/\b([a-z])/g, function(_, c) { return c.toUpperCase(); });
+}
+function displayNameForCrew(rawName) {
+  if (!rawName) return "";
+  if (rawName === rawName.toUpperCase() && rawName.length > 1) return lbTitleCase(rawName);
+  return rawName;
+}
 function setStatus(msg, color) {
   var s = document.getElementById("status");
   s.textContent = msg || "";
@@ -126,6 +139,7 @@ function logout() {
   document.getElementById("login").style.display = "block";
   document.getElementById("logout-btn").style.display = "none";
   document.getElementById("sync-btn").style.display = "none";
+  document.getElementById("sync-apa-btn").style.display = "none";
 }
 
 document.getElementById("login-form").addEventListener("submit", async function(e) {
@@ -158,6 +172,7 @@ async function initApp() {
   document.getElementById("app").classList.add("shown");
   document.getElementById("logout-btn").style.display = "";
   document.getElementById("sync-btn").style.display = "";
+  document.getElementById("sync-apa-btn").style.display = "";
 }
 
 async function loadAll() {
@@ -235,11 +250,13 @@ function renderLegs() {
 
     var crewPills = (l.crew || []).map(function(name) {
       var seen = flownBeforeWith(name, l.date);
+      var display = displayNameForCrew(name);
       return '<span class="crew-pill ' + (seen ? "repeat" : "") + '" ' +
         'onclick="scrollToCrew(\'' + name.replace(/'/g, "\\'") + '\')" ' +
         'title="' + (seen ? "Flown together before" : "First flight together") + '">' +
-        name + '</span>';
+        display + '</span>';
     }).join("");
+    var apaFlag = l._apa_sourced ? '<span title="from APA Sabre · click ⛏ SYNC APA CREW to persist" style="color:#06d6a0;margin-right:4px;font-size:10px">⚡</span>' : '';
     var crewEditId = "crew-edit-" + l.id;
 
     rows.push("<tr>" +
@@ -251,7 +268,7 @@ function renderLegs() {
       "<td class='col-time'>" + g2g + "</td>" +
       "<td class='col-aircraft'>" + aircraft + "</td>" +
       "<td class='col-crew'>" +
-        '<div>' + crewPills + '</div>' +
+        '<div>' + apaFlag + crewPills + '</div>' +
         '<input class="crew-edit" id="' + crewEditId + '" placeholder="add crew (comma-separated)" ' +
           'value="' + (l.crew || []).join(", ").replace(/"/g, "&quot;") + '" ' +
           'onblur="saveCrewForLeg(\'' + l.id + '\', this.value)" ' +
@@ -353,6 +370,34 @@ function parseEventToLeg(ev) {
     scheduled_out: ev.start || null,
     scheduled_in: ev.end || null,
   };
+}
+
+async function runSyncApaCrew() {
+  if (!confirm("Sync crew from APA Sabre cache for legs that have no crew yet? Already-filled legs will not be touched.")) return;
+  var btn = document.getElementById("sync-apa-btn");
+  btn.disabled = true;
+  var originalText = btn.textContent;
+  btn.textContent = "⏳ syncing...";
+  try {
+    var r = await fetch("/api/logbook/sync-apa-crew", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ force: false }),
+    });
+    var result = await r.json();
+    if (r.ok) {
+      setStatus("APA sync · " + result.updated + " updated · " + result.skipped + " skipped · " + result.no_data + " no APA data", "#06d6a0");
+      await loadAll();
+    } else {
+      setStatus("APA sync failed: " + (result.error || r.status), "#f44");
+    }
+  } catch (e) {
+    setStatus("APA sync error: " + e.message, "#f44");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+    setTimeout(function() { setStatus(""); }, 5000);
+  }
 }
 
 async function runSync() {

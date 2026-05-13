@@ -1287,10 +1287,79 @@ app.post("/api/logbook/auth", express.json(), (req, res) => {
   res.json({ token });
 });
 
+// --- APA-sourced crew helpers (used by logbook auto-fill) ---
+// LOGBOOK_USER_EMP_NUM filters the user themselves out of fetched crew lists
+// (no point logging "I flew with myself"). Defaults to Mike's emp number.
+const LOGBOOK_USER_EMP_NUM = process.env.LOGBOOK_USER_EMP_NUM || "861307";
+const PILOT_SEATS = new Set(["CA", "FO", "RC"]);
+
+function lbTitleCase(s) {
+  return String(s || "").toLowerCase().replace(/\b([a-z])/g, (_, c) => c.toUpperCase());
+}
+function apaCrewToDisplayName(c) {
+  const first = c.nickname || c.first_name || "";
+  const last = (c.name || "").split(" ")[0];
+  if (first && last) return lbTitleCase(first) + " " + lbTitleCase(last);
+  return c.name || "";
+}
+function normalizeLogbookLegKey(leg) {
+  if (!leg || (!leg.flight && !leg.flight_number) || !leg.date) return null;
+  const raw = leg.flight_number || leg.flight;
+  const flightNum = String(raw).replace(/^(AAL|AA)/i, "").replace(/^0+/, "") || "0";
+  let date = leg.date;
+  if (/^\d{2}\/\d{2}\/\d{2}$/.test(date)) {
+    const [m, d, y] = date.split("/");
+    date = `20${y}-${m}-${d}`;
+  } else if (/^\d{4}-\d{2}-\d{2}/.test(date)) {
+    date = date.slice(0, 10);
+  } else {
+    return null;
+  }
+  return { flightNum, date };
+}
+function getApaPilotsForLeg(leg) {
+  if (!crewCacheReady) return [];
+  const key = normalizeLogbookLegKey(leg);
+  if (!key) return [];
+  const rows = crewCache.getLegByFlight(key.flightNum, key.date);
+  if (!rows.length) return [];
+  let raw;
+  try { raw = JSON.parse(rows[0].crew_json || "[]"); } catch (e) { return []; }
+  return raw
+    .filter(c => c && PILOT_SEATS.has(c.seat) && c.name && c.name !== "OPEN")
+    .filter(c => String(c.emp_num || "") !== LOGBOOK_USER_EMP_NUM)
+    .map(apaCrewToDisplayName);
+}
+
 app.get("/api/logbook/legs", logbookAuth, (req, res) => {
   const legs = Object.values(logbook.legs).sort((a, b) =>
     (b.date || "").localeCompare(a.date || ""));
-  res.json({ legs });
+  // Read-only APA enrichment: any leg without crew gets pilots injected from
+  // the apa-sabre cache. Doesn't persist — that's what /sync-apa-crew is for.
+  const enriched = legs.map(leg => {
+    if (leg.crew && leg.crew.length > 0) return leg;
+    const apaCrew = getApaPilotsForLeg(leg);
+    if (!apaCrew.length) return leg;
+    return Object.assign({}, leg, { crew: apaCrew, _apa_sourced: true });
+  });
+  res.json({ legs: enriched });
+});
+
+// Walk every leg with empty crew, fetch from APA cache, persist names. Pass
+// {force:true} in body to also overwrite legs that already have crew.
+app.post("/api/logbook/sync-apa-crew", logbookAuth, express.json(), (req, res) => {
+  if (!crewCacheReady) return res.status(503).json({ error: "crew cache not ready" });
+  const force = !!(req.body && req.body.force);
+  let updated = 0, skipped = 0, no_data = 0;
+  for (const leg of Object.values(logbook.legs)) {
+    if (!force && leg.crew && leg.crew.length > 0) { skipped++; continue; }
+    const apaCrew = getApaPilotsForLeg(leg);
+    if (!apaCrew.length) { no_data++; continue; }
+    leg.crew = apaCrew;
+    updated++;
+  }
+  if (updated > 0) saveLogbook();
+  res.json({ updated, skipped, no_data, total: Object.keys(logbook.legs).length });
 });
 
 // Upsert a leg. Used both by the manual editor (just crew/notes change)
