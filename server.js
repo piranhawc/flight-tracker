@@ -17,6 +17,9 @@ const LOGBOOK_FILE = path.join(CACHE_DIR, "logbook.json");
 const CREW_FILE = path.join(CACHE_DIR, "crew.json");
 const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
 
+const apa = require("./apa-sabre-client");
+const crewCache = require("./crew-cache");
+
 // --- Persistent cache helpers ---
 function loadCache(file) {
   try {
@@ -1361,9 +1364,116 @@ app.post("/api/logbook/crew/:name", logbookAuth, express.json(), (req, res) => {
   res.json({ name, ...crew[name] });
 });
 
+// --- Crew cache (apa-sabre-service integration) ---
+// Pulls per-leg crew rosters from the apa-sabre-service and stores them in
+// SQLite. Persists across container rebuilds via the /data volume mount.
+
+let crewCacheReady = false;
+try {
+  crewCache.init();
+  crewCacheReady = true;
+} catch (e) {
+  console.error(`[crew-cache] init failed: ${e.message} — crew endpoints will return 503`);
+}
+
+async function refreshCrewCache() {
+  if (!crewCacheReady) return;
+  console.log("[crew-cache] starting refresh");
+  try {
+    const schedule = await apa.getCurrentSchedule();
+    // Trips that have already started or start within the next 14 days
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() + 14);
+    const upcoming = (schedule || []).filter(t => {
+      if (!t || !t.start_date) return false;
+      return new Date(t.start_date) <= cutoff;
+    });
+    console.log(`[crew-cache] refreshing ${upcoming.length} of ${schedule.length} trips`);
+    for (const trip of upcoming) {
+      try {
+        const pairing = await apa.getPairingCrew(trip.ep, trip.seq);
+        if (pairing && pairing.legs) {
+          crewCache.upsertPairing(pairing);
+          console.log(`[crew-cache]   ${trip.ep}/${trip.seq} (${pairing.legs.length} legs) ok`);
+        }
+      } catch (err) {
+        console.error(`[crew-cache]   ${trip.ep}/${trip.seq} failed: ${err.message}`);
+      }
+    }
+    console.log(`[crew-cache] refresh complete (${crewCache.countAll()} legs cached)`);
+  } catch (err) {
+    console.error(`[crew-cache] refresh failed: ${err.message}`);
+  }
+}
+
+// Initial fetch 5 sec after startup so the apa-sabre-service has time to be
+// ready. Then refresh every 12 hours.
+if (crewCacheReady) {
+  setTimeout(() => { refreshCrewCache().catch(() => {}); }, 5000);
+  setInterval(() => { refreshCrewCache().catch(() => {}); }, 12 * 60 * 60 * 1000);
+}
+
+app.get("/api/crew/health", async (req, res) => {
+  if (!crewCacheReady) return res.status(503).json({ ok: false, error: "crew cache not initialized" });
+  try {
+    const h = await apa.getHealth();
+    res.json(h);
+  } catch (err) {
+    res.status(503).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/crew/:ep/:seq", (req, res) => {
+  if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
+  const ep = parseInt(req.params.ep, 10);
+  const seq = parseInt(req.params.seq, 10);
+  if (!ep || !seq) return res.status(400).json({ error: "invalid ep/seq" });
+  const data = crewCache.getPairing(ep, seq);
+  if (!data) return res.status(404).json({ error: "not in cache" });
+  res.json(data);
+});
+
+app.post("/api/crew/:ep/:seq/refresh", async (req, res) => {
+  if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
+  const ep = parseInt(req.params.ep, 10);
+  const seq = parseInt(req.params.seq, 10);
+  if (!ep || !seq) return res.status(400).json({ error: "invalid ep/seq" });
+  try {
+    const pairing = await apa.getPairingCrew(ep, seq);
+    if (pairing && pairing.legs) {
+      crewCache.upsertPairing(pairing);
+      return res.json({ ok: true, legs: pairing.legs.length });
+    }
+    res.status(502).json({ error: "no data returned" });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.get("/api/crew/flight/:flightNum/:date", (req, res) => {
+  if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
+  const rows = crewCache.getLegByFlight(req.params.flightNum, req.params.date);
+  if (rows.length === 0) return res.status(404).json({ error: "not in cache" });
+  res.json(rows.map(r => ({
+    ep: r.ep, seq: r.seq, leg_idx: r.leg_idx,
+    flight: r.flight, date: r.flight_date,
+    dep: { airport: r.dep_apt, time: r.dep_time },
+    arr: { airport: r.arr_apt, time: r.arr_time },
+    crew: JSON.parse(r.crew_json),
+    open_seats: JSON.parse(r.open_seats_json),
+    fetched_at: r.fetched_at,
+  })));
+});
+
+app.post("/api/crew/refresh-all", (req, res) => {
+  if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
+  refreshCrewCache().catch(() => {});
+  res.json({ ok: true, message: "refresh started in background" });
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Flight tracker running on port ${PORT}`);
   console.log(`ICS_URL: ${ICS_URL ? "configured" : "NOT SET"}`);
   console.log(`FA_API_KEY: ${FA_API_KEY ? "configured" : "NOT SET"}`);
   console.log(`Logbook: ${Object.keys(logbook.legs).length} legs, ${Object.keys(crew).length} crew · password=${LOGBOOK_PASSWORD === "logbook" ? "DEFAULT — set LOGBOOK_PASSWORD env var" : "configured"}`);
+  console.log(`Crew cache: ${crewCacheReady ? `ready (${crewCache.countAll()} legs) · APA service ${apa.APA_SABRE_BASE}` : "NOT INITIALIZED"}`);
 });

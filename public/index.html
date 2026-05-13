@@ -147,7 +147,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-09.2</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-13.1</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
@@ -315,6 +315,8 @@ async function fetchRegistrations(trip) {
   fetchPhotos(legs);
   // ...and look up inbound aircraft status for upcoming non-DH legs.
   fetchInboundForTrip(trip);
+  // ...and fetch crew roster from apa-sabre cache.
+  fetchCrewForTrip(trip);
 }
 
 async function fetchPhotos(legs) {
@@ -431,6 +433,84 @@ function clearGhostInbound() {
   var btn = document.getElementById("ghost-clear-btn");
   if (btn) btn.remove();
   drawMap();
+}
+
+// Per-pairing crew cache (sourced from /api/crew/:ep/:seq, which serves
+// data scraped by apa-sabre-service). Keyed by "ep-seq".
+var crewByPairing = {};
+function getEpForTrip(trip) {
+  if (!trip || !trip.legs || !trip.legs.length) return null;
+  var d = new Date(trip.legs[0].start);
+  return d.getFullYear() * 100 + (d.getMonth() + 1);
+}
+function fetchCrewForTrip(trip) {
+  if (!trip || !trip.seq) return Promise.resolve(null);
+  var ep = getEpForTrip(trip);
+  if (!ep) return Promise.resolve(null);
+  var key = ep + "-" + trip.seq;
+  if (crewByPairing[key] !== undefined) return Promise.resolve(crewByPairing[key]);
+  crewByPairing[key] = null; // mark in-flight so we don't double-fetch
+  return fetch("/api/crew/" + ep + "/" + trip.seq)
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) {
+      crewByPairing[key] = d;
+      if (d) renderTrips();
+      return d;
+    })
+    .catch(function() { crewByPairing[key] = null; return null; });
+}
+function refreshCrewForTrip(trip) {
+  var ep = getEpForTrip(trip);
+  if (!ep || !trip.seq) return;
+  showToast("Refreshing crew for SEQ " + trip.seq + "…");
+  fetch("/api/crew/" + ep + "/" + trip.seq + "/refresh", { method: "POST" })
+    .then(function(r) { return r.ok ? r.json() : r.json().then(function(j) { throw new Error(j.error || "HTTP " + r.status); }); })
+    .then(function(d) {
+      if (d && d.ok) {
+        delete crewByPairing[ep + "-" + trip.seq];
+        showToast("Crew refreshed · " + d.legs + " legs");
+        fetchCrewForTrip(trip);
+      } else {
+        showToast("Refresh failed", { error: true });
+      }
+    })
+    .catch(function(e) { showToast("Refresh failed: " + (e.message || ""), { error: true }); });
+}
+function getCrewForLeg(trip, leg) {
+  var ep = getEpForTrip(trip);
+  if (!ep || !trip.seq) return null;
+  var pairing = crewByPairing[ep + "-" + trip.seq];
+  if (!pairing || !pairing.legs) return null;
+  var d = new Date(leg.start);
+  var legDateStr = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+  return pairing.legs.find(function(pleg) {
+    return String(pleg.flight) === String(leg.num) && pleg.date === legDateStr;
+  }) || null;
+}
+function titleCase(s) {
+  return String(s || "").toLowerCase().replace(/\b([a-z])/g, function(_, c) { return c.toUpperCase(); });
+}
+function renderCrewForLeg(legData) {
+  if (!legData || !legData.crew || legData.crew.length === 0) return "";
+  var seatOrder = { CA: 0, FO: 1, RC: 2 };
+  var sorted = legData.crew.slice().sort(function(a, b) {
+    var ai = seatOrder[a.seat] !== undefined ? seatOrder[a.seat] : (parseInt(a.seat, 10) || 99);
+    var bi = seatOrder[b.seat] !== undefined ? seatOrder[b.seat] : (parseInt(b.seat, 10) || 99);
+    return ai - bi;
+  });
+  var openSeats = (legData.open_seats || []).length
+    ? '<span style="color:#f44;margin-left:8px">open: ' + legData.open_seats.join(", ") + '</span>'
+    : "";
+  var pieces = sorted.map(function(c) {
+    var first = c.nickname || c.first_name || "";
+    var last = (c.name || "").split(" ")[0];
+    var name = first ? (titleCase(first) + " " + titleCase(last)) : titleCase(c.name || "");
+    var rem = c.remarks ? '<span style="color:#666"> (' + c.remarks + ')</span>' : "";
+    return '<span style="color:#888"><b style="color:#06d6a0">' + c.seat + '</b> ' + name + rem + '</span>';
+  });
+  return '<div class="leg-details" style="color:#888">' +
+    '<span style="color:#06d6a0">👥</span> ' + pieces.join('<span style="color:#333"> · </span>') + openSeats +
+    '</div>';
 }
 
 // Per-leg inbound aircraft info (light fetch — uses /api/inbound which only
@@ -1350,6 +1430,7 @@ function renderTripCard(trip, idx) {
       '</div>' +
       detailsHtml +
       inboundHtml +
+      renderCrewForLeg(getCrewForLeg(trip, l)) +
       photoHtml +
     '</div>';
   });
@@ -1359,7 +1440,9 @@ function renderTripCard(trip, idx) {
       '<span class="route">'+tripRoute(trip.legs)+'</span>' +
       '<span class="delta">'+timeDelta(trip.legs[0].start)+'</span>' +
     '</div>' +
-    '<div class="info">'+tripDates(trip.legs)+' · '+trip.legs.length+' leg'+(trip.legs.length>1?"s":"")+ ' · SEQ '+(trip.seq||"—")+'</div>' +
+    '<div class="info">'+tripDates(trip.legs)+' · '+trip.legs.length+' leg'+(trip.legs.length>1?"s":"")+ ' · SEQ '+(trip.seq||"—")+
+      (trip.seq ? ' · <a href="javascript:void(0)" onclick="event.stopPropagation();refreshCrewForTrip(allTrips.find(function(t){return t.seq===\''+trip.seq+'\'}))" style="color:#06d6a0;text-decoration:underline">↻ crew</a>' : "") +
+    '</div>' +
     '<div class="legs">'+legsHtml+'</div>' +
   '</div>';
 }

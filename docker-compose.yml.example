@@ -7,7 +7,10 @@ services:
     network_mode: host
     environment:
       - PORT=3099
-      - HA_URL=https://home.mikegoebel.net
-      - HA_TOKEN=<Your_HA_Token>
+      - ICS_URL=https://cal.example.com/yourcalendarid.ics
       - FA_API_KEY=<Your_FlightAware_Token>
-      - CALENDAR_ENTITY=calendar.american_airlines_schedule
+      - LOGBOOK_PASSWORD=<set-a-real-password>
+      - APA_SABRE_BASE=http://192.168.128.115:8765
+      - CREW_DB_PATH=/data/flight-tracker.db
+    volumes:
+      - ./data:/data

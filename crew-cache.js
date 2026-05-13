@@ -1,0 +1,120 @@
+// Persistent SQLite cache of crew data fetched from apa-sabre-service.
+// Per-leg rows so we can correlate by AA flight number + date, and so
+// flight-attendant changes mid-trip are stored accurately. Whole crew
+// array is stored as a JSON blob — we always read all of it.
+
+const Database = require("better-sqlite3");
+const path = require("path");
+const fs = require("fs");
+
+const DB_PATH = process.env.CREW_DB_PATH || "/data/flight-tracker.db";
+
+let db = null;
+
+function init() {
+  // Make sure the parent dir exists. Failing here is fatal for crew but
+  // shouldn't crash the rest of the app.
+  try { fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); } catch (e) {}
+  db = new Database(DB_PATH);
+  db.pragma("journal_mode = WAL");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS crew_cache (
+      ep INTEGER NOT NULL,
+      seq INTEGER NOT NULL,
+      leg_idx INTEGER NOT NULL,
+      flight TEXT NOT NULL,
+      dep_apt TEXT NOT NULL,
+      dep_time TEXT NOT NULL,
+      arr_apt TEXT NOT NULL,
+      arr_time TEXT NOT NULL,
+      flight_date TEXT NOT NULL,
+      crew_json TEXT NOT NULL,
+      open_seats_json TEXT NOT NULL,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (ep, seq, leg_idx)
+    );
+    CREATE INDEX IF NOT EXISTS idx_crew_fetched ON crew_cache(fetched_at);
+    CREATE INDEX IF NOT EXISTS idx_crew_date ON crew_cache(flight_date);
+  `);
+  console.log(`[crew-cache] DB at ${DB_PATH} ready (${countAll()} legs cached)`);
+  return db;
+}
+
+function countAll() {
+  if (!db) return 0;
+  return db.prepare("SELECT COUNT(*) AS n FROM crew_cache").get().n;
+}
+
+function upsertPairing(pairing) {
+  if (!db) throw new Error("crew-cache not initialized");
+  const stmt = db.prepare(`
+    INSERT INTO crew_cache (ep, seq, leg_idx, flight, dep_apt, dep_time,
+                            arr_apt, arr_time, flight_date,
+                            crew_json, open_seats_json, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ep, seq, leg_idx) DO UPDATE SET
+      flight = excluded.flight,
+      dep_apt = excluded.dep_apt,
+      dep_time = excluded.dep_time,
+      arr_apt = excluded.arr_apt,
+      arr_time = excluded.arr_time,
+      flight_date = excluded.flight_date,
+      crew_json = excluded.crew_json,
+      open_seats_json = excluded.open_seats_json,
+      fetched_at = excluded.fetched_at
+  `);
+  const tx = db.transaction((legs) => {
+    legs.forEach((leg, idx) => {
+      stmt.run(
+        pairing.ep, pairing.seq, idx,
+        String(leg.flight || ""), leg.dep_apt || "", leg.dep_time || "",
+        leg.arr_apt || "", leg.arr_time || "", leg.date || "",
+        JSON.stringify(leg.crew || []),
+        JSON.stringify(leg.open_seats || []),
+        new Date().toISOString()
+      );
+    });
+  });
+  tx(pairing.legs || []);
+}
+
+function getPairing(ep, seq) {
+  if (!db) return null;
+  const rows = db.prepare(`
+    SELECT * FROM crew_cache WHERE ep = ? AND seq = ? ORDER BY leg_idx
+  `).all(ep, seq);
+  if (rows.length === 0) return null;
+  return {
+    ep, seq,
+    legs: rows.map(r => ({
+      leg_idx: r.leg_idx,
+      flight: r.flight,
+      dep_apt: r.dep_apt,
+      dep_time: r.dep_time,
+      arr_apt: r.arr_apt,
+      arr_time: r.arr_time,
+      date: r.flight_date,
+      crew: JSON.parse(r.crew_json),
+      open_seats: JSON.parse(r.open_seats_json),
+      fetched_at: r.fetched_at,
+    })),
+  };
+}
+
+function getLegByFlight(flightNum, date) {
+  if (!db) return [];
+  return db.prepare(`
+    SELECT * FROM crew_cache WHERE flight = ? AND flight_date = ?
+  `).all(String(flightNum), date);
+}
+
+function listAllPairings() {
+  if (!db) return [];
+  return db.prepare(`
+    SELECT ep, seq, MIN(flight_date) AS start_date,
+           MAX(fetched_at) AS last_fetched
+    FROM crew_cache GROUP BY ep, seq ORDER BY start_date DESC
+  `).all();
+}
+
+module.exports = { init, upsertPairing, getPairing, getLegByFlight, listAllPairings, countAll };

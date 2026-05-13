@@ -3,7 +3,7 @@
 Personal flight tracker that pulls your AA schedule from Home Assistant's Google Calendar integration and provides live tracking via FlightAware AeroAPI.
 
 ##### Features
-- Pulls flight events from HA calendar (APA Calendar Sync format)
+- Pulls flight events from a public ICS calendar feed (APA Calendar Sync format)
 - Groups flights by trip sequence (SEQ)
 - Shows routes on a dark map with arc lines
 - Live airplane position tracking via FlightAware AeroAPI
@@ -12,6 +12,17 @@ Personal flight tracker that pulls your AA schedule from Home Assistant's Google
 - FlightAware and FlightRadar24 links for each leg
 - Past/upcoming/all trip filtering
 - Deadhead legs shown dimmed with dashed lines
+- Crew information per leg (CA / FO / FAs) sourced from APA Sabre via the
+  apa-sabre-service. Cached locally in SQLite; nightly background refresh +
+  manual ↻ refresh button per trip.
+
+## Requirements
+
+- FlightAware AeroAPI key (Personal tier or higher)
+- ICS calendar URL with APA Calendar Sync events
+- (Optional) The crew feature requires the **apa-sabre-service** to be running
+  and reachable at the address in `APA_SABRE_BASE`. Without it, the rest of
+  the flight-tracker still works — crew sections just won't populate.
 
 ## Deployment on Unraid
 
