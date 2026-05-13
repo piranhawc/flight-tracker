@@ -1460,6 +1460,26 @@ try {
 const UID_RE = /^HI-(\d{6})-(\d{4,5})-(\d+)-leg(\d{2})@/;
 const SUMMARY_RE = /^AA\s+(\d{1,4})\s+(?:\(DH\)\s+)?([A-Z]{3})-([A-Z]{3})/;
 
+// The apa-sabre crew cache uses the LOCAL departure date — what the airline
+// calls "today's flight". For evening departures the UTC date crosses
+// midnight, so the UTC date and the local date disagree. Derive the local
+// date by parsing the "HH:MML" marker in the summary against the UTC start.
+function deriveLocalDateFromEvent(event) {
+  const m = (event.summary || "").match(/\((\d{1,2}):(\d{2})L\s*-/);
+  if (!m) return null;
+  const localH = parseInt(m[1], 10);
+  const localMi = parseInt(m[2], 10);
+  const start = new Date(event.start);
+  if (isNaN(start.getTime())) return null;
+  const utcMins = start.getUTCHours() * 60 + start.getUTCMinutes();
+  const localMins = localH * 60 + localMi;
+  // offset minutes such that local = utc - offset. Normalize to [-720, 720].
+  let offset = utcMins - localMins;
+  if (offset > 720) offset -= 1440;
+  if (offset < -720) offset += 1440;
+  return new Date(start.getTime() - offset * 60000).toISOString().slice(0, 10);
+}
+
 function parseCalendarEvent(event) {
   if (!event || !event.uid || !event.summary || !event.start) return null;
   const sumMatch = SUMMARY_RE.exec(event.summary);
@@ -1479,7 +1499,7 @@ function parseCalendarEvent(event) {
 
   const startDate = new Date(event.start);
   const endDate = new Date(event.end || event.start);
-  const flightDate = startDate.toISOString().slice(0, 10);
+  const flightDate = deriveLocalDateFromEvent(event) || startDate.toISOString().slice(0, 10);
 
   return {
     leg_id: event.uid, // stable across runs — UID is what /api/flights returns
