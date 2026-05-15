@@ -18,6 +18,7 @@ const CREW_FILE = path.join(CACHE_DIR, "crew.json");
 const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
 
 const apa = require("./apa-sabre-client");
+const apaLogbook = require("./apa-logbook-client");
 const crewCache = require("./crew-cache");
 
 // --- Persistent cache helpers ---
@@ -1493,10 +1494,12 @@ function dedupeLogbookLegs() {
   for (const key in groups) {
     const items = groups[key];
     if (items.length < 2) continue;
-    // Best = has notes, then has crew, then is auto-filled (canonical UID-based one)
+    // Best = has notes, then APA-sourced (authoritative — real actuals +
+    // tail + verified crew), then has crew, then is auto-filled.
     const sorted = items.slice().sort((a, b) => {
       const score = (l) =>
-        ((l.notes && String(l.notes).trim()) ? 4 : 0) +
+        ((l.notes && String(l.notes).trim()) ? 8 : 0) +
+        (l._source === "apa-logbook" ? 4 : 0) +
         ((l.crew && l.crew.length) ? 2 : 0) +
         (l._auto_filled ? 1 : 0);
       return score(b.leg) - score(a.leg);
@@ -1518,6 +1521,25 @@ function dedupeLogbookLegs() {
   if (removed > 0) {
     saveLogbook();
     console.log(`[logbook dedupe] removed ${removed} duplicate legs`);
+  }
+  return removed;
+}
+
+// Remove any legs flagged isDH=true. Called on startup, after every import,
+// and via the manual endpoint. Older sync paths persisted DH legs; current
+// import paths skip them but we want existing strays gone too.
+function purgeDeadheadsFromLogbook() {
+  let removed = 0;
+  for (const id of Object.keys(logbook.legs)) {
+    const leg = logbook.legs[id];
+    if (leg && (leg.isDH === true || leg.isDeadhead === true)) {
+      delete logbook.legs[id];
+      removed++;
+    }
+  }
+  if (removed > 0) {
+    saveLogbook();
+    console.log(`[logbook] purged ${removed} deadhead legs`);
   }
   return removed;
 }
@@ -1723,7 +1745,8 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
 
   if (created + updated > 0) saveLogbook();
   const deduped = dedupeLogbookLegs();
-  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew} deduped=${deduped}`);
+  const dhPurged = purgeDeadheadsFromLogbook();
+  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew} deduped=${deduped} dh_purged=${dhPurged}`);
 
   // Fire-and-forget FA actuals fetch for any past legs without actual_in.
   // Throttled by the existing FA queue (10s gap). Doesn't block the response.
@@ -1825,7 +1848,7 @@ async function refreshCrewCache() {
 if (crewCacheReady) {
   // One-shot dedupe of any legacy duplicate logbook entries on boot
   // (composite ID + UID, or scheduled-vs-actual calendar dupes).
-  setTimeout(() => { dedupeLogbookLegs(); }, 500);
+  setTimeout(() => { dedupeLogbookLegs(); purgeDeadheadsFromLogbook(); }, 500);
   // Sync against whatever's already on disk before the network fetch in case
   // legs were added since last refresh.
   setTimeout(() => { autoSyncLogbookCrewFromApa(); }, 1000);
@@ -1836,6 +1859,14 @@ if (crewCacheReady) {
   // pass so the crew cache has a chance to settle.
   setTimeout(() => { importCompletedFlights().catch(() => {}); }, 60 * 1000);
   setInterval(() => { importCompletedFlights().catch(() => {}); }, 30 * 60 * 1000);
+  // Daily APA logbook sync of the current month (the authoritative source
+  // for completed legs — fills in crew + actuals + tail). Big multi-month
+  // backfill is on-demand via the BACKFILL FROM APA button.
+  setInterval(() => {
+    const now = new Date();
+    const ym = now.getFullYear() * 100 + (now.getMonth() + 1);
+    backfillFromApa({ since: ym, force: false }).catch(() => {});
+  }, 24 * 60 * 60 * 1000);
 }
 
 app.get("/api/crew/health", async (req, res) => {
@@ -1911,8 +1942,200 @@ app.post("/api/logbook/import-from-calendar", logbookAuth, express.json(), async
 });
 
 // Manual dedupe (auto-log already calls this, but expose it too).
+// --- APA logbook backfill ---
+// Pulls completed-flight history from the apa-logbook proxy service. APA's
+// own logbook keeps ~28 months and includes crew + tail + actuals, so this
+// is the canonical source for historical legs (vs apa-sabre which only has
+// the current bid month).
+
+const empNameCache = new Map();
+async function resolveEmpNames(empNums) {
+  const unknowns = empNums.filter(e => e && !empNameCache.has(e));
+  if (!unknowns.length) return;
+  try {
+    const users = await apaLogbook.getUsers(unknowns);
+    for (const u of users || []) {
+      const first = (u.nickName || u.firstName || "").trim();
+      const last = (u.lastName || "").trim();
+      const display = first && last ? `${lbTitleCase(first)} ${lbTitleCase(last)}` : (lbTitleCase(last || first) || u.username);
+      empNameCache.set(u.username, display);
+    }
+  } catch (err) {
+    console.error("[apa-backfill] user resolve failed:", err.message);
+  }
+  // Mark anything we couldn't resolve so we don't retry forever
+  for (const e of unknowns) {
+    if (!empNameCache.has(e)) empNameCache.set(e, `emp:${e}`);
+  }
+}
+function lbTitleCase(s) {
+  return String(s || "").toLowerCase().replace(/\b([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+const APA_PILOT_SEATS = new Set(["CA", "FO", "RC"]);
+function makeApaLogId(year, month, seq, legIdx) {
+  return `apa-${year}-${String(month).padStart(2, "0")}-${seq}-leg${String(legIdx).padStart(2, "0")}`;
+}
+
+let backfillRunning = false;
+async function backfillFromApa({ since = null, force = false } = {}) {
+  if (backfillRunning) return { error: "backfill already running" };
+  backfillRunning = true;
+  console.log(`[apa-backfill] starting (since=${since || "all"}, force=${force})`);
+  let periods;
+  try {
+    periods = await apaLogbook.getAllPeriods();
+  } catch (err) {
+    backfillRunning = false;
+    console.error("[apa-backfill] all-periods failed:", err.message);
+    return { error: err.message };
+  }
+
+  // Build chronological list of (year, month) to walk, skipping months
+  // before `since` and months with zero logged time.
+  const ymPairs = [];
+  for (const yearData of (periods || []).slice().sort((a, b) => a.year - b.year)) {
+    for (const monthData of (yearData.months || []).slice().sort((a, b) => a.month - b.month)) {
+      if (!monthData || monthData.totalTime <= 0) continue;
+      const ym = yearData.year * 100 + monthData.month;
+      if (since && ym < since) continue;
+      ymPairs.push([yearData.year, monthData.month]);
+    }
+  }
+  console.log(`[apa-backfill] processing ${ymPairs.length} months`);
+
+  let totalLegs = 0, created = 0, updated = 0, skipped = 0, deadhead = 0;
+
+  for (const [year, month] of ymPairs) {
+    let summary;
+    try {
+      summary = await apaLogbook.getSummary(year, month);
+    } catch (err) {
+      console.error(`[apa-backfill] ${year}/${month} failed:`, err.message);
+      continue;
+    }
+    const sequences = summary.sequences || [];
+    if (!sequences.length) { console.log(`[apa-backfill]   ${year}/${month}: 0 sequences`); continue; }
+
+    // Resolve every emp num for this month in one batch
+    const empsToResolve = new Set();
+    for (const seq of sequences) {
+      for (const dp of seq.dutyPeriodSummaries || []) {
+        for (const leg of dp.legs || []) {
+          for (const c of leg.flightCrew || []) {
+            if (c.employeeNumber && APA_PILOT_SEATS.has(c.seat)) empsToResolve.add(c.employeeNumber);
+          }
+        }
+      }
+    }
+    if (empsToResolve.size) await resolveEmpNames([...empsToResolve]);
+
+    let monthCreated = 0, monthUpdated = 0;
+    for (const seq of sequences) {
+      for (const dp of seq.dutyPeriodSummaries || []) {
+        for (const leg of dp.legs || []) {
+          totalLegs++;
+          if (leg.isDeadhead || leg.isCancelled || leg.isRemoved) { deadhead++; continue; }
+          const legId = makeApaLogId(year, month, seq.sequenceNumber, leg.index);
+          const existing = logbook.legs[legId];
+          if (existing && !force) {
+            const userTouched = (existing.notes && String(existing.notes).trim()) || existing._user_edited === true;
+            if (userTouched) { skipped++; continue; }
+          }
+
+          const depISO = leg.departure?.actual?.local || leg.departure?.scheduled?.local || "";
+          const depDate = depISO.slice(0, 10);
+          const pilotCrew = (leg.flightCrew || [])
+            .filter(c => APA_PILOT_SEATS.has(c.seat))
+            .filter(c => String(c.employeeNumber || "") !== LOGBOOK_USER_EMP_NUM)
+            .map(c => empNameCache.get(c.employeeNumber) || `emp:${c.employeeNumber}`);
+
+          const record = {
+            id: legId,
+            flight: "AA" + leg.flightNumber,
+            flight_number: String(leg.flightNumber),
+            date: depDate,
+            dep: leg.departureStation?.code || "",
+            arr: leg.arrivalStation?.code || "",
+            scheduled_out: leg.departure?.scheduled?.utc || null,
+            scheduled_in: leg.arrival?.scheduled?.utc || null,
+            actual_out: leg.departure?.actual?.utc || null,
+            actual_in: leg.arrival?.actual?.utc || null,
+            aircraft: leg.aircraft?.id || "",
+            aircraft_type: leg.aircraft?.type?.short || "",
+            tail: leg.aircraft?.faa || "",
+            registration: leg.aircraft?.faa || leg.aircraft?.id || "",
+            block_min_scheduled: leg.flightTimeScheduled || null,
+            block_min_actual: leg.flightTimeActual || null,
+            distance: leg.flightDistance || null,
+            passengers: leg.passengerCount || null,
+            seq: seq.sequenceNumber,
+            ep: year * 100 + month,
+            seat: seq.seat,
+            crew: pilotCrew,
+            _source: "apa-logbook",
+          };
+
+          if (existing) {
+            record.notes = existing.notes || "";
+            if (existing._user_edited) record._user_edited = true;
+            Object.assign(existing, record);
+            updated++; monthUpdated++;
+          } else {
+            logbook.legs[legId] = record;
+            created++; monthCreated++;
+          }
+        }
+      }
+    }
+    saveLogbook();
+    console.log(`[apa-backfill]   ${year}/${month}: ${sequences.length} sequences · ${monthCreated} new · ${monthUpdated} updated`);
+  }
+
+  backfillRunning = false;
+  const dhPurged = purgeDeadheadsFromLogbook();
+  console.log(`[apa-backfill] done. created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} totalLegs=${totalLegs} dh_purged=${dhPurged}`);
+  return { created, updated, skipped, deadhead, totalLegs, dh_purged: dhPurged };
+}
+
+app.post("/api/logbook/backfill-from-apa", logbookAuth, express.json(), (req, res) => {
+  const since = req.body && req.body.since;
+  const force = !!(req.body && req.body.force);
+  if (backfillRunning) return res.status(409).json({ error: "backfill already running" });
+  // Fire-and-forget — backfill is minutes long, return immediately
+  backfillFromApa({ since, force })
+    .then(r => console.log("[apa-backfill] completed:", r))
+    .catch(err => console.error("[apa-backfill] errored:", err));
+  res.json({ ok: true, message: "backfill started in background" });
+});
+
+app.post("/api/logbook/sync-current-month", logbookAuth, async (req, res) => {
+  const now = new Date();
+  const ym = now.getFullYear() * 100 + (now.getMonth() + 1);
+  try {
+    const result = await backfillFromApa({ since: ym, force: false });
+    res.json(result);
+  } catch (err) {
+    res.status(503).json({ error: err.message });
+  }
+});
+
+app.get("/api/logbook/apa-stats", logbookAuth, async (req, res) => {
+  try {
+    const stats = await apaLogbook.getStats();
+    res.json(stats);
+  } catch (err) {
+    res.status(503).json({ error: err.message });
+  }
+});
+
 app.post("/api/logbook/dedupe", logbookAuth, (req, res) => {
   const removed = dedupeLogbookLegs();
+  res.json({ removed, total: Object.keys(logbook.legs).length });
+});
+
+app.post("/api/logbook/purge-deadheads", logbookAuth, (req, res) => {
+  const removed = purgeDeadheadsFromLogbook();
   res.json({ removed, total: Object.keys(logbook.legs).length });
 });
 

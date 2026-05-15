@@ -76,9 +76,12 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-05-15.2</span>
+    <span class="meta" title="Build version">v2026-05-15.4</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
-    <button class="btn" id="import-btn" onclick="runImportFromCalendar()" style="display:none" title="Pull completed flights from calendar, fill crew from APA, fetch FA actuals for the last 14 days">📥 IMPORT FROM CALENDAR</button>
+    <span class="meta" id="apa-stats-summary" style="display:none"></span>
+    <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
+    <button class="btn" id="apa-sync-current-btn" onclick="runApaSyncCurrentMonth()" style="display:none" title="Sync just the current bid month from APA (fast, ~5 sec)">↻ MONTH</button>
+    <button class="btn" id="import-btn" onclick="runImportFromCalendar()" style="display:none" title="Pull completed flights from calendar, fill crew from APA, fetch FA actuals for the last 14 days">📥 CALENDAR</button>
     <button class="btn" id="import-force-btn" onclick="runImportFromCalendar(true)" style="display:none" title="Re-import everything, overwriting auto-filled crew (preserves notes)">⟳ FORCE</button>
     <button class="btn" id="sync-apa-btn" onclick="runSyncApaCrew()" style="display:none" title="Fill crew on existing legs that have empty crew arrays">⛏ SYNC APA CREW</button>
     <button class="btn" id="logout-btn" onclick="logout()" style="display:none">LOGOUT</button>
@@ -142,6 +145,9 @@ function logout() {
   document.getElementById("sync-apa-btn").style.display = "none";
   document.getElementById("import-btn").style.display = "none";
   document.getElementById("import-force-btn").style.display = "none";
+  document.getElementById("apa-backfill-btn").style.display = "none";
+  document.getElementById("apa-sync-current-btn").style.display = "none";
+  document.getElementById("apa-stats-summary").style.display = "none";
 }
 
 document.getElementById("login-form").addEventListener("submit", async function(e) {
@@ -176,6 +182,9 @@ async function initApp() {
   document.getElementById("sync-apa-btn").style.display = "";
   document.getElementById("import-btn").style.display = "";
   document.getElementById("import-force-btn").style.display = "";
+  document.getElementById("apa-backfill-btn").style.display = "";
+  document.getElementById("apa-sync-current-btn").style.display = "";
+  loadApaStats();
 }
 
 async function loadAll() {
@@ -222,6 +231,12 @@ function fmtTime(iso, tz) {
   } catch (e) { return new Date(iso).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:false}); }
 }
 function gateToGate(leg) {
+  // APA block time (in minutes) is authoritative when present.
+  if (leg.block_min_actual) {
+    var h1 = Math.floor(leg.block_min_actual / 60);
+    var m1 = leg.block_min_actual % 60;
+    return h1 + "h" + (m1 < 10 ? "0" : "") + m1;
+  }
   if (!leg.actual_out || !leg.actual_in) return null;
   var ms = new Date(leg.actual_in) - new Date(leg.actual_out);
   if (ms <= 0) return null;
@@ -229,11 +244,17 @@ function gateToGate(leg) {
   var m = Math.round((ms % 3600000) / 60000);
   return h + "h" + (m < 10 ? "0" : "") + m;
 }
+function aircraftLabel(leg) {
+  var tail = leg.tail || leg.registration || leg.aircraft || "";
+  var type = leg.aircraft_type || "";
+  if (!tail && !type) return "—";
+  return tail + (type ? " · " + type : "");
+}
 
 function renderLegs() {
   var host = document.getElementById("legs-host");
   if (!legsData.length) {
-    host.innerHTML = '<div class="empty">No legs yet. Click <b>SYNC FROM CALENDAR + FA</b> to import from your calendar.</div>';
+    host.innerHTML = '<div class="empty">No legs yet. Click <b>📚 BACKFILL FROM APA</b> to import ~28 months of flight history with real captain names and tails.</div>';
     return;
   }
   // Group legs by date for readability
@@ -243,7 +264,7 @@ function renderLegs() {
     "<th>Aircraft</th><th>Crew</th></tr></thead><tbody>"];
   legsData.forEach(function(l) {
     var dateStr = l.date || (l.scheduled_out || "").split("T")[0] || "—";
-    var aircraft = (l.registration || "—") + (l.aircraft_type ? " · " + l.aircraft_type : "");
+    var aircraft = aircraftLabel(l);
     var actOut = l.actual_out ? fmtTime(l.actual_out) : "";
     var schedOut = l.scheduled_out ? fmtTime(l.scheduled_out) : "—";
     var actIn = l.actual_in ? fmtTime(l.actual_in) : "";
@@ -375,6 +396,89 @@ function parseEventToLeg(ev) {
     scheduled_out: ev.start || null,
     scheduled_in: ev.end || null,
   };
+}
+
+async function loadApaStats() {
+  try {
+    var r = await fetch("/api/logbook/apa-stats", { headers: authHeaders() });
+    if (!r.ok) return;
+    var s = await r.json();
+    if (!s || s.totalTime == null) return;
+    var hours = Math.round((s.totalTime / 60) * 10) / 10;
+    var miles = s.totalDistance ? Math.round(s.totalDistance) : 0;
+    var pax = s.totalPassengerCount || 0;
+    var el = document.getElementById("apa-stats-summary");
+    el.textContent = "APA · " + hours + " hr · " + miles.toLocaleString() + " mi · " + pax.toLocaleString() + " pax";
+    el.style.display = "";
+  } catch (e) {}
+}
+
+async function runBackfillFromApa() {
+  if (!confirm("Backfill logbook from APA? Walks every month going back ~28 months (Oct 2023 → today) and may take 1–2 minutes. Manual edits are preserved.")) return;
+  var btn = document.getElementById("apa-backfill-btn");
+  btn.disabled = true;
+  var original = btn.textContent;
+  btn.textContent = "⏳ starting...";
+  try {
+    var r = await fetch("/api/logbook/backfill-from-apa", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ force: false }),
+    });
+    var result = await r.json();
+    if (!r.ok) { setStatus("Backfill failed: " + (result.error || r.status), "#f44"); return; }
+    setStatus("Backfill running in background · watch container logs for progress", "#06d6a0");
+    // Poll legs every 10 sec to update count as legs land. Stop at 6 min.
+    var startCount = legsData.length;
+    var attempts = 0;
+    btn.textContent = "⏳ running...";
+    var poll = setInterval(async function() {
+      await loadAll();
+      var diff = legsData.length - startCount;
+      btn.textContent = "⏳ " + diff + " new · running...";
+      attempts++;
+      if (attempts >= 36) { // ~6 min
+        clearInterval(poll);
+        btn.disabled = false;
+        btn.textContent = original;
+        setStatus("Backfill polling stopped — refresh to check final count", "#888");
+        await loadAll();
+        await loadApaStats();
+      }
+    }, 10000);
+  } catch (e) {
+    setStatus("Backfill error: " + e.message, "#f44");
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function runApaSyncCurrentMonth() {
+  var btn = document.getElementById("apa-sync-current-btn");
+  btn.disabled = true;
+  var original = btn.textContent;
+  btn.textContent = "⏳ syncing...";
+  try {
+    var r = await fetch("/api/logbook/sync-current-month", {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    var result = await r.json();
+    if (r.ok) {
+      setStatus("APA month sync · " + result.created + " new · " + result.updated + " updated · " +
+                result.skipped + " preserved · " + result.deadhead + " DH filtered", "#06d6a0");
+      await loadAll();
+      await loadApaStats();
+    } else {
+      setStatus("APA month sync failed: " + (result.error || r.status), "#f44");
+    }
+  } catch (e) {
+    setStatus("APA month sync error: " + e.message, "#f44");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+    setTimeout(function() { setStatus(""); }, 6000);
+  }
 }
 
 async function runImportFromCalendar(force) {
