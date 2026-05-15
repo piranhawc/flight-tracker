@@ -147,7 +147,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-13.8</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-15.1</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
@@ -697,7 +697,7 @@ function drawTestFlight() {
 
     var li = document.getElementById("live-info");
     li.style.display = "block";
-    document.getElementById("live-ident").innerHTML = (flight.ident_iata || flight.ident) + '<span class="tracking-badge">LIVE</span>';
+    document.getElementById("live-ident").innerHTML = ((testMode && testMode._displayIdent) || flight.ident_iata || flight.ident) + '<span class="tracking-badge">LIVE</span>';
     document.getElementById("live-detail").innerHTML =
       (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>" +
       "Alt: " + (lp.altitude*100).toLocaleString() + "ft<br>" +
@@ -714,7 +714,7 @@ function drawTestFlight() {
     if (isArrived) { badgeLabel = "ARRIVED"; badgeColor = "#06d6a0"; }
     else if (statusText.indexOf("Taxi") >= 0 || flight.actual_out) { badgeLabel = "TAXI"; badgeColor = "#ffd166"; }
     if (flight.progress_percent > 0 && flight.progress_percent < 100) { badgeLabel = "LIVE"; badgeColor = "#e63946"; }
-    document.getElementById("live-ident").innerHTML = (flight.ident_iata || flight.ident) +
+    document.getElementById("live-ident").innerHTML = ((testMode && testMode._displayIdent) || flight.ident_iata || flight.ident) +
       '<span class="tracking-badge" style="background:' + badgeColor + '">' + badgeLabel + '</span>';
     var detailHtml = (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>";
     if (isArrived) {
@@ -1114,6 +1114,11 @@ async function fetchAndShowActive(active) {
     if (resp.ok) {
       var data = await resp.json();
       if (data.flight) {
+        // Tag the response with the user's calendar leg ident so the overlay
+        // shows "AA2331" instead of whatever the operator's callsign is
+        // (MQ2331 for Envoy, OO/YX for SkyWest/Republic). Ground truth from
+        // what the user booked, not FA's variable codeshare array.
+        data._displayIdent = "AA" + active.num;
         testMode = data;
         drawMap();
         if (data.flight.actual_in) {
