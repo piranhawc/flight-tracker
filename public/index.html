@@ -147,7 +147,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-14.1</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-13.8</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
@@ -345,24 +345,6 @@ function getRegForLeg(l) {
 var ghostInbound = null; // { inbound, track, legKey }
 
 // Compute a human-readable on-time status for any flight object returned by FA.
-// Prefer the marketing AA ident over the operator's callsign (e.g. an
-// Envoy-operated flight comes back from FA as MQ2331 / ENY2331, but the
-// user booked it as AA2331). Falls back to the operator ident when no AA
-// codeshare exists.
-function displayIdentForFlight(f) {
-  if (!f) return "?";
-  if (f.operator === "AAL" || f.operator_iata === "AA") return f.ident_iata || f.ident || "?";
-  if (f.codeshares_iata && f.codeshares_iata.length) {
-    var aa = f.codeshares_iata.find(function(c) { return c && c.indexOf("AA") === 0; });
-    if (aa) return aa;
-  }
-  if (f.codeshares && f.codeshares.length) {
-    var aal = f.codeshares.find(function(c) { return c && c.indexOf("AAL") === 0; });
-    if (aal) return "AA" + aal.replace("AAL", "");
-  }
-  return f.ident_iata || f.ident || "?";
-}
-
 function flightStatusLabel(f) {
   if (!f) return "no data";
   if (f.cancelled) return "cancelled";
@@ -715,7 +697,7 @@ function drawTestFlight() {
 
     var li = document.getElementById("live-info");
     li.style.display = "block";
-    document.getElementById("live-ident").innerHTML = displayIdentForFlight(flight) + '<span class="tracking-badge">LIVE</span>';
+    document.getElementById("live-ident").innerHTML = (flight.ident_iata || flight.ident) + '<span class="tracking-badge">LIVE</span>';
     document.getElementById("live-detail").innerHTML =
       (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>" +
       "Alt: " + (lp.altitude*100).toLocaleString() + "ft<br>" +
@@ -732,7 +714,7 @@ function drawTestFlight() {
     if (isArrived) { badgeLabel = "ARRIVED"; badgeColor = "#06d6a0"; }
     else if (statusText.indexOf("Taxi") >= 0 || flight.actual_out) { badgeLabel = "TAXI"; badgeColor = "#ffd166"; }
     if (flight.progress_percent > 0 && flight.progress_percent < 100) { badgeLabel = "LIVE"; badgeColor = "#e63946"; }
-    document.getElementById("live-ident").innerHTML = displayIdentForFlight(flight) +
+    document.getElementById("live-ident").innerHTML = (flight.ident_iata || flight.ident) +
       '<span class="tracking-badge" style="background:' + badgeColor + '">' + badgeLabel + '</span>';
     var detailHtml = (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>";
     if (isArrived) {
