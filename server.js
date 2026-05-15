@@ -1527,8 +1527,21 @@ function dedupeLogbookLegs() {
 // Uses the calendar event UID as the leg ID so reruns are idempotent and
 // detects deadheads (user not in operating crew) so they're skipped.
 
-const UID_RE = /^HI-(\d{6})-(\d{4,5})-(\d+)-leg(\d{2})@/;
 const SUMMARY_RE = /^AA\s+(\d{1,4})\s+(?:\(DH\)\s+)?([A-Z]{3})-([A-Z]{3})/;
+
+// APA Calendar Sync emits UIDs in (at least) two shapes:
+//   HI-YYYYMM-SEQ-EMP-legNN@apa.alliedpilots.org   (spec example)
+//   YYMMDD<SEQ><SEAT>-legNN@apa.alliedpilots.org   (what we actually see in
+//                                                   the real feed)
+// Both encode the same fields. Return {ep, seq, leg_idx} or all nulls.
+function extractEpSeqFromUid(uid) {
+  if (!uid) return { ep: null, seq: null, leg_idx: null };
+  let m = uid.match(/^HI-(\d{6})-(\d{4,5})-(\d+)-leg(\d{2})@/);
+  if (m) return { ep: +m[1], seq: +m[2], leg_idx: +m[4] - 1 };
+  m = uid.match(/^(\d{2})(\d{2})\d{2}(\d{4,5})[A-Z]+-leg(\d{2})@/);
+  if (m) return { ep: +("20" + m[1] + m[2]), seq: +m[3], leg_idx: +m[4] - 1 };
+  return { ep: null, seq: null, leg_idx: null };
+}
 
 // The apa-sabre crew cache uses the LOCAL departure date — what the airline
 // calls "today's flight". For evening departures the UTC date crosses
@@ -1557,15 +1570,10 @@ function parseCalendarEvent(event) {
   const [, flightNum, depApt, arrApt] = sumMatch;
   const isDH = /\(DH\)/.test(event.summary);
 
-  // UID is the canonical APA shape; some events may not match (older imports,
-  // non-pairing events). Fall back to a deterministic composite if needed.
-  const uidMatch = UID_RE.exec(event.uid);
-  let ep = null, seq = null, leg_idx = null;
-  if (uidMatch) {
-    ep = parseInt(uidMatch[1], 10);
-    seq = parseInt(uidMatch[2], 10);
-    leg_idx = parseInt(uidMatch[4], 10) - 1;
-  }
+  // Derive (ep, seq, leg_idx) from the calendar UID — supports both UID
+  // shapes the APA Calendar Sync produces. ep/seq are what we need to fetch
+  // crew for pairings that aren't yet in the cache.
+  const { ep, seq, leg_idx } = extractEpSeqFromUid(event.uid);
 
   const startDate = new Date(event.start);
   const endDate = new Date(event.end || event.start);
@@ -1625,6 +1633,39 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
   } catch (e) {
     console.error("[auto-log] could not fetch calendar:", e.message);
     return { created: 0, updated: 0, skipped: 0, deadhead: 0, no_crew: 0, scanned: 0 };
+  }
+
+  // Prefetch any pairings (ep, seq) that appear in the calendar but aren't
+  // yet in the SQLite cache. /schedule/current only returns the current bid
+  // month, so historical trips would otherwise never have crew. We pull each
+  // missing pairing once and cache the result.
+  const wantedPairings = new Map(); // "ep/seq" → {ep, seq}
+  for (const ev of events) {
+    const parsed = parseCalendarEvent(ev);
+    if (!parsed || !parsed.ep || !parsed.seq) continue;
+    if (!isCompleted(parsed)) continue;
+    const k = parsed.ep + "/" + parsed.seq;
+    if (!wantedPairings.has(k)) wantedPairings.set(k, { ep: parsed.ep, seq: parsed.seq });
+  }
+  let prefetched = 0, prefetchMissing = 0;
+  for (const { ep, seq } of wantedPairings.values()) {
+    if (crewCache.getPairing(ep, seq)) continue;
+    try {
+      const pairing = await apa.getPairingCrew(ep, seq);
+      if (pairing && pairing.legs) {
+        crewCache.upsertPairing(pairing);
+        prefetched++;
+        console.log(`[auto-log] prefetched ${ep}/${seq} (${pairing.legs.length} legs)`);
+      } else {
+        prefetchMissing++;
+      }
+    } catch (e) {
+      prefetchMissing++;
+      console.log(`[auto-log] prefetch ${ep}/${seq} failed: ${e.message}`);
+    }
+  }
+  if (prefetched || prefetchMissing) {
+    console.log(`[auto-log] prefetch: ${prefetched} pulled, ${prefetchMissing} unavailable, ${wantedPairings.size} total wanted`);
   }
 
   let created = 0, updated = 0, skipped = 0, deadhead = 0, no_crew = 0, scanned = 0;
