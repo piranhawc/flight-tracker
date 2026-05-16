@@ -1483,10 +1483,18 @@ try {
 function dedupeLogbookLegs() {
   const groups = {};
   for (const [id, leg] of Object.entries(logbook.legs)) {
-    if (!leg || !leg.date) continue;
+    if (!leg) continue;
     const flightKey = String(leg.flight || leg.flight_number || "").replace(/^(AAL|AA)/i, "").replace(/^0+/, "");
     if (!flightKey) continue;
-    const key = `${flightKey}|${leg.date}|${leg.dep || ""}|${leg.arr || ""}`;
+    // Dedupe by scheduled UTC time (rounded to 15-min buckets) instead of
+    // the `date` field. Different sources disagree about whether a late-night
+    // departure belongs to the local-clock date or the UTC date, but the
+    // UTC instant is unambiguous.
+    const startUtc = leg.scheduled_out || leg.start || leg.actual_out;
+    const bucket = startUtc
+      ? Math.floor(new Date(startUtc).getTime() / (15 * 60 * 1000))
+      : (leg.date || "no-date");
+    const key = `${flightKey}|${leg.dep || ""}|${leg.arr || ""}|${bucket}`;
     if (!groups[key]) groups[key] = [];
     groups[key].push({ id, leg });
   }
@@ -1507,7 +1515,7 @@ function dedupeLogbookLegs() {
     const keep = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       // Carry over any fields the loser had but the winner didn't
-      ["notes", "registration", "aircraft_type", "actual_out", "actual_off", "actual_on", "actual_in", "gate_origin", "gate_destination", "ep", "seq"].forEach(k => {
+      ["notes", "registration", "aircraft", "aircraft_type", "tail", "actual_out", "actual_off", "actual_on", "actual_in", "gate_origin", "gate_destination", "ep", "seq", "seat", "block_min_scheduled", "block_min_actual", "distance", "passengers"].forEach(k => {
         if (keep.leg[k] == null && sorted[i].leg[k] != null) keep.leg[k] = sorted[i].leg[k];
       });
       // Merge crew if winner is empty but loser has it
