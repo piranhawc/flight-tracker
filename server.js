@@ -1354,9 +1354,9 @@ function getApaPilotsForLeg(leg) {
   const row = rows[0];
   const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
   return crewRows
-    .filter(c => c && PILOT_SEATS.has(c.seat) && c.name && c.name !== "OPEN")
+    .filter(c => c && isOperatingSeat(c.seat) && c.name && c.name !== "OPEN")
     .filter(c => String(c.emp_num || "") !== LOGBOOK_USER_EMP_NUM)
-    .map(apaCrewToDisplayName);
+    .map(c => formatCrewWithSeat(String(c.seat).toUpperCase(), apaCrewToDisplayName(c)));
 }
 
 app.get("/api/logbook/legs", logbookAuth, (req, res) => {
@@ -1427,20 +1427,40 @@ app.post("/api/logbook/legs", logbookAuth, express.json(), (req, res) => {
   res.json({ created, updated, total: Object.keys(logbook.legs).length, apa_synced: synced });
 });
 
+// Strip a seat prefix like "CA · Brent Holding" → "Brent Holding". Bare
+// names pass through unchanged. Notes and repeat-detection key off the bare
+// name so a person who flew with the user as both FO and CA at different
+// times is treated as one person.
+function bareCrewName(s) {
+  if (!s) return "";
+  const m = /^[A-Z0-9]{1,3}\s*·\s*(.+)$/.exec(String(s).trim());
+  return (m ? m[1] : String(s)).trim();
+}
+
 app.get("/api/logbook/crew", logbookAuth, (req, res) => {
   const stats = {};
+  const seatsByName = {};
   Object.values(logbook.legs).forEach(leg => {
     (leg.crew || []).forEach(rawName => {
-      const name = String(rawName).trim();
+      const name = bareCrewName(rawName);
       if (!name) return;
       if (!stats[name]) stats[name] = { name, flights: [], firstSeen: leg.date, lastSeen: leg.date };
       stats[name].flights.push({
         id: leg.id, date: leg.date, flight: leg.flight,
-        dep: leg.dep, arr: leg.arr,
+        dep: leg.dep, arr: leg.arr, seat_in_leg: String(rawName).match(/^([A-Z0-9]{1,3})\s*·/)?.[1] || "",
       });
       if ((leg.date || "") < stats[name].firstSeen) stats[name].firstSeen = leg.date;
       if ((leg.date || "") > stats[name].lastSeen) stats[name].lastSeen = leg.date;
+      const seat = String(rawName).match(/^([A-Z0-9]{1,3})\s*·/)?.[1];
+      if (seat) {
+        if (!seatsByName[name]) seatsByName[name] = new Set();
+        seatsByName[name].add(seat);
+      }
     });
+  });
+  // Track which seats each person has flown with the user as
+  Object.keys(seatsByName).forEach(name => {
+    if (stats[name]) stats[name].seats = [...seatsByName[name]];
   });
   // Merge in stored notes (and surface crew that have notes but no flights)
   Object.keys(crew).forEach(name => {
@@ -2056,7 +2076,17 @@ function lbTitleCase(s) {
   return String(s || "").toLowerCase().replace(/\b([a-z])/g, (_, c) => c.toUpperCase());
 }
 
-const APA_PILOT_SEATS = new Set(["CA", "FO", "RC"]);
+// All crew seats we record: pilots (CA/FO/RC) plus flight attendants
+// (01/02/03/04…) and any other operating-crew code APA might use.
+function isOperatingSeat(seat) {
+  if (!seat) return false;
+  const s = String(seat).toUpperCase();
+  return /^(CA|FO|RC|FA|FB|FC|FD|FE|\d{1,2})$/.test(s);
+}
+function formatCrewWithSeat(seat, name) {
+  if (!seat || !name) return name || "";
+  return `${seat} · ${name}`;
+}
 function makeApaLogId(year, month, seq, legIdx) {
   return `apa-${year}-${String(month).padStart(2, "0")}-${seq}-leg${String(legIdx).padStart(2, "0")}`;
 }
@@ -2101,13 +2131,14 @@ async function backfillFromApa({ since = null, force = false } = {}) {
     const sequences = summary.sequences || [];
     if (!sequences.length) { console.log(`[apa-backfill]   ${year}/${month}: 0 sequences`); continue; }
 
-    // Resolve every emp num for this month in one batch
+    // Resolve every emp num for this month in one batch — all crew, not
+    // just pilots, so the user can see who they flew with end-to-end.
     const empsToResolve = new Set();
     for (const seq of sequences) {
       for (const dp of seq.dutyPeriodSummaries || []) {
         for (const leg of dp.legs || []) {
           for (const c of leg.flightCrew || []) {
-            if (c.employeeNumber && APA_PILOT_SEATS.has(c.seat)) empsToResolve.add(c.employeeNumber);
+            if (c.employeeNumber && isOperatingSeat(c.seat)) empsToResolve.add(c.employeeNumber);
           }
         }
       }
@@ -2130,9 +2161,9 @@ async function backfillFromApa({ since = null, force = false } = {}) {
           const depISO = leg.departure?.actual?.local || leg.departure?.scheduled?.local || "";
           const depDate = depISO.slice(0, 10);
           const pilotCrew = (leg.flightCrew || [])
-            .filter(c => APA_PILOT_SEATS.has(c.seat))
+            .filter(c => isOperatingSeat(c.seat))
             .filter(c => String(c.employeeNumber || "") !== LOGBOOK_USER_EMP_NUM)
-            .map(c => empNameCache.get(c.employeeNumber) || `emp:${c.employeeNumber}`);
+            .map(c => formatCrewWithSeat(String(c.seat).toUpperCase(), empNameCache.get(c.employeeNumber) || `emp:${c.employeeNumber}`));
 
           const record = {
             id: legId,
@@ -2229,25 +2260,31 @@ app.post("/api/logbook/purge-deadheads", logbookAuth, (req, res) => {
 // Useful after fixing the /users lookup so we don't have to re-run the full
 // 28-month backfill just to swap placeholders for real names.
 app.post("/api/logbook/refresh-crew-names", logbookAuth, async (req, res) => {
+  // Match both bare "emp:XXX" and seat-prefixed "CA · emp:XXX"
+  const placeholderRe = /(?:^|·\s*)emp:(\d+)$/;
   const empPlaceholders = new Set();
   for (const leg of Object.values(logbook.legs)) {
     for (const name of leg.crew || []) {
-      const m = /^emp:(\d+)$/.exec(String(name));
+      const m = placeholderRe.exec(String(name));
       if (m) empPlaceholders.add(m[1]);
     }
   }
   if (!empPlaceholders.size) return res.json({ replaced: 0, looked_up: 0 });
-  // Force a re-attempt by clearing cached placeholders
   for (const e of empPlaceholders) empNameCache.delete(e);
   await resolveEmpNames([...empPlaceholders]);
   let replaced = 0;
   for (const leg of Object.values(logbook.legs)) {
     if (!leg.crew || !leg.crew.length) continue;
     const next = leg.crew.map(name => {
-      const m = /^emp:(\d+)$/.exec(String(name));
+      const s = String(name);
+      const m = placeholderRe.exec(s);
       if (!m) return name;
       const resolved = empNameCache.get(m[1]);
-      if (resolved && resolved !== `emp:${m[1]}`) { replaced++; return resolved; }
+      if (resolved && resolved !== `emp:${m[1]}`) {
+        replaced++;
+        // Preserve any seat prefix the placeholder had
+        return s.replace(/emp:\d+$/, resolved);
+      }
       return name;
     });
     leg.crew = next;
