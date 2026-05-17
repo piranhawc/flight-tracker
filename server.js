@@ -1480,28 +1480,60 @@ try {
 // stored under different IDs (e.g. old composite "YYYY-MM-DD-AAxxxx-DEP-ARR"
 // and new calendar-UID format). Keeps the entry with the most user data
 // (notes > crew > anything) and removes the rest.
+function legTimestampMs(leg) {
+  const s = leg.scheduled_out || leg.start || leg.actual_out;
+  if (s) {
+    const t = new Date(s).getTime();
+    if (!isNaN(t)) return t;
+  }
+  if (leg.date) {
+    const t = new Date(leg.date + "T12:00:00Z").getTime();
+    if (!isNaN(t)) return t;
+  }
+  return null;
+}
+
 function dedupeLogbookLegs() {
-  const groups = {};
+  // Group by route (flight + dep + arr). Within each route group, cluster
+  // legs by time proximity (6-hour window) so we absorb source
+  // disagreements about exact UTC timestamps (e.g. APA and the calendar
+  // feed disagree by 1 hour on the same physical flight, probably DST)
+  // without merging legitimately separate operations 24h apart.
+  const routeGroups = {};
   for (const [id, leg] of Object.entries(logbook.legs)) {
     if (!leg) continue;
     const flightKey = String(leg.flight || leg.flight_number || "").replace(/^(AAL|AA)/i, "").replace(/^0+/, "");
     if (!flightKey) continue;
-    // Dedupe by scheduled UTC time (rounded to 15-min buckets) instead of
-    // the `date` field. Different sources disagree about whether a late-night
-    // departure belongs to the local-clock date or the UTC date, but the
-    // UTC instant is unambiguous.
-    const startUtc = leg.scheduled_out || leg.start || leg.actual_out;
-    const bucket = startUtc
-      ? Math.floor(new Date(startUtc).getTime() / (15 * 60 * 1000))
-      : (leg.date || "no-date");
-    const key = `${flightKey}|${leg.dep || ""}|${leg.arr || ""}|${bucket}`;
-    if (!groups[key]) groups[key] = [];
-    groups[key].push({ id, leg });
+    const routeKey = `${flightKey}|${leg.dep || ""}|${leg.arr || ""}`;
+    if (!routeGroups[routeKey]) routeGroups[routeKey] = [];
+    routeGroups[routeKey].push({ id, leg });
   }
   let removed = 0;
-  for (const key in groups) {
-    const items = groups[key];
-    if (items.length < 2) continue;
+  const PROXIMITY_MS = 6 * 60 * 60 * 1000;
+  for (const routeKey in routeGroups) {
+    const routeItems = routeGroups[routeKey];
+    if (routeItems.length < 2) continue;
+
+    // Build clusters within the route group by time proximity
+    const clusters = [];
+    for (const item of routeItems) {
+      const t = legTimestampMs(item.leg);
+      let placed = false;
+      if (t != null) {
+        for (const cluster of clusters) {
+          const ct = legTimestampMs(cluster[0].leg);
+          if (ct != null && Math.abs(t - ct) < PROXIMITY_MS) {
+            cluster.push(item);
+            placed = true;
+            break;
+          }
+        }
+      }
+      if (!placed) clusters.push([item]);
+    }
+
+    for (const items of clusters) {
+      if (items.length < 2) continue;
     // Best = has notes, then APA-sourced (authoritative — real actuals +
     // tail + verified crew), then has crew, then is auto-filled.
     const sorted = items.slice().sort((a, b) => {
@@ -1525,10 +1557,33 @@ function dedupeLogbookLegs() {
       delete logbook.legs[sorted[i].id];
       removed++;
     }
+    }
   }
   if (removed > 0) {
     saveLogbook();
     console.log(`[logbook dedupe] removed ${removed} duplicate legs`);
+  }
+  return removed;
+}
+
+// Remove legs created by the pre-v.4 manual SYNC path (composite IDs like
+// "YYYY-MM-DD-AAxxxx-DEP-ARR") that have no _source tag, no crew, and no
+// notes. These are stale schedule snapshots from trips that got rebid or
+// cancelled and never have an upstream record to compare against.
+function purgeStaleCompositeLegs() {
+  let removed = 0;
+  for (const [id, leg] of Object.entries(logbook.legs)) {
+    if (!leg) continue;
+    if (!/^\d{4}-\d{2}-\d{2}-AA\d+-[A-Z]{3}-[A-Z]{3}$/.test(id)) continue;
+    if (leg._source) continue;
+    if (leg.notes && String(leg.notes).trim()) continue;
+    if (leg.crew && leg.crew.length > 0) continue;
+    delete logbook.legs[id];
+    removed++;
+  }
+  if (removed > 0) {
+    saveLogbook();
+    console.log(`[logbook] purged ${removed} stale composite-ID legs`);
   }
   return removed;
 }
@@ -1752,9 +1807,10 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
   }
 
   if (created + updated > 0) saveLogbook();
+  const stalePurged = purgeStaleCompositeLegs();
   const deduped = dedupeLogbookLegs();
   const dhPurged = purgeDeadheadsFromLogbook();
-  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew} deduped=${deduped} dh_purged=${dhPurged}`);
+  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew} stale_purged=${stalePurged} deduped=${deduped} dh_purged=${dhPurged}`);
 
   // Fire-and-forget FA actuals fetch for any past legs without actual_in.
   // Throttled by the existing FA queue (10s gap). Doesn't block the response.
@@ -1856,7 +1912,7 @@ async function refreshCrewCache() {
 if (crewCacheReady) {
   // One-shot dedupe of any legacy duplicate logbook entries on boot
   // (composite ID + UID, or scheduled-vs-actual calendar dupes).
-  setTimeout(() => { dedupeLogbookLegs(); purgeDeadheadsFromLogbook(); }, 500);
+  setTimeout(() => { purgeStaleCompositeLegs(); dedupeLogbookLegs(); purgeDeadheadsFromLogbook(); }, 500);
   // Sync against whatever's already on disk before the network fetch in case
   // legs were added since last refresh.
   setTimeout(() => { autoSyncLogbookCrewFromApa(); }, 1000);
@@ -2101,9 +2157,11 @@ async function backfillFromApa({ since = null, force = false } = {}) {
   }
 
   backfillRunning = false;
+  const stalePurged = purgeStaleCompositeLegs();
+  const deduped = dedupeLogbookLegs();
   const dhPurged = purgeDeadheadsFromLogbook();
-  console.log(`[apa-backfill] done. created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} totalLegs=${totalLegs} dh_purged=${dhPurged}`);
-  return { created, updated, skipped, deadhead, totalLegs, dh_purged: dhPurged };
+  console.log(`[apa-backfill] done. created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} totalLegs=${totalLegs} stale_purged=${stalePurged} deduped=${deduped} dh_purged=${dhPurged}`);
+  return { created, updated, skipped, deadhead, totalLegs, stale_purged: stalePurged, deduped, dh_purged: dhPurged };
 }
 
 app.post("/api/logbook/backfill-from-apa", logbookAuth, express.json(), (req, res) => {
