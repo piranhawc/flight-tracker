@@ -2013,23 +2013,43 @@ app.post("/api/logbook/import-from-calendar", logbookAuth, express.json(), async
 // the current bid month).
 
 const empNameCache = new Map();
+function recordUser(u) {
+  if (!u || !u.username) return;
+  const first = (u.nickName || u.firstName || "").trim();
+  const last = (u.lastName || "").trim();
+  const display = first && last
+    ? `${lbTitleCase(first)} ${lbTitleCase(last)}`
+    : (lbTitleCase(last || first) || u.username);
+  empNameCache.set(String(u.username), display);
+}
 async function resolveEmpNames(empNums) {
-  const unknowns = empNums.filter(e => e && !empNameCache.has(e));
+  const unknowns = empNums.filter(e => e && !empNameCache.has(String(e))).map(String);
   if (!unknowns.length) return;
   try {
     const users = await apaLogbook.getUsers(unknowns);
-    for (const u of users || []) {
-      const first = (u.nickName || u.firstName || "").trim();
-      const last = (u.lastName || "").trim();
-      const display = first && last ? `${lbTitleCase(first)} ${lbTitleCase(last)}` : (lbTitleCase(last || first) || u.username);
-      empNameCache.set(u.username, display);
-    }
+    for (const u of users || []) recordUser(u);
   } catch (err) {
     console.error("[apa-backfill] user resolve failed:", err.message);
   }
-  // Mark anything we couldn't resolve so we don't retry forever
+  // Anyone the batch didn't return — try a single-emp lookup before giving up.
+  // The proxy sometimes errors on a malformed entry in a batch but succeeds
+  // on individual lookups.
+  const stillUnknown = unknowns.filter(e => !empNameCache.has(e));
+  for (const e of stillUnknown) {
+    try {
+      const users = await apaLogbook.getUsers([e]);
+      if (users && users.length) {
+        for (const u of users) recordUser(u);
+      }
+    } catch (err) {
+      // ignore — fallthrough to placeholder
+    }
+  }
   for (const e of unknowns) {
-    if (!empNameCache.has(e)) empNameCache.set(e, `emp:${e}`);
+    if (!empNameCache.has(e)) {
+      empNameCache.set(e, `emp:${e}`);
+      console.log(`[apa-backfill] could not resolve emp ${e} after array + wrapped + single-lookup`);
+    }
   }
 }
 function lbTitleCase(s) {
@@ -2203,6 +2223,37 @@ app.post("/api/logbook/dedupe", logbookAuth, (req, res) => {
 app.post("/api/logbook/purge-deadheads", logbookAuth, (req, res) => {
   const removed = purgeDeadheadsFromLogbook();
   res.json({ removed, total: Object.keys(logbook.legs).length });
+});
+
+// Re-resolve any "emp:XXXXX" placeholder names in existing legbook legs.
+// Useful after fixing the /users lookup so we don't have to re-run the full
+// 28-month backfill just to swap placeholders for real names.
+app.post("/api/logbook/refresh-crew-names", logbookAuth, async (req, res) => {
+  const empPlaceholders = new Set();
+  for (const leg of Object.values(logbook.legs)) {
+    for (const name of leg.crew || []) {
+      const m = /^emp:(\d+)$/.exec(String(name));
+      if (m) empPlaceholders.add(m[1]);
+    }
+  }
+  if (!empPlaceholders.size) return res.json({ replaced: 0, looked_up: 0 });
+  // Force a re-attempt by clearing cached placeholders
+  for (const e of empPlaceholders) empNameCache.delete(e);
+  await resolveEmpNames([...empPlaceholders]);
+  let replaced = 0;
+  for (const leg of Object.values(logbook.legs)) {
+    if (!leg.crew || !leg.crew.length) continue;
+    const next = leg.crew.map(name => {
+      const m = /^emp:(\d+)$/.exec(String(name));
+      if (!m) return name;
+      const resolved = empNameCache.get(m[1]);
+      if (resolved && resolved !== `emp:${m[1]}`) { replaced++; return resolved; }
+      return name;
+    });
+    leg.crew = next;
+  }
+  if (replaced > 0) saveLogbook();
+  res.json({ replaced, looked_up: empPlaceholders.size });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
