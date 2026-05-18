@@ -1914,6 +1914,42 @@ async function backfillFaActuals(legs) {
 // from the APA backfill (when apa-logbook /users didn't know the employee).
 // Try the Sabre crew cache by emp_num — if it knows the name, swap the
 // placeholder in place. Safe to run repeatedly.
+// For every leg with an emp:XXX placeholder that ALSO has ep/seq metadata
+// (i.e. was backfilled from apa-logbook), fetch the pairing from Sabre if
+// it isn't already cached. Sabre's NS lookup by (ep, seq) works for recent
+// past trips even after the pairing rolls off /schedule/current. Returns
+// the number of pairings actually fetched.
+async function fetchMissingPairingsForPlaceholders() {
+  if (!crewCacheReady) return 0;
+  const wanted = new Map();
+  for (const leg of Object.values(logbook.legs)) {
+    if (!leg.crew || !leg.crew.length) continue;
+    if (!leg.ep || !leg.seq) continue;
+    if (!leg.crew.some(n => /emp:\d+$/.test(String(n)))) continue;
+    const key = `${leg.ep}/${leg.seq}`;
+    if (wanted.has(key)) continue;
+    const existing = crewCache.getPairing(leg.ep, leg.seq);
+    if (existing && existing.legs && existing.legs.length) continue;
+    wanted.set(key, { ep: leg.ep, seq: leg.seq });
+  }
+  if (!wanted.size) return 0;
+  console.log(`[heal] fetching ${wanted.size} missing pairing(s) from Sabre to resolve emp:XXX placeholders`);
+  let fetched = 0;
+  for (const { ep, seq } of wanted.values()) {
+    try {
+      const pairing = await apa.getPairingCrew(ep, seq);
+      if (pairing && pairing.legs) {
+        crewCache.upsertPairing(pairing);
+        fetched++;
+        console.log(`[heal]   fetched ${ep}/${seq} (${pairing.legs.length} legs)`);
+      }
+    } catch (err) {
+      console.log(`[heal]   ${ep}/${seq} unreachable: ${err.message}`);
+    }
+  }
+  return fetched;
+}
+
 function healEmpPlaceholdersFromSabreCache() {
   if (!crewCacheReady) return 0;
   let replaced = 0;
@@ -2054,6 +2090,18 @@ if (crewCacheReady) {
   // age out — apa-logbook doesn't carry FA names at all.
   setTimeout(() => { eagerSnapshotNewTrips().catch(() => {}); }, 10000);
   setInterval(() => { eagerSnapshotNewTrips().catch(() => {}); }, 30 * 60 * 1000);
+  // 30 sec after boot, also try to heal any emp:XXX placeholders left from
+  // prior backfills — fetch the missing pairings from Sabre directly using
+  // each leg's stored (ep, seq) so recent past trips get resolved.
+  setTimeout(async () => {
+    try {
+      const fetched = await fetchMissingPairingsForPlaceholders();
+      if (fetched > 0) {
+        const healed = healEmpPlaceholdersFromSabreCache();
+        console.log(`[boot-heal] fetched ${fetched} pairings, healed ${healed} placeholder(s)`);
+      }
+    } catch (e) {}
+  }, 30000);
   // Auto-log poller: scan the calendar every 30 min for completed flights
   // and create logbook entries (with crew). 60 sec after boot for the first
   // pass so the crew cache has a chance to settle.
@@ -2427,6 +2475,10 @@ app.post("/api/logbook/refresh-crew-names", logbookAuth, async (req, res) => {
     }
   }
   if (!empPlaceholders.size) return res.json({ replaced: 0, looked_up: 0 });
+  // First fetch any missing pairings from Sabre — for emps that apa-logbook
+  // can't resolve, the Sabre crew cache is our only source, and the relevant
+  // pairing may not have been eager-snapshotted yet.
+  const sabreFetched = await fetchMissingPairingsForPlaceholders();
   for (const e of empPlaceholders) empNameCache.delete(e);
   await resolveEmpNames([...empPlaceholders]);
   let replaced = 0;
@@ -2447,7 +2499,7 @@ app.post("/api/logbook/refresh-crew-names", logbookAuth, async (req, res) => {
     leg.crew = next;
   }
   if (replaced > 0) saveLogbook();
-  res.json({ replaced, looked_up: empPlaceholders.size });
+  res.json({ replaced, looked_up: empPlaceholders.size, sabre_pairings_fetched: sabreFetched });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
