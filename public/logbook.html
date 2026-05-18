@@ -79,7 +79,7 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-05-18.5</span>
+    <span class="meta" title="Build version">v2026-05-18.6</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <span class="meta" id="apa-stats-summary" style="display:none"></span>
     <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
@@ -120,6 +120,7 @@ var legsData = [];
 var crewData = [];
 var crewIndex = {};
 var crewByDate = {}; // crewName → sorted list of flight dates flown together
+var crewByTrip = {}; // crewName → array of {date, trip} where trip = "ep/seq" or null
 
 function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
 
@@ -233,19 +234,44 @@ async function loadAll() {
 function buildCrewIndex() {
   crewIndex = {};
   crewByDate = {};
+  crewByTrip = {};
   crewData.forEach(function(c) {
     crewIndex[c.name] = c;
     crewByDate[c.name] = (c.flights || []).map(function(f) { return f.date; }).sort();
+    crewByTrip[c.name] = (c.flights || []).map(function(f) {
+      var trip = (f.ep != null && f.seq != null) ? (f.ep + "/" + f.seq) : null;
+      return { date: f.date || "", trip: trip };
+    }).sort(function(a, b) { return a.date.localeCompare(b.date); });
   });
 }
 
-// "Have we flown with this person before THIS date" — to mark the pill green if so.
-function flownBeforeWith(rawName, thisDate) {
+// Have we flown with this person before? Behavior depends on seat:
+//  - Pilots/RC: "before THIS DATE" — earlier date = repeat.
+//  - FAs: "on a PRIOR TRIP" — multiple legs within the same (ep, seq) don't
+//    count as a repeat. A different trip-id earlier in time does.
+// Legs missing ep/seq fall back to date-based detection.
+function flownBeforeWith(rawName, leg) {
   var name = bareCrewName(rawName);
+  var seat = splitCrewName(rawName).seat;
+  var thisDate = leg && leg.date || "";
+  var thisTrip = (leg && leg.ep != null && leg.seq != null) ? (leg.ep + "/" + leg.seq) : null;
+  if (isFASeat(seat)) {
+    var entries = crewByTrip[name];
+    if (!entries) return false;
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      if (!e.date) continue;
+      if (e.date >= thisDate) continue;
+      // Same trip ID = same trip across multiple legs; don't count.
+      if (thisTrip && e.trip && e.trip === thisTrip) continue;
+      return true;
+    }
+    return false;
+  }
   var dates = crewByDate[name];
   if (!dates) return false;
-  for (var i = 0; i < dates.length; i++) {
-    if (dates[i] && dates[i] < thisDate) return true;
+  for (var j = 0; j < dates.length; j++) {
+    if (dates[j] && dates[j] < thisDate) return true;
   }
   return false;
 }
@@ -302,7 +328,7 @@ function renderLegs() {
 
     var crewPills = (l.crew || []).map(function(rawName) {
       var bare = bareCrewName(rawName);
-      var seen = flownBeforeWith(rawName, l.date);
+      var seen = flownBeforeWith(rawName, l);
       var display = displayNameForCrew(rawName);
       var seatRaw = splitCrewName(rawName).seat;
       var dataSeat = isFASeat(seatRaw) ? "FA" : (seatRaw || "");

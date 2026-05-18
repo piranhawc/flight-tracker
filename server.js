@@ -1480,6 +1480,7 @@ app.get("/api/logbook/crew", logbookAuth, (req, res) => {
       stats[name].flights.push({
         id: leg.id, date: leg.date, flight: leg.flight,
         dep: leg.dep, arr: leg.arr, seat_in_leg: String(rawName).match(/^([A-Z0-9]{1,3})\s*·/)?.[1] || "",
+        ep: leg.ep || null, seq: leg.seq || null,
       });
       if ((leg.date || "") < stats[name].firstSeen) stats[name].firstSeen = leg.date;
       if ((leg.date || "") > stats[name].lastSeen) stats[name].lastSeen = leg.date;
