@@ -1974,24 +1974,28 @@ async function eagerSnapshotNewTrips() {
       console.log(`[eager-snapshot] schedule fetch failed: ${err.message}`);
       return;
     }
-    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() + 14);
-    const upcoming = (schedule || []).filter(t => {
-      if (!t || !t.start_date) return false;
-      return new Date(t.start_date) <= cutoff;
+    if (!Array.isArray(schedule) || !schedule.length) return;
+    // Snapshot any (ep, seq) not yet in cache — including future-month trips.
+    // The whole point is to grab them BEFORE they fall out of Sabre's NS
+    // window, so don't gate on start_date.
+    const newTrips = schedule.filter(t => {
+      if (!t || t.ep == null || t.seq == null) return false;
+      const existing = crewCache.getPairing(t.ep, t.seq);
+      return !existing || !existing.legs || existing.legs.length === 0;
     });
+    if (!newTrips.length) return;
+    console.log(`[eager-snapshot] ${newTrips.length} new trip(s) to snapshot`);
     let snapshotted = 0;
-    for (const trip of upcoming) {
-      const existing = crewCache.getPairing(trip.ep, trip.seq);
-      if (existing && existing.legs && existing.legs.length) continue;
+    for (const trip of newTrips) {
       try {
         const pairing = await apa.getPairingCrew(trip.ep, trip.seq);
         if (pairing && pairing.legs) {
           crewCache.upsertPairing(pairing);
           snapshotted++;
-          console.log(`[eager-snapshot] ${trip.ep}/${trip.seq} captured (${pairing.legs.length} legs)`);
+          console.log(`[eager-snapshot]   ${trip.ep}/${trip.seq} (${pairing.legs.length} legs) ok`);
         }
       } catch (err) {
-        console.error(`[eager-snapshot] ${trip.ep}/${trip.seq} failed: ${err.message}`);
+        console.error(`[eager-snapshot]   ${trip.ep}/${trip.seq} failed: ${err.message}`);
       }
     }
     if (snapshotted > 0) autoSyncLogbookCrewFromApa();
