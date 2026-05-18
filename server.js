@@ -1297,6 +1297,20 @@ app.post("/api/logbook/auth", express.json(), (req, res) => {
 // (no point logging "I flew with myself"). Defaults to Mike's emp number.
 const LOGBOOK_USER_EMP_NUM = process.env.LOGBOOK_USER_EMP_NUM || "861307";
 const PILOT_SEATS = new Set(["CA", "FO", "RC"]);
+// Operating-crew positions we persist in the logbook: pilots plus the
+// numbered FA seats 01-09. apa-sabre returns FA positions as "01"/"02"/...,
+// the apa-logbook proxy only returns CA/FO so FAs always come from the
+// sabre cache.
+const OPERATING_SEATS = new Set(["CA", "FO", "RC", "01", "02", "03", "04", "05", "06", "07", "08", "09"]);
+
+// "01" → "FA1", "CA" → "CA". Used to make the logbook display human-readable.
+function seatLabel(seat) {
+  if (!seat) return "";
+  const s = String(seat).toUpperCase();
+  const m = /^0?(\d{1,2})$/.exec(s);
+  if (m) return "FA" + m[1];
+  return s;
+}
 
 function lbTitleCase(s) {
   return String(s || "").toLowerCase().replace(/\b([a-z])/g, (_, c) => c.toUpperCase());
@@ -1345,6 +1359,8 @@ function getAccumulatedCrewForLeg(ep, seq, targetLegIdx) {
   return Array.from(accumulated.values());
 }
 
+// Pilots only (CA/FO/RC). Used for the public main-page trip cards so we
+// don't leak FA names on a non-auth page.
 function getApaPilotsForLeg(leg) {
   if (!crewCacheReady) return [];
   const key = normalizeLogbookLegKey(leg);
@@ -1354,9 +1370,25 @@ function getApaPilotsForLeg(leg) {
   const row = rows[0];
   const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
   return crewRows
-    .filter(c => c && isOperatingSeat(c.seat) && c.name && c.name !== "OPEN")
+    .filter(c => c && PILOT_SEATS.has(String(c.seat).toUpperCase()) && c.name && c.name !== "OPEN")
     .filter(c => String(c.emp_num || "") !== LOGBOOK_USER_EMP_NUM)
     .map(c => formatCrewWithSeat(String(c.seat).toUpperCase(), apaCrewToDisplayName(c)));
+}
+
+// Full operating crew (pilots + FAs). Used by the password-protected logbook
+// so FAs are visible there but nowhere else.
+function getApaCrewForLogbookLeg(leg) {
+  if (!crewCacheReady) return [];
+  const key = normalizeLogbookLegKey(leg);
+  if (!key) return [];
+  const rows = crewCache.getLegByFlight(key.flightNum, key.date, key.dep, key.arr);
+  if (!rows.length) return [];
+  const row = rows[0];
+  const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
+  return crewRows
+    .filter(c => c && OPERATING_SEATS.has(String(c.seat).toUpperCase()) && c.name && c.name !== "OPEN")
+    .filter(c => String(c.emp_num || "") !== LOGBOOK_USER_EMP_NUM)
+    .map(c => formatCrewWithSeat(seatLabel(c.seat), apaCrewToDisplayName(c)));
 }
 
 app.get("/api/logbook/legs", logbookAuth, (req, res) => {
@@ -1366,7 +1398,7 @@ app.get("/api/logbook/legs", logbookAuth, (req, res) => {
   // the apa-sabre cache. Doesn't persist — that's what /sync-apa-crew is for.
   const enriched = legs.map(leg => {
     if (leg.crew && leg.crew.length > 0) return leg;
-    const apaCrew = getApaPilotsForLeg(leg);
+    const apaCrew = getApaCrewForLogbookLeg(leg);
     if (!apaCrew.length) return leg;
     return Object.assign({}, leg, { crew: apaCrew, _apa_sourced: true });
   });
@@ -1381,7 +1413,7 @@ app.post("/api/logbook/sync-apa-crew", logbookAuth, express.json(), (req, res) =
   let updated = 0, skipped = 0, no_data = 0;
   for (const leg of Object.values(logbook.legs)) {
     if (!force && leg.crew && leg.crew.length > 0) { skipped++; continue; }
-    const apaCrew = getApaPilotsForLeg(leg);
+    const apaCrew = getApaCrewForLogbookLeg(leg);
     if (!apaCrew.length) { no_data++; continue; }
     leg.crew = apaCrew;
     updated++;
@@ -1715,9 +1747,10 @@ function getCrewForCalendarLeg(parsed) {
   const userInCrew = crewRows.some(c => String(c.emp_num || "") === LOGBOOK_USER_EMP_NUM);
   if (!userInCrew) return { crew: [], isDeadhead: true };
 
-  // Reuse getApaPilotsForLeg with the disambiguated key.
+  // Include FAs in the logbook entry — the auto-log path is private (only
+  // writes to /data/logbook.json) so this is the right place to capture them.
   return {
-    crew: getApaPilotsForLeg({ flight_number: parsed.flight, date: parsed.date, dep: parsed.dep_apt, arr: parsed.arr_apt }),
+    crew: getApaCrewForLogbookLeg({ flight_number: parsed.flight, date: parsed.date, dep: parsed.dep_apt, arr: parsed.arr_apt }),
     isDeadhead: false,
   };
 }
@@ -1882,7 +1915,7 @@ function autoSyncLogbookCrewFromApa() {
   let updated = 0, skipped = 0, no_data = 0;
   for (const leg of Object.values(logbook.legs)) {
     if (leg.crew && leg.crew.length > 0) { skipped++; continue; }
-    const apaCrew = getApaPilotsForLeg(leg);
+    const apaCrew = getApaCrewForLogbookLeg(leg);
     if (!apaCrew.length) { no_data++; continue; }
     leg.crew = apaCrew;
     updated++;
@@ -1925,6 +1958,48 @@ async function refreshCrewCache() {
   }
 }
 
+// Lighter-weight than refreshCrewCache: only fetches pairings that aren't
+// already in the cache. Lets us run every 30 min to catch new trips before
+// they fall out of Sabre's ~14-day NS lookback window (which is the only
+// way we can get FA names — apa-logbook doesn't include FAs).
+let eagerSnapshotRunning = false;
+async function eagerSnapshotNewTrips() {
+  if (!crewCacheReady || eagerSnapshotRunning) return;
+  eagerSnapshotRunning = true;
+  try {
+    let schedule;
+    try {
+      schedule = await apa.getCurrentSchedule();
+    } catch (err) {
+      console.log(`[eager-snapshot] schedule fetch failed: ${err.message}`);
+      return;
+    }
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() + 14);
+    const upcoming = (schedule || []).filter(t => {
+      if (!t || !t.start_date) return false;
+      return new Date(t.start_date) <= cutoff;
+    });
+    let snapshotted = 0;
+    for (const trip of upcoming) {
+      const existing = crewCache.getPairing(trip.ep, trip.seq);
+      if (existing && existing.legs && existing.legs.length) continue;
+      try {
+        const pairing = await apa.getPairingCrew(trip.ep, trip.seq);
+        if (pairing && pairing.legs) {
+          crewCache.upsertPairing(pairing);
+          snapshotted++;
+          console.log(`[eager-snapshot] ${trip.ep}/${trip.seq} captured (${pairing.legs.length} legs)`);
+        }
+      } catch (err) {
+        console.error(`[eager-snapshot] ${trip.ep}/${trip.seq} failed: ${err.message}`);
+      }
+    }
+    if (snapshotted > 0) autoSyncLogbookCrewFromApa();
+  } finally {
+    eagerSnapshotRunning = false;
+  }
+}
+
 // Initial fetch 5 sec after startup so the apa-sabre-service has time to be
 // ready. Then refresh every 12 hours. Each successful refresh also auto-syncs
 // the logbook so newly cached pilot lists land on matching legs without the
@@ -1938,6 +2013,12 @@ if (crewCacheReady) {
   setTimeout(() => { autoSyncLogbookCrewFromApa(); }, 1000);
   setTimeout(() => { refreshCrewCache().catch(() => {}); }, 5000);
   setInterval(() => { refreshCrewCache().catch(() => {}); }, 12 * 60 * 60 * 1000);
+  // Eager-snapshot any NEW trips ~10s after boot, then every 30 min. Cheap
+  // (skips trips already in cache) and critical for FA capture: Sabre only
+  // exposes ~14 days of NS history so we have to grab pairings before they
+  // age out — apa-logbook doesn't carry FA names at all.
+  setTimeout(() => { eagerSnapshotNewTrips().catch(() => {}); }, 10000);
+  setInterval(() => { eagerSnapshotNewTrips().catch(() => {}); }, 30 * 60 * 1000);
   // Auto-log poller: scan the calendar every 30 min for completed flights
   // and create logbook entries (with crew). 60 sec after boot for the first
   // pass so the crew cache has a chance to settle.
@@ -2160,10 +2241,29 @@ async function backfillFromApa({ since = null, force = false } = {}) {
 
           const depISO = leg.departure?.actual?.local || leg.departure?.scheduled?.local || "";
           const depDate = depISO.slice(0, 10);
-          const pilotCrew = (leg.flightCrew || [])
+          const apaCrewNames = (leg.flightCrew || [])
             .filter(c => isOperatingSeat(c.seat))
             .filter(c => String(c.employeeNumber || "") !== LOGBOOK_USER_EMP_NUM)
-            .map(c => formatCrewWithSeat(String(c.seat).toUpperCase(), empNameCache.get(c.employeeNumber) || `emp:${c.employeeNumber}`));
+            .map(c => formatCrewWithSeat(seatLabel(c.seat), empNameCache.get(c.employeeNumber) || `emp:${c.employeeNumber}`));
+
+          // apa-logbook only carries CA/FO; flight attendants always come
+          // from the apa-sabre cache (when this leg is still inside Sabre's
+          // ~14-day NS window or was eager-snapshotted earlier).
+          const sabreCrew = getApaCrewForLogbookLeg({
+            flight_number: String(leg.flightNumber),
+            date: depDate,
+            dep: leg.departureStation?.code || null,
+            arr: leg.arrivalStation?.code || null,
+          });
+          const haveBareNames = new Set(apaCrewNames.map(n => {
+            const m = /^[A-Z0-9]{1,3}\s*·\s*(.+)$/.exec(n);
+            return (m ? m[1] : n).toLowerCase();
+          }));
+          const sabreFAs = sabreCrew.filter(n => /^FA\d+\s*·/.test(n)).filter(n => {
+            const m = /·\s*(.+)$/.exec(n);
+            return m && !haveBareNames.has(m[1].toLowerCase());
+          });
+          const pilotCrew = apaCrewNames.concat(sabreFAs);
 
           const record = {
             id: legId,

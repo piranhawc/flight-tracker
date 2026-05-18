@@ -52,6 +52,9 @@
   table.legs .crew-pill { display:inline-block; padding:2px 6px; margin:1px 2px 1px 0; background:#1a1208; border:1px solid #2a1a08; color:#ffd166; border-radius:2px; font-size:9px; cursor:pointer; }
   table.legs .crew-pill:hover { background:#281a08; }
   table.legs .crew-pill.repeat { background:#0a2018; border-color:#0a4030; color:#06d6a0; }
+  table.legs .crew-pill[data-seat="FA"] { background:#0a1820; border-color:#0a3040; color:#7ec8ff; }
+  table.legs .crew-pill[data-seat="FA"]:hover { background:#0a2438; }
+  table.legs .crew-pill[data-seat="FA"].repeat { background:#0a2018; border-color:#0a4030; color:#06d6a0; }
   table.legs .crew-edit { background:#080808; border:1px solid #222; color:#ddd; padding:3px 6px; font-size:9px; font-family:inherit; width:100%; border-radius:2px; }
   table.legs .badge-dh { background:#222; color:#888; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; }
 
@@ -129,9 +132,14 @@ function lbTitleCase(s) {
 // PERSON (notes lookup, repeat-detection) uses the bare name.
 function splitCrewName(s) {
   if (!s) return { seat: "", name: "" };
-  var m = /^([A-Z0-9]{1,3})\s*·\s*(.+)$/.exec(String(s).trim());
+  // Accepts seat labels like CA, FO, RC, FA1, FA2 ... or legacy "01"/"02".
+  var m = /^([A-Z]{1,3}\d?|\d{1,2})\s*·\s*(.+)$/.exec(String(s).trim());
   if (m) return { seat: m[1].toUpperCase(), name: m[2].trim() };
   return { seat: "", name: String(s).trim() };
+}
+function isFASeat(seat) {
+  if (!seat) return false;
+  return /^FA\d+$/.test(seat) || /^\d{1,2}$/.test(seat);
 }
 function bareCrewName(s) {
   return splitCrewName(s).name;
@@ -142,10 +150,13 @@ function displayNameForCrew(rawName) {
   var name = parts.name;
   if (name === name.toUpperCase() && name.length > 1) name = lbTitleCase(name);
   if (!parts.seat) return name;
-  // Color-code seat: pilots in green, FAs in yellow
-  var isFA = /^\d+$/.test(parts.seat) || /^F[A-E]$/.test(parts.seat);
-  var color = isFA ? "#ffd166" : "#06d6a0";
-  return '<span style="color:' + color + ';font-weight:700;margin-right:4px">' + parts.seat + '</span>' + name;
+  var seatDisplay = parts.seat;
+  // Normalize legacy bare "01"/"02" to "FA1"/"FA2" in the rendered label.
+  var bareNum = /^0?(\d{1,2})$/.exec(seatDisplay);
+  if (bareNum) seatDisplay = "FA" + bareNum[1];
+  var isFA = isFASeat(parts.seat);
+  var color = isFA ? "#7ec8ff" : "#06d6a0";
+  return '<span style="color:' + color + ';font-weight:700;margin-right:4px">' + seatDisplay + '</span>' + name;
 }
 function setStatus(msg, color) {
   var s = document.getElementById("status");
@@ -293,7 +304,10 @@ function renderLegs() {
       var bare = bareCrewName(rawName);
       var seen = flownBeforeWith(rawName, l.date);
       var display = displayNameForCrew(rawName);
+      var seatRaw = splitCrewName(rawName).seat;
+      var dataSeat = isFASeat(seatRaw) ? "FA" : (seatRaw || "");
       return '<span class="crew-pill ' + (seen ? "repeat" : "") + '" ' +
+        'data-seat="' + dataSeat + '" ' +
         'onclick="scrollToCrew(\'' + bare.replace(/'/g, "\\'") + '\')" ' +
         'title="' + (seen ? "Flown together before" : "First flight together") + '">' +
         display + '</span>';
