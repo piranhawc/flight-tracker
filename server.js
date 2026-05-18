@@ -1955,16 +1955,37 @@ function healEmpPlaceholdersFromSabreCache() {
   let replaced = 0;
   for (const leg of Object.values(logbook.legs)) {
     if (!leg.crew || !leg.crew.length) continue;
-    const next = leg.crew.map(name => {
+    const hasPlaceholder = leg.crew.some(n => /emp:\d+$/.test(String(n)));
+    if (!hasPlaceholder) continue;
+
+    // First pass: per-name lookup by emp_num across every cached crew_json.
+    let next = leg.crew.map(name => {
       const s = String(name);
       const m = /emp:(\d+)$/.exec(s);
       if (!m) return name;
       const cached = crewCache.findCrewByEmpNum(m[1]);
       if (!cached || !cached.name) return name;
-      const display = apaCrewToDisplayName(cached);
       replaced++;
-      return s.replace(/emp:\d+$/, display);
+      return s.replace(/emp:\d+$/, apaCrewToDisplayName(cached));
     });
+
+    // Fallback: if any placeholder remains AND we have the leg's pairing in
+    // cache, replace the WHOLE crew array with the cached version. This
+    // catches cases where the apa-logbook emp number doesn't match Sabre's
+    // emp_num for the same person (different ID systems, leading-zero
+    // mismatches, etc.) — Sabre's crew listing is authoritative anyway.
+    if (next.some(n => /emp:\d+$/.test(String(n)))) {
+      const cachedCrew = getApaCrewForLogbookLeg(leg);
+      if (cachedCrew.length > 0 && !cachedCrew.some(n => /emp:\d+$/.test(String(n)))) {
+        const beforePlaceholders = next.filter(n => /emp:\d+$/.test(String(n))).length;
+        next = cachedCrew;
+        replaced += beforePlaceholders;
+        console.log(`[heal] leg ${leg.id} (${leg.flight} ${leg.date}): replaced full crew array from Sabre cache`);
+      } else {
+        const stillMissing = next.filter(n => /emp:\d+$/.test(String(n)));
+        console.log(`[heal] leg ${leg.id} (${leg.flight} ${leg.date}): still unresolved: ${stillMissing.join(", ")} · cached_crew_len=${cachedCrew.length} · ep=${leg.ep} seq=${leg.seq}`);
+      }
+    }
     leg.crew = next;
   }
   if (replaced > 0) {
