@@ -2109,6 +2109,17 @@ app.post("/api/crew/:ep/:seq/refresh", logbookAuth, async (req, res) => {
   }
 });
 
+// Diagnostic: scan the Sabre cache for any cached entry matching this emp num.
+// Helpful when the logbook keeps showing "emp:XXX" — tells you whether the
+// pairing is actually in the cache (= it's a serialization mismatch / heal
+// bug) or not (= pairing was never snapshotted, name is unrecoverable).
+app.get("/api/crew/lookup-emp/:emp", logbookAuth, (req, res) => {
+  if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
+  const found = crewCache.findCrewByEmpNum(req.params.emp);
+  if (!found) return res.status(404).json({ found: false, emp: req.params.emp });
+  res.json({ found: true, emp: req.params.emp, crew: found, display: apaCrewToDisplayName(found) });
+});
+
 app.get("/api/crew/flight/:flightNum/:date", logbookAuth, (req, res) => {
   if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
   const rows = crewCache.getLegByFlight(req.params.flightNum, req.params.date);

@@ -132,13 +132,14 @@ function listAllPairings() {
 function findCrewByEmpNum(empNum) {
   if (!db || !empNum) return null;
   const target = String(empNum);
-  // LIKE filter for the JSON blob narrows the rows we have to parse — much
-  // cheaper than parsing every row in the table.
+  // LIKE filter narrows down the rows we have to JSON.parse. Try both quoted
+  // ("emp_num":"51386") and unquoted ("emp_num":51386) forms — apa-sabre may
+  // serialize emp numbers as strings OR integers depending on the source.
   const rows = db.prepare(`
     SELECT crew_json FROM crew_cache
-    WHERE crew_json LIKE ?
+    WHERE crew_json LIKE ? OR crew_json LIKE ?
     LIMIT 200
-  `).all(`%"emp_num":"${target}"%`);
+  `).all(`%"emp_num":"${target}"%`, `%"emp_num":${target}%`);
   for (const r of rows) {
     try {
       const crew = JSON.parse(r.crew_json || "[]");
