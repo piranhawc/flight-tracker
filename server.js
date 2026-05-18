@@ -1910,6 +1910,34 @@ async function backfillFaActuals(legs) {
 // Walk every logbook leg with empty crew, fetch from the apa-sabre cache,
 // persist names. Runs automatically after crew cache refresh and after
 // logbook bulk-upserts so crew shows up without user action.
+// Walk every leg's crew array looking for "emp:XXX" placeholders left over
+// from the APA backfill (when apa-logbook /users didn't know the employee).
+// Try the Sabre crew cache by emp_num — if it knows the name, swap the
+// placeholder in place. Safe to run repeatedly.
+function healEmpPlaceholdersFromSabreCache() {
+  if (!crewCacheReady) return 0;
+  let replaced = 0;
+  for (const leg of Object.values(logbook.legs)) {
+    if (!leg.crew || !leg.crew.length) continue;
+    const next = leg.crew.map(name => {
+      const s = String(name);
+      const m = /emp:(\d+)$/.exec(s);
+      if (!m) return name;
+      const cached = crewCache.findCrewByEmpNum(m[1]);
+      if (!cached || !cached.name) return name;
+      const display = apaCrewToDisplayName(cached);
+      replaced++;
+      return s.replace(/emp:\d+$/, display);
+    });
+    leg.crew = next;
+  }
+  if (replaced > 0) {
+    saveLogbook();
+    console.log(`[logbook auto-sync] healed ${replaced} emp:XXX placeholder(s) from Sabre cache`);
+  }
+  return replaced;
+}
+
 function autoSyncLogbookCrewFromApa() {
   if (!crewCacheReady) return { updated: 0, skipped: 0, no_data: 0 };
   let updated = 0, skipped = 0, no_data = 0;
@@ -1920,6 +1948,9 @@ function autoSyncLogbookCrewFromApa() {
     leg.crew = apaCrew;
     updated++;
   }
+  // Always try to heal any leftover emp:XXX placeholders, even on legs that
+  // already had crew (those are the ones the autoSync above skipped).
+  healEmpPlaceholdersFromSabreCache();
   if (updated > 0) {
     saveLogbook();
     console.log(`[logbook auto-sync] ${updated} legs filled from APA · ${skipped} already had crew · ${no_data} no APA data`);
@@ -2150,11 +2181,22 @@ async function resolveEmpNames(empNums) {
       // ignore — fallthrough to placeholder
     }
   }
+  // Final fallback: any emp the apa-logbook proxy can't resolve, scan the
+  // Sabre crew cache for. Sabre keeps full names + emp_nums for every
+  // pairing we've snapshotted, so a CA the proxy doesn't know often turns
+  // up here.
   for (const e of unknowns) {
-    if (!empNameCache.has(e)) {
-      empNameCache.set(e, `emp:${e}`);
-      console.log(`[apa-backfill] could not resolve emp ${e} after array + wrapped + single-lookup`);
+    if (empNameCache.has(e)) continue;
+    if (crewCacheReady) {
+      const cached = crewCache.findCrewByEmpNum(e);
+      if (cached && cached.name) {
+        empNameCache.set(e, apaCrewToDisplayName(cached));
+        console.log(`[apa-backfill] resolved emp ${e} from Sabre cache: ${empNameCache.get(e)}`);
+        continue;
+      }
     }
+    empNameCache.set(e, `emp:${e}`);
+    console.log(`[apa-backfill] could not resolve emp ${e} after array + wrapped + single-lookup + Sabre cache`);
   }
 }
 function lbTitleCase(s) {

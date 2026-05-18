@@ -126,4 +126,28 @@ function listAllPairings() {
   `).all();
 }
 
-module.exports = { init, upsertPairing, getPairing, getLegByFlight, listAllPairings, countAll };
+// Scan every cached crew_json blob looking for an entry with this emp_num.
+// Used as a fallback when apa-logbook's /users endpoint doesn't have the
+// employee (happens for some emp numbers). Returns the first match found.
+function findCrewByEmpNum(empNum) {
+  if (!db || !empNum) return null;
+  const target = String(empNum);
+  // LIKE filter for the JSON blob narrows the rows we have to parse — much
+  // cheaper than parsing every row in the table.
+  const rows = db.prepare(`
+    SELECT crew_json FROM crew_cache
+    WHERE crew_json LIKE ?
+    LIMIT 200
+  `).all(`%"emp_num":"${target}"%`);
+  for (const r of rows) {
+    try {
+      const crew = JSON.parse(r.crew_json || "[]");
+      for (const c of crew) {
+        if (c && String(c.emp_num || "") === target) return c;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+module.exports = { init, upsertPairing, getPairing, getLegByFlight, listAllPairings, countAll, findCrewByEmpNum };
