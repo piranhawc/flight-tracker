@@ -93,6 +93,18 @@
   .commute-spinner { width:10px; height:10px; border:1.5px solid #1a3028; border-top-color:#06d6a0; border-radius:50%; animation:spin 0.7s linear infinite; display:inline-block; }
   .commute-cache-info { padding:4px 14px; font-size:8px; color:#333; letter-spacing:1px; text-transform:uppercase; text-align:right; }
   .commute-cache-info.stale { color:#ffd166; }
+  /* 7-day SMTWTFS preview strip — fixed-width 7 columns under each route header */
+  .commute-week { display:grid; grid-template-columns:repeat(7, 1fr); gap:1px; background:#1a1a1a; padding:0; }
+  .commute-week .cw-day { background:#0a0a0a; padding:6px 4px; text-align:center; cursor:pointer; }
+  .commute-week .cw-day:hover { background:#111; }
+  .commute-week .cw-day.today { background:#0a1a14; }
+  .commute-week .cw-dow { font-size:9px; font-weight:700; color:#06d6a0; letter-spacing:1px; }
+  .commute-week .cw-date { font-size:9px; color:#666; margin-top:1px; }
+  .commute-week .cw-count { font-size:14px; font-weight:700; color:#ddd; margin-top:3px; }
+  .commute-week .cw-count.zero { color:#444; }
+  .commute-week .cw-range { font-size:8px; color:#777; margin-top:2px; line-height:1.1; }
+  .commute-week .cw-empty { font-size:8px; color:#333; margin-top:4px; }
+  .commute-week-expanded { background:#070707; border-top:1px solid #141414; padding:0; }
   #cal-panel { background:#0c0c0c; border-top:1px solid #141414; flex-shrink:0; }
   #cal-header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; cursor:pointer; user-select:none; }
   #cal-header:hover { background:#111; }
@@ -147,7 +159,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-18.6</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-19.1</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
@@ -1660,19 +1672,126 @@ function initCommutePanel() {
   panel.style.display = "block";
   document.getElementById("commute-title").textContent = "COMMUTE · TODAY";
 
-  // Build sections for each route
+  // Build sections for each route. Each section gets a 7-day strip below the
+  // header (populated by load7DayPreview) and the existing today-detail body.
   content.innerHTML = COMMUTE_ROUTES.map(function(route) {
     var sectionId = "commute-" + route.from + "-" + route.to;
     return '<div class="commute-section">' +
       '<div class="commute-section-header">' + route.label + '</div>' +
+      '<div id="' + sectionId + '-week" class="commute-week-wrap"></div>' +
       '<div id="' + sectionId + '-body"><div class="commute-loading" style="padding:8px">Loading...</div></div>' +
     '</div>';
   }).join("");
 
   loadAllCommutes();
+  load7DayPreviews();
 
   if (commuteRefreshTimer) clearInterval(commuteRefreshTimer);
   commuteRefreshTimer = setInterval(loadAllCommutes, 3600000);
+}
+
+// 7-day SMTWTFS preview. Renders a fixed strip per route; each day is
+// clickable and toggles an inline list of scheduled flights for that date.
+var commuteWeekData = {}; // "FROM/TO" -> server response
+var DOW_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
+
+async function load7DayPreviews() {
+  var todayStr = todayCTDateStr();
+  for (var i = 0; i < COMMUTE_ROUTES.length; i++) {
+    var route = COMMUTE_ROUTES[i];
+    var wrap = document.getElementById("commute-" + route.from + "-" + route.to + "-week");
+    if (!wrap) continue;
+    try {
+      var r = await fetch("/api/commute-week/" + route.from + "/" + route.to);
+      if (r.status === 404) {
+        wrap.innerHTML = '<div class="commute-loading" style="padding:6px;font-size:9px">7-day preview building — first refresh hasn\'t run yet</div>';
+        continue;
+      }
+      if (!r.ok) { wrap.innerHTML = ""; continue; }
+      var data = await r.json();
+      commuteWeekData[route.from + "/" + route.to] = data;
+      wrap.innerHTML = render7DayStrip(route, data.days || [], todayStr);
+    } catch (e) {
+      wrap.innerHTML = "";
+    }
+  }
+}
+
+function todayCTDateStr() {
+  var now = new Date();
+  var m = now.getUTCMonth();
+  var inDST = m >= 2 && m <= 10;
+  var ctOffset = inDST ? 5 : 6;
+  var ct = new Date(now.getTime() - ctOffset * 3600 * 1000);
+  return ct.toISOString().slice(0, 10);
+}
+
+function render7DayStrip(route, days, todayStr) {
+  if (!days.length) return "";
+  var cells = days.slice(0, 7).map(function(day) {
+    var dayKey = route.from + "/" + route.to + "/" + day.date;
+    var letter = DOW_LETTERS[day.dow];
+    var dateLabel = day.date.slice(5).replace("-", "/");
+    var isToday = day.date === todayStr;
+    var count = day.flights.length;
+    var range = "";
+    if (count > 0) {
+      var firstT = day.flights[0].scheduled_out;
+      var lastT = day.flights[count - 1].scheduled_out;
+      range = fmtLocalTime(firstT, route.from === "ORD" ? "America/Chicago" : null) +
+        " – " + fmtLocalTime(lastT, route.from === "ORD" ? "America/Chicago" : null);
+    }
+    return '<div class="cw-day' + (isToday ? " today" : "") + '" ' +
+      'onclick="toggleCommuteWeekDay(\'' + dayKey + '\')">' +
+      '<div class="cw-dow">' + letter + '</div>' +
+      '<div class="cw-date">' + dateLabel + '</div>' +
+      (count > 0
+        ? '<div class="cw-count">' + count + '</div><div class="cw-range">' + range + '</div>'
+        : '<div class="cw-count zero">·</div><div class="cw-empty">no schedule</div>') +
+      '</div>';
+  }).join("");
+  return '<div class="commute-week">' + cells + '</div>' +
+    '<div id="cw-detail-' + route.from + "-" + route.to + '" class="commute-week-expanded" style="display:none"></div>';
+}
+
+function toggleCommuteWeekDay(dayKey) {
+  var parts = dayKey.split("/");
+  var from = parts[0], to = parts[1], date = parts[2];
+  var detail = document.getElementById("cw-detail-" + from + "-" + to);
+  if (!detail) return;
+  // If already showing this date, collapse
+  if (detail.getAttribute("data-date") === date && detail.style.display !== "none") {
+    detail.style.display = "none";
+    detail.removeAttribute("data-date");
+    return;
+  }
+  var data = commuteWeekData[from + "/" + to];
+  if (!data) return;
+  var day = (data.days || []).find(function(d) { return d.date === date; });
+  if (!day) return;
+  if (!day.flights.length) {
+    detail.innerHTML = '<div class="commute-loading" style="padding:8px">No scheduled flights on ' + date + '</div>';
+  } else {
+    detail.innerHTML = day.flights.map(function(f) {
+      var dep = fmtLocalTime(f.scheduled_out, f.origin_timezone);
+      var arr = fmtLocalTime(f.scheduled_in, f.destination_timezone);
+      var carrier = f.marketing_carrier || "";
+      return '<div class="commute-row">' +
+        '<span class="c-airline" style="background:' + carrierColor(carrier) + '">' + carrier + '</span>' +
+        '<span class="c-ident">' + (f.ident || "?") + '</span>' +
+        '<span class="c-time">' + dep + " → " + arr + '</span>' +
+      '</div>';
+    }).join("");
+  }
+  detail.setAttribute("data-date", date);
+  detail.style.display = "block";
+}
+
+function carrierColor(c) {
+  if (c === "AA") return "#bf0a30";
+  if (c === "UA") return "#003876";
+  if (c === "DL") return "#9b1b30";
+  return "#333";
 }
 
 // --- Schedule calendar at the bottom of the page ---

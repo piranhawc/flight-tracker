@@ -14,6 +14,7 @@ const GATE_CACHE_FILE = path.join(CACHE_DIR, "gate-cache.json");
 const GATE_LEARNED_FILE = path.join(CACHE_DIR, "gate-learned.json");
 const GATE_OVERRIDES_FILE = path.join(CACHE_DIR, "gate-overrides.json");
 const LOGBOOK_FILE = path.join(CACHE_DIR, "logbook.json");
+const COMMUTE_WEEK_FILE = path.join(CACHE_DIR, "commute-week.json");
 const CREW_FILE = path.join(CACHE_DIR, "crew.json");
 const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
 
@@ -1262,6 +1263,138 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
     console.error("Commute lookup error:", e.message);
     res.json({ flights: [], error: e.message });
   }
+});
+
+// --- Commute week: 7-day SMTWTFS preview for fixed routes ---
+// Disk-cached aggregate of the per-day commute data. Refreshed once a day
+// at 3 AM CT by a self-scheduling timer; on boot we also kick a refresh if
+// the cache is missing or older than 24 hr so first deploy comes up
+// populated. Each entry is keyed "FROM/TO" -> { generated_at, days: [
+//   { date: "YYYY-MM-DD", dow: 0..6, flights: [...simplified flight rows...] }
+// ] }.
+const COMMUTE_WEEK_ROUTES = [
+  { from: "AZO", to: "ORD" },
+  { from: "ORD", to: "AZO" },
+  { from: "GRR", to: "ORD" },
+  { from: "ORD", to: "GRR" },
+];
+let commuteWeekCache = loadCache(COMMUTE_WEEK_FILE) || {};
+
+function todayDateInCT() {
+  const now = new Date();
+  const m = now.getUTCMonth();
+  const inDST = m >= 2 && m <= 10;
+  const ctOffsetHours = inDST ? 5 : 6;
+  const ct = new Date(now.getTime() - ctOffsetHours * 3600 * 1000);
+  return ct.toISOString().slice(0, 10);
+}
+
+function addDaysISO(dateStr, n) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return dt.toISOString().slice(0, 10);
+}
+
+function dowFromISO(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+let commuteWeekRefreshing = false;
+async function refreshCommuteWeekCache() {
+  if (commuteWeekRefreshing) {
+    console.log("[commute-week] refresh already in progress, skipping");
+    return;
+  }
+  commuteWeekRefreshing = true;
+  try {
+    const startDate = todayDateInCT();
+    console.log(`[commute-week] refreshing ${COMMUTE_WEEK_ROUTES.length} routes × 7 days starting ${startDate}`);
+    for (const route of COMMUTE_WEEK_ROUTES) {
+      const days = [];
+      for (let i = 0; i < 7; i++) {
+        const dateStr = addDaysISO(startDate, i);
+        let flights = [];
+        try {
+          const r = await fetch(`http://127.0.0.1:${PORT}/api/commute/${route.from}/${route.to}/${dateStr}`);
+          if (r.ok) {
+            const data = await r.json();
+            flights = data.flights || [];
+          }
+        } catch (e) {
+          console.log(`[commute-week]   ${route.from}→${route.to} ${dateStr} failed: ${e.message}`);
+        }
+        days.push({ date: dateStr, dow: dowFromISO(dateStr), flights });
+      }
+      commuteWeekCache[`${route.from}/${route.to}`] = {
+        generated_at: new Date().toISOString(),
+        days,
+      };
+      saveCache(COMMUTE_WEEK_FILE, commuteWeekCache);
+      const total = days.reduce((s, d) => s + d.flights.length, 0);
+      console.log(`[commute-week]   ${route.from}→${route.to}: ${total} flights across 7 days`);
+    }
+    console.log("[commute-week] refresh complete");
+  } finally {
+    commuteWeekRefreshing = false;
+  }
+}
+
+function msUntilNext3amCT() {
+  const now = new Date();
+  const m = now.getUTCMonth();
+  const inDST = m >= 2 && m <= 10;
+  const ctOffsetHours = inDST ? 5 : 6;
+  const targetUtcHour = 3 + ctOffsetHours;
+  const target = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+    targetUtcHour, 0, 0
+  ));
+  if (target <= now) target.setUTCDate(target.getUTCDate() + 1);
+  return target.getTime() - now.getTime();
+}
+
+function scheduleNextCommuteWeekRefresh() {
+  const wait = msUntilNext3amCT();
+  console.log(`[commute-week] next 3 AM CT refresh in ${Math.round(wait / 60000)} min`);
+  setTimeout(async () => {
+    try { await refreshCommuteWeekCache(); } catch (e) { console.error("[commute-week] refresh error:", e.message); }
+    scheduleNextCommuteWeekRefresh();
+  }, wait);
+}
+scheduleNextCommuteWeekRefresh();
+
+// On boot, populate if cache is missing or stale (>24 hr old). Delay so the
+// server is listening before we make internal fetch calls to ourselves.
+setTimeout(() => {
+  const anyMissing = COMMUTE_WEEK_ROUTES.some(r => {
+    const e = commuteWeekCache[`${r.from}/${r.to}`];
+    if (!e || !e.generated_at) return true;
+    return (Date.now() - new Date(e.generated_at).getTime()) > 24 * 3600 * 1000;
+  });
+  if (anyMissing) {
+    refreshCommuteWeekCache().catch(e => console.error("[commute-week] boot refresh failed:", e.message));
+  } else {
+    console.log("[commute-week] cache is fresh, no boot refresh needed");
+  }
+}, 30 * 1000);
+
+app.get("/api/commute-week/:from/:to", (req, res) => {
+  const { from, to } = req.params;
+  const entry = commuteWeekCache[`${from}/${to}`];
+  if (!entry) return res.status(404).json({ error: "no cached data; refresh not yet run" });
+  // Drop any leading days that are now in the past — the strip should always
+  // start at "today" in CT, so trim ahead of any callers asking on day N+1
+  // before the next 3 AM refresh fires.
+  const today = todayDateInCT();
+  const days = (entry.days || []).filter(d => d.date >= today);
+  res.json({ generated_at: entry.generated_at, from, to, days });
+});
+
+app.post("/api/commute-week/refresh", (req, res) => {
+  refreshCommuteWeekCache().catch(e => console.error(e));
+  res.json({ ok: true, message: "refresh started" });
 });
 
 // --- Pilot logbook ---
