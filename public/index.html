@@ -95,15 +95,15 @@
   .commute-cache-info.stale { color:#ffd166; }
   /* 7-day SMTWTFS preview strip — fixed-width 7 columns under each route header */
   .commute-week { display:grid; grid-template-columns:repeat(7, 1fr); gap:1px; background:#1a1a1a; padding:0; }
-  .commute-week .cw-day { background:#0a0a0a; padding:6px 4px; text-align:center; cursor:pointer; }
+  .commute-week .cw-day { background:#0a0a0a; padding:3px 2px; text-align:center; cursor:pointer; }
   .commute-week .cw-day:hover { background:#111; }
   .commute-week .cw-day.today { background:#0a1a14; }
-  .commute-week .cw-dow { font-size:9px; font-weight:700; color:#06d6a0; letter-spacing:1px; }
-  .commute-week .cw-date { font-size:9px; color:#666; margin-top:1px; }
-  .commute-week .cw-count { font-size:14px; font-weight:700; color:#ddd; margin-top:3px; }
+  .commute-week .cw-dow { font-size:8px; font-weight:700; color:#06d6a0; letter-spacing:1px; }
+  .commute-week .cw-date { font-size:7px; color:#666; }
+  .commute-week .cw-count { font-size:10px; font-weight:700; color:#ddd; margin-top:1px; }
   .commute-week .cw-count.zero { color:#444; }
-  .commute-week .cw-range { font-size:8px; color:#777; margin-top:2px; line-height:1.1; }
-  .commute-week .cw-empty { font-size:8px; color:#333; margin-top:4px; }
+  .commute-week .cw-range { font-size:7px; color:#777; line-height:1.1; }
+  .commute-week .cw-empty { font-size:7px; color:#333; margin-top:1px; }
   .commute-week-expanded { background:#070707; border-top:1px solid #141414; padding:0; }
   #cal-panel { background:#0c0c0c; border-top:1px solid #141414; flex-shrink:0; }
   #cal-header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; cursor:pointer; user-select:none; }
@@ -159,7 +159,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-19.2</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-19.3</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>

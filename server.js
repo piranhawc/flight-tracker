@@ -944,6 +944,10 @@ function getMarketingCarrier(f) {
       if (m) return m[1];
     }
   }
+  // Final fallback: parse the chosen ident itself ("AA3962" -> "AA"). Needed
+  // when /schedules rows arrive with no operator/codeshares fields populated.
+  const idMatch = (f.ident_iata || f.ident || "").toUpperCase().match(/^([A-Z]{2})\d/);
+  if (idMatch) return idMatch[1];
   return f.operator_iata || (f.operator || "").substring(0, 2);
 }
 
@@ -1307,8 +1311,12 @@ async function fetchFASchedulesForDay(from, to, dateStr) {
   }
 }
 
-// Collapse codeshares within a single day's results and pick the operating
-// carrier — same approach as /api/commute uses for live data.
+// Collapse codeshares within a single day's results. The /schedules endpoint
+// returns one row per published ident (AA3962, BA2409, JL7305, QR8750 are
+// all the same physical flight); we group by route+time and pick the AA
+// banner row (preferring US mainline order: AA, UA, DL). The other group
+// members get rolled into codeshares_iata so downstream lookups still work.
+const MAINLINE_PRIORITY = ["AA", "UA", "DL", "WN", "AS", "B6"];
 function dedupeScheduledFlights(flights) {
   const seen = {};
   const unique = flights.filter(f => {
@@ -1328,11 +1336,30 @@ function dedupeScheduledFlights(flights) {
   });
   return Object.values(groups).map(group => {
     if (group.length === 1) return group[0];
-    const operating = group.find(f => {
-      const op = f.operator_icao || f.operator || "";
-      return op && f.ident_icao && f.ident_icao.startsWith(op);
+    // Collect all the idents in this group — they're all codeshares for the
+    // same physical flight.
+    const allIdents = group.map(f => f.ident_iata || f.ident).filter(Boolean);
+    // Pick the chosen row, preferring AA → UA → DL → operator-match → first.
+    let chosen = null;
+    for (const carrier of MAINLINE_PRIORITY) {
+      chosen = group.find(f => {
+        const id = (f.ident_iata || f.ident || "").toUpperCase();
+        return id.startsWith(carrier);
+      });
+      if (chosen) break;
+    }
+    if (!chosen) {
+      chosen = group.find(f => {
+        const op = f.operator_icao || f.operator || "";
+        return op && f.ident_icao && f.ident_icao.startsWith(op);
+      });
+    }
+    if (!chosen) chosen = group[0];
+    const chosenId = chosen.ident_iata || chosen.ident;
+    const codeshares = allIdents.filter(id => id !== chosenId);
+    return Object.assign({}, chosen, {
+      codeshares_iata: Array.from(new Set([...(chosen.codeshares_iata || []), ...codeshares])),
     });
-    return operating || group[0];
   });
 }
 
@@ -1438,6 +1465,14 @@ setTimeout(() => {
     // scheduled_departures path — rebuild via /schedules.
     const empty = (e.days || []).filter(d => !d.flights || d.flights.length === 0).length;
     if (empty >= 4) return true;
+    // Rebuild if any cached flight has a non-AA/UA/DL ident — means the old
+    // codeshare collapser picked a foreign codeshare row (BA, JL, QR, etc.)
+    // and we now have AA-preferring logic that'll do better.
+    const foreignIdent = (e.days || []).some(d => (d.flights || []).some(f => {
+      const id = String(f.ident || "").toUpperCase();
+      return /^[A-Z]{2}\d/.test(id) && !/^(AA|UA|DL|WN|AS|B6)\d/.test(id);
+    }));
+    if (foreignIdent) return true;
     return false;
   });
   if (needsRefresh) {
