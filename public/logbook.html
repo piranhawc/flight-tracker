@@ -57,6 +57,9 @@
   table.legs .crew-pill[data-seat="FA"].repeat { background:#0a2018; border-color:#0a4030; color:#06d6a0; }
   table.legs .crew-edit { background:#080808; border:1px solid #222; color:#ddd; padding:3px 6px; font-size:9px; font-family:inherit; width:100%; border-radius:2px; }
   table.legs .badge-dh { background:#222; color:#888; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; }
+  table.legs .badge-upcoming { background:#1a1208; color:#ffd166; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; font-weight:700; }
+  table.legs tr.upcoming td { background:#0d0a05; }
+  table.legs tr.upcoming td:first-child { border-left:2px solid #ffd166; }
 
   /* Crew list */
   .crew-card { background:#0e0e0e; border:1px solid #1a1a1a; border-radius:4px; padding:10px 12px; margin-bottom:8px; }
@@ -79,7 +82,7 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-05-19.5</span>
+    <span class="meta" title="Build version">v2026-05-19.6</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <span class="meta" id="apa-stats-summary" style="display:none"></span>
     <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
@@ -325,6 +328,7 @@ function renderLegs() {
     var schedIn = l.scheduled_in ? fmtTime(l.scheduled_in) : "—";
     var g2g = gateToGate(l) || "—";
     var dh = l.isDH ? '<span class="badge-dh">DH</span>' : '';
+    var upcomingBadge = l._upcoming ? '<span class="badge-upcoming">UPCOMING</span>' : '';
 
     var crewPills = (l.crew || []).map(function(rawName) {
       var bare = bareCrewName(rawName);
@@ -341,9 +345,9 @@ function renderLegs() {
     var apaFlag = l._apa_sourced ? '<span title="from APA Sabre · click ⛏ SYNC APA CREW to persist" style="color:#06d6a0;margin-right:4px;font-size:10px">⚡</span>' : '';
     var crewEditId = "crew-edit-" + l.id;
 
-    rows.push("<tr>" +
+    rows.push("<tr" + (l._upcoming ? " class='upcoming'" : "") + ">" +
       "<td>" + dateStr + "</td>" +
-      "<td class='col-flight'>" + (l.flight || "—") + dh + "</td>" +
+      "<td class='col-flight'>" + (l.flight || "—") + dh + upcomingBadge + "</td>" +
       "<td class='col-route'>" + (l.dep || "?") + "→" + (l.arr || "?") + "</td>" +
       "<td class='col-time'>" + (actOut ? '<span class="actual">' + actOut + '</span>' : '<span class="sched">' + schedOut + '</span>') + "</td>" +
       "<td class='col-time'>" + (actIn ? '<span class="actual">' + actIn + '</span>' : '<span class="sched">' + schedIn + '</span>') + "</td>" +

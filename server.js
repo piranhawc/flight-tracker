@@ -2015,6 +2015,16 @@ function isCompleted(parsed) {
   return new Date(parsed.end).getTime() < (Date.now() - 30 * 60 * 1000);
 }
 
+// Legs that haven't happened yet but start soon — pulled into the logbook
+// so the user can see their pairing partners the day before showtime.
+// Window: any time before scheduled departure, up to 48 hr ahead.
+function isUpcomingSoon(parsed) {
+  if (!parsed || !parsed.start) return false;
+  const startMs = new Date(parsed.start).getTime();
+  const now = Date.now();
+  return startMs > now && startMs < now + 48 * 60 * 60 * 1000;
+}
+
 async function importCompletedFlights({ force = false, withActuals = true } = {}) {
   if (!crewCacheReady) {
     console.log("[auto-log] crew cache not ready, skipping");
@@ -2036,7 +2046,7 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
   for (const ev of events) {
     const parsed = parseCalendarEvent(ev);
     if (!parsed || !parsed.ep || !parsed.seq) continue;
-    if (!isCompleted(parsed)) continue;
+    if (!isCompleted(parsed) && !isUpcomingSoon(parsed)) continue;
     const k = parsed.ep + "/" + parsed.seq;
     if (!wantedPairings.has(k)) wantedPairings.set(k, { ep: parsed.ep, seq: parsed.seq });
   }
@@ -2061,15 +2071,21 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     console.log(`[auto-log] prefetch: ${prefetched} pulled, ${prefetchMissing} unavailable, ${wantedPairings.size} total wanted`);
   }
 
-  let created = 0, updated = 0, skipped = 0, deadhead = 0, no_crew = 0, scanned = 0;
+  let created = 0, updated = 0, skipped = 0, deadhead = 0, no_crew = 0, scanned = 0, upcoming = 0;
   const touchedLegs = [];
   for (const event of events) {
     scanned++;
     const parsed = parseCalendarEvent(event);
     if (!parsed) { skipped++; continue; }
-    if (!isCompleted(parsed)) { skipped++; continue; }
-
+    const completed = isCompleted(parsed);
+    const upcomingSoon = !completed && isUpcomingSoon(parsed);
     const existing = logbook.legs[parsed.leg_id];
+    // Also re-process anything previously imported as upcoming, so we can
+    // clear the _upcoming flag (and refresh crew/actuals) once it transitions
+    // to in-progress or completed.
+    const wasUpcoming = !!(existing && existing._upcoming);
+    if (!completed && !upcomingSoon && !wasUpcoming) { skipped++; continue; }
+
     if (existing && !force) {
       // Skip ONLY if the user has typed in notes — crew alone shouldn't
       // make us bail out of an auto-log refresh because the dedupe path
@@ -2097,7 +2113,9 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
       crew,
       _auto_filled: true,
       _source: "auto-log",
+      _upcoming: upcomingSoon || false,
     };
+    if (upcomingSoon) upcoming++;
 
     if (existing) {
       legRecord.notes = existing.notes || "";
@@ -2118,7 +2136,7 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
   const stalePurged = purgeStaleCompositeLegs();
   const deduped = dedupeLogbookLegs();
   const dhPurged = purgeDeadheadsFromLogbook();
-  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} no_crew=${no_crew} stale_purged=${stalePurged} deduped=${deduped} dh_purged=${dhPurged}`);
+  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} upcoming=${upcoming} no_crew=${no_crew} stale_purged=${stalePurged} deduped=${deduped} dh_purged=${dhPurged}`);
 
   // Fire-and-forget FA actuals fetch for any past legs without actual_in.
   // Throttled by the existing FA queue (10s gap). Doesn't block the response.
