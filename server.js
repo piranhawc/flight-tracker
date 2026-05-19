@@ -910,6 +910,13 @@ function getDisplayIdent(f) {
 // Marketing carrier (who sold the seat). Regional operators fly under
 // AA/UA/DL banners; map them back so colored airline pills are correct.
 function getMarketingCarrier(f) {
+  // First check: if the row's own ident already encodes a known US mainline
+  // carrier (e.g. /schedules picked AA4899 as the AA banner row), trust it
+  // outright. Avoids the older code returning a foreign codeshare prefix
+  // from codeshares_iata when the row itself is AA.
+  const idPrefix = (f.ident_iata || f.ident || "").toUpperCase().match(/^([A-Z]{2})\d/);
+  const mainlineCarriers = ["AA", "UA", "DL", "WN", "AS", "B6"];
+  if (idPrefix && mainlineCarriers.includes(idPrefix[1])) return idPrefix[1];
   const mainlineOperators = ["AAL","UAL","DAL","SWA","ASA","JBU","NKS","FFT","AAY","HAL"];
   if (mainlineOperators.includes((f.operator || "").toUpperCase())) return f.operator_iata || f.operator;
   const op = (f.operator || "").toUpperCase();
@@ -1318,15 +1325,13 @@ async function fetchFASchedulesForDay(from, to, dateStr) {
 // members get rolled into codeshares_iata so downstream lookups still work.
 const MAINLINE_PRIORITY = ["AA", "UA", "DL", "WN", "AS", "B6"];
 function dedupeScheduledFlights(flights) {
-  const seen = {};
-  const unique = flights.filter(f => {
-    const id = f.fa_flight_id || (f.ident + "-" + f.scheduled_out);
-    if (seen[id]) return false;
-    seen[id] = true;
-    return true;
-  });
+  // Don't pre-dedupe by fa_flight_id — /schedules returns every codeshare
+  // partner (AA3381, BA2409, JL7305, ENY3381 …) for the same physical
+  // flight sharing one fa_flight_id, so that pre-dedupe would discard all
+  // but the first arrival, often a foreign codeshare. The route+time group
+  // below handles the collapse correctly.
   const groups = {};
-  unique.forEach(f => {
+  flights.forEach(f => {
     const schedTime = f.scheduled_out || f.scheduled_off || f.scheduled_in || "";
     const origCode = (f.origin && (f.origin.code_iata || f.origin.code)) || "";
     const destCode = (f.destination && (f.destination.code_iata || f.destination.code)) || "";
@@ -1465,14 +1470,18 @@ setTimeout(() => {
     // scheduled_departures path — rebuild via /schedules.
     const empty = (e.days || []).filter(d => !d.flights || d.flights.length === 0).length;
     if (empty >= 4) return true;
-    // Rebuild if any cached flight has a non-AA/UA/DL ident — means the old
-    // codeshare collapser picked a foreign codeshare row (BA, JL, QR, etc.)
-    // and we now have AA-preferring logic that'll do better.
-    const foreignIdent = (e.days || []).some(d => (d.flights || []).some(f => {
+    // Rebuild if any cached flight has a non-mainline ident, OR a wrong
+    // marketing_carrier (e.g. AA4899 with carrier="JL"). Either signal
+    // means the prior cache was built with broken collapse/carrier logic.
+    const looksWrong = (e.days || []).some(d => (d.flights || []).some(f => {
       const id = String(f.ident || "").toUpperCase();
-      return /^[A-Z]{2}\d/.test(id) && !/^(AA|UA|DL|WN|AS|B6)\d/.test(id);
+      if (/^[A-Z]{2}\d/.test(id) && !/^(AA|UA|DL|WN|AS|B6)\d/.test(id)) return true;
+      const idP = id.match(/^([A-Z]{2})\d/);
+      const mainline = ["AA","UA","DL","WN","AS","B6"];
+      if (idP && mainline.includes(idP[1]) && f.marketing_carrier && f.marketing_carrier !== idP[1]) return true;
+      return false;
     }));
-    if (foreignIdent) return true;
+    if (looksWrong) return true;
     return false;
   });
   if (needsRefresh) {

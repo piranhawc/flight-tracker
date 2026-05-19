@@ -159,7 +159,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-05-19.3</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-05-19.4</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
@@ -1758,13 +1758,30 @@ function toggleCommuteWeekDay(dayKey) {
   var parts = dayKey.split("/");
   var from = parts[0], to = parts[1], date = parts[2];
   var detail = document.getElementById("cw-detail-" + from + "-" + to);
+  var todayBody = document.getElementById("commute-" + from + "-" + to + "-body");
   if (!detail) return;
-  // If already showing this date, collapse
+  var todayStr = todayCTDateStr();
+  var clickingToday = (date === todayStr);
+
+  // Clicking today's cell: show the live today-body, hide the detail panel.
+  if (clickingToday) {
+    detail.style.display = "none";
+    detail.removeAttribute("data-date");
+    if (todayBody) todayBody.style.display = "";
+    return;
+  }
+
+  // Clicking the currently-selected non-today day again: collapse back to today.
   if (detail.getAttribute("data-date") === date && detail.style.display !== "none") {
     detail.style.display = "none";
     detail.removeAttribute("data-date");
+    if (todayBody) todayBody.style.display = "";
     return;
   }
+
+  // Clicking a different non-today day: hide today's live body, show the
+  // chosen day's scheduled flights in the detail panel.
+  if (todayBody) todayBody.style.display = "none";
   var data = commuteWeekData[from + "/" + to];
   if (!data) return;
   var day = (data.days || []).find(function(d) { return d.date === date; });
