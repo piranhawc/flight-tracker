@@ -1394,6 +1394,11 @@ function simplifyScheduledFlight(f) {
   };
 }
 
+// Carriers a US-based pilot can realistically commute on. /schedules
+// returns every foreign codeshare too (IB, CM, NZ, BA, JL, QR, …), which
+// just clutter the SMTWTFS view since they're all the same metal anyway.
+const COMMUTE_PASSENGER_CARRIERS = new Set(["AA", "UA", "DL", "WN", "AS", "B6"]);
+
 let commuteWeekRefreshing = false;
 async function refreshCommuteWeekCache() {
   if (commuteWeekRefreshing) {
@@ -1410,11 +1415,14 @@ async function refreshCommuteWeekCache() {
         const dateStr = addDaysISO(startDate, i);
         const raw = await fetchFASchedulesForDay(route.from, route.to, dateStr);
         const deduped = dedupeScheduledFlights(raw);
-        const simplified = deduped.map(simplifyScheduledFlight).sort((a, b) => {
-          const ta = new Date(a.scheduled_out || 0).getTime();
-          const tb = new Date(b.scheduled_out || 0).getTime();
-          return ta - tb;
-        });
+        const simplified = deduped
+          .map(simplifyScheduledFlight)
+          .filter(f => COMMUTE_PASSENGER_CARRIERS.has(f.marketing_carrier))
+          .sort((a, b) => {
+            const ta = new Date(a.scheduled_out || 0).getTime();
+            const tb = new Date(b.scheduled_out || 0).getTime();
+            return ta - tb;
+          });
         days.push({ date: dateStr, dow: dowFromISO(dateStr), flights: simplified });
       }
       commuteWeekCache[`${route.from}/${route.to}`] = {
@@ -1470,15 +1478,17 @@ setTimeout(() => {
     // scheduled_departures path — rebuild via /schedules.
     const empty = (e.days || []).filter(d => !d.flights || d.flights.length === 0).length;
     if (empty >= 4) return true;
-    // Rebuild if any cached flight has a non-mainline ident, OR a wrong
-    // marketing_carrier (e.g. AA4899 with carrier="JL"). Either signal
-    // means the prior cache was built with broken collapse/carrier logic.
+    // Rebuild if any cached flight has a non-mainline marketing_carrier
+    // (IB, CM, NZ, AY, EI, etc.) or an ident/carrier mismatch — either
+    // signal means the prior cache was built with broken collapse/carrier
+    // logic.
     const looksWrong = (e.days || []).some(d => (d.flights || []).some(f => {
       const id = String(f.ident || "").toUpperCase();
       if (/^[A-Z]{2}\d/.test(id) && !/^(AA|UA|DL|WN|AS|B6)\d/.test(id)) return true;
       const idP = id.match(/^([A-Z]{2})\d/);
       const mainline = ["AA","UA","DL","WN","AS","B6"];
       if (idP && mainline.includes(idP[1]) && f.marketing_carrier && f.marketing_carrier !== idP[1]) return true;
+      if (f.marketing_carrier && !mainline.includes(f.marketing_carrier)) return true;
       return false;
     }));
     if (looksWrong) return true;
