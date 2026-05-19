@@ -892,6 +892,61 @@ app.delete("/api/gate/override", (req, res) => {
   res.json({ ok: true, removed });
 });
 
+// Prefer the AA/AAL marketing ident over an operator callsign so the UI
+// shows "AA3962" instead of "ENY3962" for an Envoy-operated AA flight.
+function getDisplayIdent(f) {
+  if (f.operator === "AAL" || f.operator_iata === "AA") return f.ident_iata || f.ident;
+  if (f.codeshares_iata) {
+    const aa = f.codeshares_iata.find(c => c.startsWith("AA"));
+    if (aa) return aa;
+  }
+  if (f.codeshares) {
+    const aal = f.codeshares.find(c => c.startsWith("AAL"));
+    if (aal) return "AA" + aal.replace("AAL", "");
+  }
+  return f.ident_iata || f.ident;
+}
+
+// Marketing carrier (who sold the seat). Regional operators fly under
+// AA/UA/DL banners; map them back so colored airline pills are correct.
+function getMarketingCarrier(f) {
+  const mainlineOperators = ["AAL","UAL","DAL","SWA","ASA","JBU","NKS","FFT","AAY","HAL"];
+  if (mainlineOperators.includes((f.operator || "").toUpperCase())) return f.operator_iata || f.operator;
+  const op = (f.operator || "").toUpperCase();
+  if (op === "ENY" || op === "MQ") return "AA";
+  if (op === "GJS" || op === "G7") return "UA";
+  if (op === "JIA" || op === "OH") return "AA";
+  if (op === "PDT" || op === "PT") return "AA";
+  if (op === "EDV" || op === "9E") return "DL";
+  const regionalParents = ["AA","UA","DL"];
+  if (f.codeshares_iata && f.codeshares_iata.length > 0) {
+    for (const parent of regionalParents) {
+      for (const cs of f.codeshares_iata) {
+        const m = cs.match(/^([A-Z]{2})\d/);
+        if (m && m[1] === parent) return parent;
+      }
+    }
+  }
+  if (op === "SKW" || op === "OO") {
+    const num = parseInt(f.flight_number || (f.ident || "").match(/\d+$/)?.[0] || "0");
+    if (num >= 3000 && num <= 3999) return "UA";
+    if (num >= 5000 && num <= 5999) return "UA";
+    if (num >= 6000 && num <= 6999) return "UA";
+  }
+  if (op === "RPA" || op === "YX") {
+    const num = parseInt(f.flight_number || (f.ident || "").match(/\d+$/)?.[0] || "0");
+    if (num >= 3400 && num <= 3799) return "UA";
+    if (num >= 4000 && num <= 4999) return "AA";
+  }
+  if (f.codeshares_iata && f.codeshares_iata.length > 0) {
+    for (const cs of f.codeshares_iata) {
+      const m = cs.match(/^([A-Z]{2})\d/);
+      if (m) return m[1];
+    }
+  }
+  return f.operator_iata || (f.operator || "").substring(0, 2);
+}
+
 // --- Commute schedule: all flights between two airports for a given date ---
 // Returns combined scheduled + actual flights with status/times
 // Strategy: query the SMALLER airport's arrivals/departures (avoids pagination hell at ORD)
@@ -1137,88 +1192,6 @@ app.get("/api/commute/:from/:to/:date", async (req, res) => {
       console.log(`  dropped-by-filter ${filterField} distribution:`, counts);
     }
 
-    // Simplify response - prefer AA/AAL marketing ident over operator callsign
-    // For each flight, check if there's an AA codeshare and use that instead
-    function getDisplayIdent(f) {
-      // If operator is AA, use it directly
-      if (f.operator === "AAL" || f.operator_iata === "AA") {
-        return f.ident_iata || f.ident;
-      }
-      // Check codeshares for AA
-      if (f.codeshares_iata) {
-        const aa = f.codeshares_iata.find(c => c.startsWith("AA"));
-        if (aa) return aa;
-      }
-      if (f.codeshares) {
-        const aal = f.codeshares.find(c => c.startsWith("AAL"));
-        if (aal) {
-          // Convert AAL1234 to AA1234 for display
-          return "AA" + aal.replace("AAL", "");
-        }
-      }
-      return f.ident_iata || f.ident;
-    }
-
-    // Determine marketing carrier (who sold the seat): check operator first, then codeshares
-    // Regional operators (OO=SkyWest, YX=Republic, ENY=Envoy, MQ=Envoy) fly FOR AA, UA, or DL
-    function getMarketingCarrier(f) {
-      // If the operator is already a mainline US carrier, that's the marketing carrier
-      const mainlineOperators = ["AAL","UAL","DAL","SWA","ASA","JBU","NKS","FFT","AAY","HAL"];
-      if (mainlineOperators.includes((f.operator || "").toUpperCase())) {
-        return f.operator_iata || f.operator;
-      }
-      const op = (f.operator || "").toUpperCase();
-      // Envoy (MQ/ENY) flies exclusively for American Eagle
-      if (op === "ENY" || op === "MQ") return "AA";
-      // GoJet (G7/GJS) flies exclusively for United Express
-      if (op === "GJS" || op === "G7") return "UA";
-      // PSA (JIA) flies exclusively for American Eagle
-      if (op === "JIA" || op === "OH") return "AA";
-      // Piedmont (PDT) flies exclusively for American Eagle
-      if (op === "PDT" || op === "PT") return "AA";
-      // Endeavor (EDV) flies exclusively for Delta Connection
-      if (op === "EDV" || op === "9E") return "DL";
-
-      // SkyWest (OO/SKW) and Republic (YX/RPA) fly for multiple mainlines
-      // Priority: check codeshares first for AA/UA/DL
-      const regionalParents = ["AA","UA","DL"];
-      if (f.codeshares_iata && f.codeshares_iata.length > 0) {
-        for (const parent of regionalParents) {
-          for (const cs of f.codeshares_iata) {
-            const m = cs.match(/^([A-Z]{2})\d/);
-            if (m && m[1] === parent) return parent;
-          }
-        }
-      }
-
-      // Fallback heuristic for SkyWest by flight number range:
-      // OO 3000-3999 = United Express, 5000-5999 = United Express, 6000-6999 = United Express
-      // OO 4000-4999 = American Eagle (some), Delta Connection (some)
-      // This isn't perfect but better than showing a random codeshare partner
-      if (op === "SKW" || op === "OO") {
-        const num = parseInt(f.flight_number || (f.ident || "").match(/\d+$/)?.[0] || "0");
-        if (num >= 3000 && num <= 3999) return "UA";
-        if (num >= 5000 && num <= 5999) return "UA";
-        if (num >= 6000 && num <= 6999) return "UA";
-        // 4000s and other ranges are ambiguous — fall through
-      }
-      // Republic similar — mostly UA at this range
-      if (op === "RPA" || op === "YX") {
-        const num = parseInt(f.flight_number || (f.ident || "").match(/\d+$/)?.[0] || "0");
-        if (num >= 3400 && num <= 3799) return "UA";
-        if (num >= 4000 && num <= 4999) return "AA";
-      }
-
-      // Final fallback: any codeshare code, then operator
-      if (f.codeshares_iata && f.codeshares_iata.length > 0) {
-        for (const cs of f.codeshares_iata) {
-          const m = cs.match(/^([A-Z]{2})\d/);
-          if (m) return m[1];
-        }
-      }
-      return f.operator_iata || (f.operator || "").substring(0, 2);
-    }
-
     const simplified = dateFilteredFlights.map(f => ({
       ident: getDisplayIdent(f),
       ident_icao: f.ident_icao || f.ident,
@@ -1301,6 +1274,94 @@ function dowFromISO(dateStr) {
   return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }
 
+// Normalize an airport to 4-letter ICAO so we can hand it to FA.
+function normalizeAirportIcao(code) {
+  const c = String(code || "").toUpperCase();
+  if (c.length === 4) return c;
+  if (c.length === 3) return "K" + c;
+  return c;
+}
+
+// Pull a single day of published-schedule rows for a route from AeroAPI's
+// /schedules/{start}/{end} endpoint. Unlike /airports/.../scheduled_departures
+// (which is limited to ~2 days forward), /schedules returns the full
+// airline-published schedule weeks into the future.
+async function fetchFASchedulesForDay(from, to, dateStr) {
+  const orig = normalizeAirportIcao(from);
+  const dest = normalizeAirportIcao(to);
+  const startISO = dateStr + "T00:00:00Z";
+  const endISO = addDaysISO(dateStr, 1) + "T00:00:00Z";
+  const url = `${FA_BASE}/schedules/${startISO}/${endISO}?origin=${orig}&destination=${dest}&max_pages=3`;
+  try {
+    const r = await enqueueFaFetch(`schedules ${from}->${to} ${dateStr}`, url);
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      console.log(`  [schedules fail] ${from}->${to} ${dateStr} ${r.status}: ${txt.substring(0, 120)}`);
+      return [];
+    }
+    const data = await r.json();
+    return data.scheduled || [];
+  } catch (err) {
+    console.log(`  [schedules error] ${from}->${to} ${dateStr}: ${err.message}`);
+    return [];
+  }
+}
+
+// Collapse codeshares within a single day's results and pick the operating
+// carrier — same approach as /api/commute uses for live data.
+function dedupeScheduledFlights(flights) {
+  const seen = {};
+  const unique = flights.filter(f => {
+    const id = f.fa_flight_id || (f.ident + "-" + f.scheduled_out);
+    if (seen[id]) return false;
+    seen[id] = true;
+    return true;
+  });
+  const groups = {};
+  unique.forEach(f => {
+    const schedTime = f.scheduled_out || f.scheduled_off || f.scheduled_in || "";
+    const origCode = (f.origin && (f.origin.code_iata || f.origin.code)) || "";
+    const destCode = (f.destination && (f.destination.code_iata || f.destination.code)) || "";
+    const key = origCode + "-" + destCode + "-" + schedTime;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(f);
+  });
+  return Object.values(groups).map(group => {
+    if (group.length === 1) return group[0];
+    const operating = group.find(f => {
+      const op = f.operator_icao || f.operator || "";
+      return op && f.ident_icao && f.ident_icao.startsWith(op);
+    });
+    return operating || group[0];
+  });
+}
+
+function simplifyScheduledFlight(f) {
+  return {
+    ident: getDisplayIdent(f),
+    ident_icao: f.ident_icao || f.ident,
+    flight_number: f.flight_number,
+    operator: f.operator,
+    operator_iata: f.operator_iata,
+    marketing_carrier: getMarketingCarrier(f),
+    codeshares_iata: f.codeshares_iata || [],
+    scheduled_out: f.scheduled_out,
+    estimated_out: f.estimated_out,
+    actual_out: f.actual_out,
+    scheduled_in: f.scheduled_in,
+    estimated_in: f.estimated_in,
+    actual_in: f.actual_in,
+    status: f.status,
+    cancelled: f.cancelled,
+    gate_origin: f.gate_origin,
+    terminal_origin: f.terminal_origin,
+    aircraft_type: f.aircraft_type,
+    origin_timezone: (f.origin && f.origin.timezone) || null,
+    destination_timezone: (f.destination && f.destination.timezone) || null,
+    registration: f.registration || null,
+  };
+}
+
 let commuteWeekRefreshing = false;
 async function refreshCommuteWeekCache() {
   if (commuteWeekRefreshing) {
@@ -1315,17 +1376,14 @@ async function refreshCommuteWeekCache() {
       const days = [];
       for (let i = 0; i < 7; i++) {
         const dateStr = addDaysISO(startDate, i);
-        let flights = [];
-        try {
-          const r = await fetch(`http://127.0.0.1:${PORT}/api/commute/${route.from}/${route.to}/${dateStr}`);
-          if (r.ok) {
-            const data = await r.json();
-            flights = data.flights || [];
-          }
-        } catch (e) {
-          console.log(`[commute-week]   ${route.from}→${route.to} ${dateStr} failed: ${e.message}`);
-        }
-        days.push({ date: dateStr, dow: dowFromISO(dateStr), flights });
+        const raw = await fetchFASchedulesForDay(route.from, route.to, dateStr);
+        const deduped = dedupeScheduledFlights(raw);
+        const simplified = deduped.map(simplifyScheduledFlight).sort((a, b) => {
+          const ta = new Date(a.scheduled_out || 0).getTime();
+          const tb = new Date(b.scheduled_out || 0).getTime();
+          return ta - tb;
+        });
+        days.push({ date: dateStr, dow: dowFromISO(dateStr), flights: simplified });
       }
       commuteWeekCache[`${route.from}/${route.to}`] = {
         generated_at: new Date().toISOString(),
@@ -1365,15 +1423,24 @@ function scheduleNextCommuteWeekRefresh() {
 }
 scheduleNextCommuteWeekRefresh();
 
-// On boot, populate if cache is missing or stale (>24 hr old). Delay so the
-// server is listening before we make internal fetch calls to ourselves.
+// On boot, populate if cache is missing, stale (>24 hr), or thin (any route
+// has fewer than the expected number of days populated — defensive against
+// past versions that used the limited /scheduled_departures endpoint and
+// recorded empty far-future days). Delay so the server is listening before
+// we make internal fetch calls.
 setTimeout(() => {
-  const anyMissing = COMMUTE_WEEK_ROUTES.some(r => {
+  const needsRefresh = COMMUTE_WEEK_ROUTES.some(r => {
     const e = commuteWeekCache[`${r.from}/${r.to}`];
     if (!e || !e.generated_at) return true;
-    return (Date.now() - new Date(e.generated_at).getTime()) > 24 * 3600 * 1000;
+    if ((Date.now() - new Date(e.generated_at).getTime()) > 24 * 3600 * 1000) return true;
+    if (!e.days || e.days.length < 7) return true;
+    // If 4+ of the 7 days have 0 flights, the cache was built with the old
+    // scheduled_departures path — rebuild via /schedules.
+    const empty = (e.days || []).filter(d => !d.flights || d.flights.length === 0).length;
+    if (empty >= 4) return true;
+    return false;
   });
-  if (anyMissing) {
+  if (needsRefresh) {
     refreshCommuteWeekCache().catch(e => console.error("[commute-week] boot refresh failed:", e.message));
   } else {
     console.log("[commute-week] cache is fresh, no boot refresh needed");
