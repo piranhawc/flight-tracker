@@ -1591,26 +1591,43 @@ function normalizeLogbookLegKey(leg) {
   return { flightNum, date, dep: leg.dep || null, arr: leg.arr || null };
 }
 
-// apa-sabre often only reports crew CHANGES per leg (originating "*" /
-// boarding "-"). Continuing crew aren't repeated on subsequent legs. To get
-// the full operating crew at a given leg, walk the pairing from leg 0 to
-// the target leg, accumulating crew by emp_num. Latest record wins (so a
-// position swap on a later leg overrides).
+// apa-sabre reports pilots only at their boarding leg ("*" originating);
+// continuing crew aren't repeated on later legs. To know who's flying THIS
+// leg we walk the pairing from leg 0 to target and track per-seat occupancy.
+//
+// Tricky case: relief pilots. A one-leg relief (e.g. an FO who picks up a
+// single leg while the regular FO is off) has remarks='R' on their boarding
+// leg and isn't listed on subsequent legs. Naively accumulating by emp_num
+// would carry them forward through the rest of the trip — wrong. So track
+// "regular" occupants separately from per-leg relief, and only apply relief
+// to its specific leg.
 function getAccumulatedCrewForLeg(ep, seq, targetLegIdx) {
   if (!crewCacheReady) return [];
   const pairing = crewCache.getPairing(ep, seq);
   if (!pairing || !pairing.legs.length) return [];
-  const accumulated = new Map();
+  const regularBySeat = new Map();   // seat → latest non-relief crew record
+  const reliefAtTarget = new Map();  // seat → relief crew on the target leg only
   for (let i = 0; i <= targetLegIdx && i < pairing.legs.length; i++) {
     const leg = pairing.legs[i];
     if (!leg || !leg.crew) continue;
     for (const c of leg.crew) {
-      const k = c.emp_num || c.name;
-      if (!k) continue;
-      accumulated.set(k, c);
+      const seat = String(c.seat || "").toUpperCase();
+      if (!seat) continue;
+      const isRelief = /R/i.test(String(c.remarks || ""));
+      if (isRelief) {
+        if (i === targetLegIdx) reliefAtTarget.set(seat, c);
+      } else {
+        regularBySeat.set(seat, c);
+      }
     }
   }
-  return Array.from(accumulated.values());
+  const result = [];
+  const seats = new Set([...regularBySeat.keys(), ...reliefAtTarget.keys()]);
+  for (const seat of seats) {
+    const c = reliefAtTarget.get(seat) || regularBySeat.get(seat);
+    if (c) result.push(c);
+  }
+  return result;
 }
 
 // Pilots only (CA/FO/RC). Used for the public main-page trip cards so we
@@ -2549,6 +2566,33 @@ if (crewCacheReady) {
   // final hour before showtime that the 30-min eager-snapshot would miss.
   setTimeout(() => { refreshImminentLegCrew().catch(() => {}); }, 20 * 1000);
   setInterval(() => { refreshImminentLegCrew().catch(() => {}); }, 15 * 60 * 1000);
+  // One-shot pilot fix-up: prior accumulator keyed by emp_num kept both the
+  // user's regular FO and any one-leg relief FO that appeared. Detect legs
+  // with duplicate pilot seats (CA twice, FO twice) and rebuild from the
+  // cache via the relief-aware accumulator.
+  setTimeout(() => {
+    if (!crewCacheReady) return;
+    let fixed = 0;
+    const PILOT_RE = /^(CA|FO|RC)\s*·/;
+    for (const leg of Object.values(logbook.legs)) {
+      if (!leg || !leg.crew || !leg.ep || !leg.seq) continue;
+      // Count CA/FO occurrences in this leg's crew array
+      const counts = {};
+      for (const n of leg.crew) {
+        const m = PILOT_RE.exec(String(n));
+        if (!m) continue;
+        counts[m[1]] = (counts[m[1]] || 0) + 1;
+      }
+      const dupSeat = Object.keys(counts).find(k => counts[k] > 1);
+      if (!dupSeat) continue;
+      const fresh = getApaCrewForLogbookLeg(leg);
+      if (!fresh.length) continue;
+      leg.crew = fresh;
+      fixed++;
+      console.log(`[pilot-fix] ${leg.flight} ${leg.date}: removed duplicate ${dupSeat} from crew`);
+    }
+    if (fixed > 0) { saveLogbook(); console.log(`[pilot-fix] rebuilt crew on ${fixed} legs`); }
+  }, 50 * 1000);
   // One-shot FA fix-up: prior versions accumulated FAs across pairing legs
   // (correct for pilots, wrong for FAs since FAs are re-listed every leg).
   // Detect legs with >5 FA-prefixed crew entries (anything beyond ~4 is
