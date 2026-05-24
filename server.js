@@ -1595,36 +1595,49 @@ function normalizeLogbookLegKey(leg) {
 // continuing crew aren't repeated on later legs. To know who's flying THIS
 // leg we walk the pairing from leg 0 to target and track per-seat occupancy.
 //
-// Tricky case: relief pilots. A one-leg relief (e.g. an FO who picks up a
-// single leg while the regular FO is off) has remarks='R' on their boarding
-// leg and isn't listed on subsequent legs. Naively accumulating by emp_num
-// would carry them forward through the rest of the trip — wrong. So track
-// "regular" occupants separately from per-leg relief, and only apply relief
-// to its specific leg.
+// Substitute detection: any pilot whose seq_day prefix differs from this
+// pairing's seq is filling in (reserve, reassigned, deadhead, jumpseater,
+// etc.) and only operates the leg(s) they're explicitly listed on. They
+// must NOT bleed forward through subsequent legs. The seq_day check is
+// more robust than parsing the remarks field because there are several
+// codes for substitution (R=reserve, others for reassignment) we don't
+// have a full catalog for. The pairing seq match is unambiguous.
+//
+// FAs always have a different seq_day from the pilot pairing (their own
+// pairings), so we deliberately only flag SUBSTITUTE based on seq_day
+// for pilot seats. Numeric FA seats fall through this path and are
+// handled per-leg by getApaCrewForLogbookLeg anyway.
 function getAccumulatedCrewForLeg(ep, seq, targetLegIdx) {
   if (!crewCacheReady) return [];
   const pairing = crewCache.getPairing(ep, seq);
   if (!pairing || !pairing.legs.length) return [];
-  const regularBySeat = new Map();   // seat → latest non-relief crew record
-  const reliefAtTarget = new Map();  // seat → relief crew on the target leg only
+  const PILOT_SET = new Set(["CA", "FO", "RC"]);
+  const regularBySeat = new Map();     // seat → latest non-substitute pilot
+  const substituteAtTarget = new Map(); // seat → fill-in pilot on target leg
+  const pairingSeqStr = String(seq);
   for (let i = 0; i <= targetLegIdx && i < pairing.legs.length; i++) {
     const leg = pairing.legs[i];
     if (!leg || !leg.crew) continue;
     for (const c of leg.crew) {
       const seat = String(c.seat || "").toUpperCase();
       if (!seat) continue;
-      const isRelief = /R/i.test(String(c.remarks || ""));
-      if (isRelief) {
-        if (i === targetLegIdx) reliefAtTarget.set(seat, c);
+      const cSeqPrefix = String(c.seq_day || "").split("/")[0];
+      const seqMismatch = !!cSeqPrefix && cSeqPrefix !== pairingSeqStr;
+      const hasReliefRemark = /R/i.test(String(c.remarks || ""));
+      // Only treat as a substitute if this is a pilot seat — FAs have
+      // their own pairings so seq mismatch is normal there.
+      const isSubstitute = PILOT_SET.has(seat) && (seqMismatch || hasReliefRemark);
+      if (isSubstitute) {
+        if (i === targetLegIdx) substituteAtTarget.set(seat, c);
       } else {
         regularBySeat.set(seat, c);
       }
     }
   }
   const result = [];
-  const seats = new Set([...regularBySeat.keys(), ...reliefAtTarget.keys()]);
+  const seats = new Set([...regularBySeat.keys(), ...substituteAtTarget.keys()]);
   for (const seat of seats) {
-    const c = reliefAtTarget.get(seat) || regularBySeat.get(seat);
+    const c = substituteAtTarget.get(seat) || regularBySeat.get(seat);
     if (c) result.push(c);
   }
   return result;
