@@ -126,6 +126,59 @@ function listAllPairings() {
   `).all();
 }
 
+// Merge a fresh pairing into the cache without dropping any known seat.
+// New snapshot wins per-seat (pilot/FA name updates, etc), but any seat
+// present in the existing cache that's missing from the new snapshot is
+// preserved with a _preserved_from_earlier_snapshot flag. That defends
+// against transient Sabre gaps where an FA pairing temporarily isn't
+// visible to NS — we never want to forget a captured FA.
+function mergePairing(newPairing) {
+  if (!db) throw new Error("crew-cache not initialized");
+  const existing = getPairing(newPairing.ep, newPairing.seq);
+  if (!existing) {
+    upsertPairing(newPairing);
+    return { mode: "insert", preserved: 0, updated: (newPairing.legs || []).length };
+  }
+  let preservedCount = 0;
+  const merged = JSON.parse(JSON.stringify(newPairing));
+  for (let i = 0; i < (merged.legs || []).length; i++) {
+    const newLeg = merged.legs[i];
+    const oldLeg = existing.legs[i];
+    if (!oldLeg) continue;
+    const seenSeats = new Set();
+    const mergedCrew = [];
+    for (const c of (newLeg.crew || [])) {
+      if (!c || !c.seat) continue;
+      const k = String(c.seat).toUpperCase();
+      seenSeats.add(k);
+      mergedCrew.push(c);
+    }
+    for (const c of (oldLeg.crew || [])) {
+      if (!c || !c.seat) continue;
+      const k = String(c.seat).toUpperCase();
+      if (seenSeats.has(k)) continue;
+      mergedCrew.push(Object.assign({}, c, { _preserved_from_earlier_snapshot: true }));
+      preservedCount++;
+    }
+    newLeg.crew = mergedCrew;
+  }
+  upsertPairing(merged);
+  return { mode: "merge", preserved: preservedCount, updated: merged.legs.length };
+}
+
+// Distinct pairings whose any leg has flight_date in the supplied date set.
+// Lightweight — used by the imminent-refresh cron to pick only trips that
+// have action in the next ~24 hours.
+function findPairingsByLegDate(dates) {
+  if (!db || !dates || !dates.length) return [];
+  const placeholders = dates.map(() => "?").join(",");
+  const rows = db.prepare(`
+    SELECT DISTINCT ep, seq FROM crew_cache
+    WHERE flight_date IN (${placeholders})
+  `).all(...dates);
+  return rows.map(r => ({ ep: r.ep, seq: r.seq }));
+}
+
 // Scan every cached crew_json blob looking for an entry with this emp_num.
 // Used as a fallback when apa-logbook's /users endpoint doesn't have the
 // employee (happens for some emp numbers). Returns the first match found.
@@ -151,4 +204,4 @@ function findCrewByEmpNum(empNum) {
   return null;
 }
 
-module.exports = { init, upsertPairing, getPairing, getLegByFlight, listAllPairings, countAll, findCrewByEmpNum };
+module.exports = { init, upsertPairing, mergePairing, getPairing, getLegByFlight, listAllPairings, countAll, findCrewByEmpNum, findPairingsByLegDate };

@@ -2482,6 +2482,49 @@ async function eagerSnapshotNewTrips() {
   }
 }
 
+// Pre-departure FA snapshot tier: refresh crew for any pairing with a leg
+// dated today or tomorrow. Catches reserve FAs that APA assigns as little
+// as 1 hour before showtime — the 30-min eager-snapshot above only handles
+// uncached pairings, so it wouldn't pick up the late assignments. Uses
+// mergePairing so a transient gap in Sabre's NS view never drops a known FA.
+let imminentRefreshRunning = false;
+async function refreshImminentLegCrew() {
+  if (!crewCacheReady || imminentRefreshRunning) return;
+  imminentRefreshRunning = true;
+  try {
+    // Use CT (user's base) for the "today/tomorrow" date set; the flight_date
+    // column is local at the dep airport but most legs are within ±1 day of
+    // CT so we tolerate that fuzziness rather than building a tz table.
+    const today = todayDateInCT();
+    const tomorrow = addDaysISO(today, 1);
+    const pairings = crewCache.findPairingsByLegDate([today, tomorrow]);
+    if (!pairings.length) return;
+    let refreshed = 0, preserved = 0;
+    for (const { ep, seq } of pairings) {
+      try {
+        const pairing = await apa.getPairingCrew(ep, seq);
+        if (pairing && pairing.legs) {
+          const result = crewCache.mergePairing(pairing);
+          refreshed++;
+          preserved += result.preserved;
+          if (result.preserved > 0) {
+            console.log(`[imminent-refresh] ${ep}/${seq} merged · preserved ${result.preserved} seat(s) Sabre dropped`);
+          }
+        }
+      } catch (err) {
+        console.error(`[imminent-refresh] ${ep}/${seq} failed: ${err.message}`);
+      }
+    }
+    if (refreshed > 0) {
+      console.log(`[imminent-refresh] ${refreshed}/${pairings.length} pairing(s) refreshed (preserved ${preserved} seat(s) total)`);
+      // Push any newly-captured FAs into matching logbook legs.
+      autoSyncLogbookCrewFromApa();
+    }
+  } finally {
+    imminentRefreshRunning = false;
+  }
+}
+
 // Initial fetch 5 sec after startup so the apa-sabre-service has time to be
 // ready. Then refresh every 12 hours. Each successful refresh also auto-syncs
 // the logbook so newly cached pilot lists land on matching legs without the
@@ -2501,6 +2544,11 @@ if (crewCacheReady) {
   // age out — apa-logbook doesn't carry FA names at all.
   setTimeout(() => { eagerSnapshotNewTrips().catch(() => {}); }, 10000);
   setInterval(() => { eagerSnapshotNewTrips().catch(() => {}); }, 30 * 60 * 1000);
+  // Pre-departure FA refresh: every 15 min, force-fetch crew for pairings
+  // with legs on today or tomorrow. Catches reserve FAs assigned in the
+  // final hour before showtime that the 30-min eager-snapshot would miss.
+  setTimeout(() => { refreshImminentLegCrew().catch(() => {}); }, 20 * 1000);
+  setInterval(() => { refreshImminentLegCrew().catch(() => {}); }, 15 * 60 * 1000);
   // One-shot FA fix-up: prior versions accumulated FAs across pairing legs
   // (correct for pilots, wrong for FAs since FAs are re-listed every leg).
   // Detect legs with >5 FA-prefixed crew entries (anything beyond ~4 is

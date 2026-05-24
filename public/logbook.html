@@ -61,6 +61,8 @@
   table.legs tr.upcoming td { background:#0d0a05; }
   table.legs tr.upcoming td:first-child { border-left:2px solid #ffd166; }
   table.legs .badge-removed { background:#1a0808; color:#f44; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; font-weight:700; }
+  table.legs .badge-fa-ok { background:#0a2018; color:#06d6a0; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; }
+  table.legs .badge-fa-short { background:#1a1208; color:#ffd166; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; }
   table.legs tr.removed td { opacity:.45; }
   table.legs tr.removed td:first-child { border-left:2px solid #f44; }
   table.legs tr.removed .col-flight, table.legs tr.removed .col-route { text-decoration:line-through; }
@@ -86,7 +88,7 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-05-24.2</span>
+    <span class="meta" title="Build version">v2026-05-24.3</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <span class="meta" id="apa-stats-summary" style="display:none"></span>
     <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
@@ -347,6 +349,34 @@ function aircraftLabel(leg) {
   return tail + (type ? " · " + type : "");
 }
 
+// FAA minimum FAs by aircraft type — used to flag "Sabre is short an FA"
+// when the cached crew count is below the type's expected number.
+function expectedFACount(aircraftType) {
+  var t = String(aircraftType || "").toUpperCase().replace(/\s+/g, "");
+  if (!t) return null;
+  if (t.indexOf("777") === 0 || t.indexOf("B777") === 0) return 8;
+  if (t.indexOf("787") === 0 || t.indexOf("B787") === 0) return 6;
+  if (t.indexOf("321") >= 0) return 4;
+  if (t.indexOf("319") >= 0 || t.indexOf("320") >= 0) return 3;
+  if (t.indexOf("737") >= 0 || t.indexOf("738") >= 0) return 3;
+  if (t.indexOf("MD") === 0 || t.indexOf("M83") === 0 || t.indexOf("M88") === 0) return 3;
+  // Regional jets (CRJ, ERJ, E170/175) — typically 1 FA
+  if (t.indexOf("CRJ") === 0 || t.indexOf("CR") === 0) return 1;
+  if (t.indexOf("E17") >= 0 || t.indexOf("E175") >= 0 || t.indexOf("E170") >= 0) return 1;
+  if (t.indexOf("ERJ") >= 0) return 1;
+  return null;
+}
+function faCountBadge(leg) {
+  var expected = expectedFACount(leg.aircraft_type);
+  if (!expected) return "";
+  var actual = (leg.crew || []).filter(function(n) {
+    return /^FA\d+\s*·/.test(String(n));
+  }).length;
+  var cls = (actual >= expected) ? "badge-fa-ok" : "badge-fa-short";
+  return '<span class="' + cls + '" title="' + actual + ' of ' + expected + ' expected FAs">' +
+    actual + '/' + expected + ' FA</span>';
+}
+
 function renderLegs() {
   var host = document.getElementById("legs-host");
   if (!legsData.length) {
@@ -372,6 +402,7 @@ function renderLegs() {
       ? '<span class="badge-removed" title="' + String(l._removed_reason || "").replace(/"/g, "&quot;") + '">' +
           String((l._reconciliation_status || "removed")).toUpperCase() + '</span>'
       : '';
+    var faBadge = !l._removed_at ? faCountBadge(l) : '';
 
     var crewPills = (l.crew || []).map(function(rawName) {
       var bare = bareCrewName(rawName);
@@ -396,7 +427,7 @@ function renderLegs() {
       "<td class='col-time'>" + (actOut ? '<span class="actual">' + actOut + '</span>' : '<span class="sched">' + schedOut + '</span>') + "</td>" +
       "<td class='col-time'>" + (actIn ? '<span class="actual">' + actIn + '</span>' : '<span class="sched">' + schedIn + '</span>') + "</td>" +
       "<td class='col-time'>" + g2g + "</td>" +
-      "<td class='col-aircraft'>" + aircraft + "</td>" +
+      "<td class='col-aircraft'>" + aircraft + faBadge + "</td>" +
       "<td class='col-crew'>" +
         '<div>' + apaFlag + crewPills + '</div>' +
         '<input class="crew-edit" id="' + crewEditId + '" placeholder="add crew (comma-separated)" ' +
