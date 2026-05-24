@@ -1631,6 +1631,11 @@ function getApaPilotsForLeg(leg) {
 
 // Full operating crew (pilots + FAs). Used by the password-protected logbook
 // so FAs are visible there but nowhere else.
+// Numeric seats (01..09) = flight attendants. Used to split crew lists.
+function isFlightAttendantSeat(seat) {
+  return /^0?\d{1,2}$/.test(String(seat || ""));
+}
+
 function getApaCrewForLogbookLeg(leg) {
   if (!crewCacheReady) return [];
   const key = normalizeLogbookLegKey(leg);
@@ -1638,11 +1643,30 @@ function getApaCrewForLogbookLeg(leg) {
   const rows = crewCache.getLegByFlight(key.flightNum, key.date, key.dep, key.arr);
   if (!rows.length) return [];
   const row = rows[0];
-  const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
-  return crewRows
-    .filter(c => c && OPERATING_SEATS.has(String(c.seat).toUpperCase()) && c.name && c.name !== "OPEN")
+
+  // Pilots (CA/FO/RC) are typically only listed on their boarding leg in
+  // Sabre NS — subsequent legs imply they continue. So we walk legs 0..N
+  // and accumulate to know who's flying THIS leg.
+  const accumulated = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
+  const pilots = accumulated
+    .filter(c => c && PILOT_SEATS.has(String(c.seat).toUpperCase()))
+    .filter(c => c.name && c.name !== "OPEN")
     .filter(c => String(c.emp_num || "") !== LOGBOOK_USER_EMP_NUM)
     .map(c => formatCrewWithSeat(seatLabel(c.seat), apaCrewToDisplayName(c)));
+
+  // FAs are re-listed on every leg they're on (with `*` boarding / `-`
+  // deplaning / `''` continuing markers), so the leg's OWN crew array IS
+  // the full FA crew. Accumulating across prior legs over-counts because
+  // earlier FAs who deplaned aren't on this flight anymore.
+  let thisLegCrew;
+  try { thisLegCrew = JSON.parse(row.crew_json || "[]"); } catch (e) { thisLegCrew = []; }
+  const fas = thisLegCrew
+    .filter(c => c && isFlightAttendantSeat(c.seat))
+    .filter(c => c.name && c.name !== "OPEN")
+    .filter(c => String(c.emp_num || "") !== LOGBOOK_USER_EMP_NUM)
+    .map(c => formatCrewWithSeat(seatLabel(c.seat), apaCrewToDisplayName(c)));
+
+  return pilots.concat(fas);
 }
 
 app.get("/api/logbook/legs", logbookAuth, (req, res) => {
@@ -2477,6 +2501,29 @@ if (crewCacheReady) {
   // age out — apa-logbook doesn't carry FA names at all.
   setTimeout(() => { eagerSnapshotNewTrips().catch(() => {}); }, 10000);
   setInterval(() => { eagerSnapshotNewTrips().catch(() => {}); }, 30 * 60 * 1000);
+  // One-shot FA fix-up: prior versions accumulated FAs across pairing legs
+  // (correct for pilots, wrong for FAs since FAs are re-listed every leg).
+  // Detect legs with >5 FA-prefixed crew entries (anything beyond ~4 is
+  // almost certainly accumulation) and rebuild crew from the cache via the
+  // new per-leg logic. Runs once at +45s, then never again unless a future
+  // bug re-introduces over-counting.
+  setTimeout(() => {
+    if (!crewCacheReady) return;
+    let fixed = 0;
+    for (const leg of Object.values(logbook.legs)) {
+      if (!leg || !leg.crew || !leg.ep || !leg.seq) continue;
+      const faCount = leg.crew.filter(n => /^FA\d+\s*·/.test(String(n))).length;
+      if (faCount <= 5) continue;
+      const fresh = getApaCrewForLogbookLeg(leg);
+      if (!fresh.length) continue;
+      const freshFAs = fresh.filter(n => /^FA\d+\s*·/.test(String(n))).length;
+      if (freshFAs >= faCount) continue;
+      leg.crew = fresh;
+      fixed++;
+      console.log(`[fa-fix] ${leg.flight} ${leg.date}: ${faCount} → ${freshFAs} FAs`);
+    }
+    if (fixed > 0) { saveLogbook(); console.log(`[fa-fix] rebuilt crew on ${fixed} legs`); }
+  }, 45 * 1000);
   // 30 sec after boot, also try to heal any emp:XXX placeholders left from
   // prior backfills — fetch the missing pairings from Sabre directly using
   // each leg's stored (ep, seq) so recent past trips get resolved.
