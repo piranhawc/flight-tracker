@@ -60,6 +60,10 @@
   table.legs .badge-upcoming { background:#1a1208; color:#ffd166; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; font-weight:700; }
   table.legs tr.upcoming td { background:#0d0a05; }
   table.legs tr.upcoming td:first-child { border-left:2px solid #ffd166; }
+  table.legs .badge-removed { background:#1a0808; color:#f44; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; font-weight:700; }
+  table.legs tr.removed td { opacity:.45; }
+  table.legs tr.removed td:first-child { border-left:2px solid #f44; }
+  table.legs tr.removed .col-flight, table.legs tr.removed .col-route { text-decoration:line-through; }
 
   /* Crew list */
   .crew-card { background:#0e0e0e; border:1px solid #1a1a1a; border-radius:4px; padding:10px 12px; margin-bottom:8px; }
@@ -82,7 +86,7 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-05-19.6</span>
+    <span class="meta" title="Build version">v2026-05-24.1</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <span class="meta" id="apa-stats-summary" style="display:none"></span>
     <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
@@ -90,6 +94,8 @@
     <button class="btn" id="import-btn" onclick="runImportFromCalendar()" style="display:none" title="Pull completed flights from calendar, fill crew from APA, fetch FA actuals for the last 14 days">📥 CALENDAR</button>
     <button class="btn" id="import-force-btn" onclick="runImportFromCalendar(true)" style="display:none" title="Re-import everything, overwriting auto-filled crew (preserves notes)">⟳ FORCE</button>
     <button class="btn" id="sync-apa-btn" onclick="runSyncApaCrew()" style="display:none" title="Fill crew on existing legs that have empty crew arrays">⛏ SYNC APA CREW</button>
+    <button class="btn" id="reconcile-btn" onclick="triggerReconcile()" style="display:none" title="Check apa-sabre for FTG'd/dropped legs and soft-delete them">⚖ RECONCILE</button>
+    <button class="btn" id="removed-toggle" onclick="toggleRemoved()" style="display:none" title="Show legs that were FTG'd or dropped (soft-deleted)">👁 SHOW REMOVED</button>
     <button class="btn" id="logout-btn" onclick="logout()" style="display:none">LOGOUT</button>
   </div>
 </div>
@@ -215,23 +221,56 @@ async function initApp() {
   document.getElementById("import-force-btn").style.display = "";
   document.getElementById("apa-backfill-btn").style.display = "";
   document.getElementById("apa-sync-current-btn").style.display = "";
+  document.getElementById("reconcile-btn").style.display = "";
   loadApaStats();
 }
 
+var showRemoved = false;
+var removedCount = 0;
+
 async function loadAll() {
+  var qs = showRemoved ? "?include_removed=1" : "";
   var [legsResp, crewResp] = await Promise.all([
-    fetch("/api/logbook/legs", { headers: authHeaders() }),
+    fetch("/api/logbook/legs" + qs, { headers: authHeaders() }),
     fetch("/api/logbook/crew", { headers: authHeaders() }),
   ]);
   if (legsResp.status === 401 || crewResp.status === 401) return false;
-  legsData = (await legsResp.json()).legs || [];
+  var legsBody = await legsResp.json();
+  legsData = legsBody.legs || [];
+  removedCount = legsBody.removed_hidden || 0;
   crewData = (await crewResp.json()).crew || [];
   buildCrewIndex();
   document.getElementById("meta-info").textContent =
-    legsData.length + " legs · " + crewData.length + " crew";
+    legsData.length + " legs · " + crewData.length + " crew" +
+    (removedCount > 0 && !showRemoved ? " · " + removedCount + " removed (hidden)" : "");
+  updateRemovedToggle();
   renderLegs();
   renderCrew();
   return true;
+}
+
+function toggleRemoved() {
+  showRemoved = !showRemoved;
+  loadAll();
+}
+
+function updateRemovedToggle() {
+  var btn = document.getElementById("removed-toggle");
+  if (!btn) return;
+  btn.textContent = showRemoved ? "👁 HIDE REMOVED" : "👁 SHOW REMOVED";
+  btn.style.display = (showRemoved || removedCount > 0) ? "" : "none";
+}
+
+async function triggerReconcile() {
+  setStatus("Reconciling...", "#ffd166");
+  var r = await fetch("/api/logbook/reconcile", {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!r.ok) { setStatus("Reconcile failed", "#f44"); return; }
+  var d = await r.json();
+  setStatus("Reconciled: " + (d.removed || 0) + " removed, " + (d.restored || 0) + " restored, " + (d.kept || 0) + " kept");
+  await loadAll();
 }
 
 function buildCrewIndex() {
@@ -329,6 +368,10 @@ function renderLegs() {
     var g2g = gateToGate(l) || "—";
     var dh = l.isDH ? '<span class="badge-dh">DH</span>' : '';
     var upcomingBadge = l._upcoming ? '<span class="badge-upcoming">UPCOMING</span>' : '';
+    var removedBadge = l._removed_at
+      ? '<span class="badge-removed" title="' + String(l._removed_reason || "").replace(/"/g, "&quot;") + '">' +
+          String((l._reconciliation_status || "removed")).toUpperCase() + '</span>'
+      : '';
 
     var crewPills = (l.crew || []).map(function(rawName) {
       var bare = bareCrewName(rawName);
@@ -345,9 +388,10 @@ function renderLegs() {
     var apaFlag = l._apa_sourced ? '<span title="from APA Sabre · click ⛏ SYNC APA CREW to persist" style="color:#06d6a0;margin-right:4px;font-size:10px">⚡</span>' : '';
     var crewEditId = "crew-edit-" + l.id;
 
-    rows.push("<tr" + (l._upcoming ? " class='upcoming'" : "") + ">" +
+    var rowCls = l._removed_at ? "removed" : (l._upcoming ? "upcoming" : "");
+    rows.push("<tr" + (rowCls ? " class='" + rowCls + "'" : "") + ">" +
       "<td>" + dateStr + "</td>" +
-      "<td class='col-flight'>" + (l.flight || "—") + dh + upcomingBadge + "</td>" +
+      "<td class='col-flight'>" + (l.flight || "—") + dh + upcomingBadge + removedBadge + "</td>" +
       "<td class='col-route'>" + (l.dep || "?") + "→" + (l.arr || "?") + "</td>" +
       "<td class='col-time'>" + (actOut ? '<span class="actual">' + actOut + '</span>' : '<span class="sched">' + schedOut + '</span>') + "</td>" +
       "<td class='col-time'>" + (actIn ? '<span class="actual">' + actIn + '</span>' : '<span class="sched">' + schedIn + '</span>') + "</td>" +

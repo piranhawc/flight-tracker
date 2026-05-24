@@ -16,10 +16,38 @@ async function getPairingCrew(ep, seq) {
   return r.json();
 }
 
+// Reconciliation per leg: was it actually operated (vs FTG'd, dropped,
+// replaced)? Returns a Map keyed "flight-YYYY-MM-DD" → {actually_operated,
+// actual_status, note}. Returns an empty Map on any failure so the caller
+// can fall back to trusting calendar/pairing data.
+async function getPairingReconciliation(ep, seq) {
+  try {
+    const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}`, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) {
+      console.log(`[reconciliation] ${ep}/${seq} returned ${r.status}`);
+      return new Map();
+    }
+    const data = await r.json();
+    const out = new Map();
+    for (const leg of data.legs || []) {
+      const key = `${leg.flight}-${leg.date}`;
+      out.set(key, {
+        actually_operated: leg.actually_operated !== false,
+        actual_status: leg.actual_status || "unknown",
+        note: leg.reconciliation_note || "",
+      });
+    }
+    return out;
+  } catch (err) {
+    console.log(`[reconciliation] fetch failed for ${ep}/${seq}: ${err.message}`);
+    return new Map();
+  }
+}
+
 async function getHealth() {
   const r = await fetch(`${APA_SABRE_BASE}/health`, { signal: AbortSignal.timeout(5000) });
   if (!r.ok) throw new Error(`health check failed: ${r.status}`);
   return r.json();
 }
 
-module.exports = { getCurrentSchedule, getPairingCrew, getHealth, APA_SABRE_BASE };
+module.exports = { getCurrentSchedule, getPairingCrew, getPairingReconciliation, getHealth, APA_SABRE_BASE };

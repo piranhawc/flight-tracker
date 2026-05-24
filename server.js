@@ -1646,8 +1646,10 @@ function getApaCrewForLogbookLeg(leg) {
 }
 
 app.get("/api/logbook/legs", logbookAuth, (req, res) => {
-  const legs = Object.values(logbook.legs).sort((a, b) =>
+  const includeRemoved = req.query.include_removed === "1" || req.query.include_removed === "true";
+  const all = Object.values(logbook.legs).sort((a, b) =>
     (b.date || "").localeCompare(a.date || ""));
+  const legs = includeRemoved ? all : all.filter(l => !l._removed_at);
   // Read-only APA enrichment: any leg without crew gets pilots injected from
   // the apa-sabre cache. Doesn't persist — that's what /sync-apa-crew is for.
   const enriched = legs.map(leg => {
@@ -1656,7 +1658,7 @@ app.get("/api/logbook/legs", logbookAuth, (req, res) => {
     if (!apaCrew.length) return leg;
     return Object.assign({}, leg, { crew: apaCrew, _apa_sourced: true });
   });
-  res.json({ legs: enriched });
+  res.json({ legs: enriched, removed_hidden: all.length - legs.length });
 });
 
 // Walk every leg with empty crew, fetch from APA cache, persist names. Pass
@@ -2015,6 +2017,71 @@ function isCompleted(parsed) {
   return new Date(parsed.end).getTime() < (Date.now() - 30 * 60 * 1000);
 }
 
+// Walk recent logbook legs grouped by (ep, seq), ask apa-sabre-service for
+// reconciliation, and soft-delete any leg that wasn't actually operated
+// (FTG, dropped, replaced, admin). Only touches legs from the last 60 days
+// since older trips return 404. Soft-delete = set _removed_at +
+// _removed_reason; preserves audit trail and the UI can toggle them back.
+let reconcileRunning = false;
+async function reconcileExistingLogbook() {
+  if (reconcileRunning) {
+    console.log("[reconcile-cleanup] already running, skipping");
+    return { removed: 0, kept: 0, unrestored: 0, restored: 0, trips: 0 };
+  }
+  reconcileRunning = true;
+  try {
+    const cutoffMs = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    const entriesByTrip = new Map(); // "ep/seq" → [leg, leg, ...]
+    for (const leg of Object.values(logbook.legs)) {
+      if (!leg || !leg.ep || !leg.seq) continue;
+      const legDateMs = leg.date ? new Date(leg.date + "T00:00:00Z").getTime() : 0;
+      if (legDateMs && legDateMs < cutoffMs) continue;
+      const key = `${leg.ep}/${leg.seq}`;
+      if (!entriesByTrip.has(key)) entriesByTrip.set(key, []);
+      entriesByTrip.get(key).push(leg);
+    }
+
+    let removed = 0, kept = 0, restored = 0, changedAny = false;
+    for (const [tripKey, legs] of entriesByTrip) {
+      const [ep, seq] = tripKey.split("/").map(Number);
+      const recon = await apa.getPairingReconciliation(ep, seq);
+      if (!recon || recon.size === 0) { kept += legs.length; continue; }
+      for (const leg of legs) {
+        const flightNum = leg.flight_number || String(leg.flight || "").replace(/^AA/i, "").replace(/^0+/, "");
+        const reconInfo = recon.get(`${flightNum}-${leg.date}`);
+        if (!reconInfo) { kept++; continue; }
+        if (!reconInfo.actually_operated) {
+          if (!leg._removed_at) {
+            leg._removed_at = new Date().toISOString();
+            leg._removed_reason = `${reconInfo.actual_status}: ${reconInfo.note}`;
+            leg._reconciliation_status = reconInfo.actual_status;
+            console.log(`[reconcile-cleanup] removed ${leg.flight} ${leg.date} (${reconInfo.actual_status})`);
+            removed++; changedAny = true;
+          } else {
+            removed++;
+          }
+        } else {
+          // Reconciliation now says this DID operate — un-remove if we had
+          // previously soft-deleted it (FTG that got reversed, mis-reconcile).
+          if (leg._removed_at) {
+            delete leg._removed_at;
+            delete leg._removed_reason;
+            console.log(`[reconcile-cleanup] restored ${leg.flight} ${leg.date} — now reported as operated`);
+            restored++; changedAny = true;
+          }
+          leg._reconciliation_status = reconInfo.actual_status;
+          kept++;
+        }
+      }
+    }
+    if (changedAny) saveLogbook();
+    console.log(`[reconcile-cleanup] ${entriesByTrip.size} trips checked · ${removed} removed · ${restored} restored · ${kept} kept`);
+    return { removed, kept, restored, trips: entriesByTrip.size };
+  } finally {
+    reconcileRunning = false;
+  }
+}
+
 // Legs that haven't happened yet but start soon — pulled into the logbook
 // so the user can see their pairing partners the day before showtime.
 // Window: any time before scheduled departure, up to 48 hr ahead.
@@ -2071,7 +2138,15 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     console.log(`[auto-log] prefetch: ${prefetched} pulled, ${prefetchMissing} unavailable, ${wantedPairings.size} total wanted`);
   }
 
-  let created = 0, updated = 0, skipped = 0, deadhead = 0, no_crew = 0, scanned = 0, upcoming = 0;
+  // Pull reconciliation once per pairing. Lets us skip FTG'd/dropped legs
+  // at write time rather than discovering them later in the cleanup pass.
+  // Failure mode: empty map → fall back to trusting the calendar.
+  const reconByTrip = new Map(); // "ep/seq" → Map(flight-date → reconInfo)
+  for (const { ep, seq } of wantedPairings.values()) {
+    reconByTrip.set(`${ep}/${seq}`, await apa.getPairingReconciliation(ep, seq));
+  }
+
+  let created = 0, updated = 0, skipped = 0, deadhead = 0, no_crew = 0, scanned = 0, upcoming = 0, notOperated = 0;
   const touchedLegs = [];
   for (const event of events) {
     scanned++;
@@ -2095,6 +2170,23 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     }
 
     if (parsed.isDH) { deadhead++; continue; }
+
+    // Reconciliation check: if Sabre HI says this leg wasn't actually
+    // operated (FTG, dropped, replaced, admin), skip the write entirely.
+    // If the leg already existed in the logbook, mark it removed so it
+    // disappears from the default view.
+    const recon = reconByTrip.get(`${parsed.ep}/${parsed.seq}`);
+    const reconInfo = recon ? recon.get(`${parsed.flight}-${parsed.date}`) : null;
+    if (reconInfo && !reconInfo.actually_operated) {
+      notOperated++;
+      if (existing && !existing._removed_at) {
+        existing._removed_at = new Date().toISOString();
+        existing._removed_reason = `${reconInfo.actual_status}: ${reconInfo.note}`;
+        console.log(`[auto-log] marked AA${parsed.flight} ${parsed.date} removed (${reconInfo.actual_status})`);
+      }
+      continue;
+    }
+
     const { crew, isDeadhead } = getCrewForCalendarLeg(parsed);
     if (isDeadhead) { deadhead++; continue; }
 
@@ -2114,6 +2206,7 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
       _auto_filled: true,
       _source: "auto-log",
       _upcoming: upcomingSoon || false,
+      _reconciliation_status: reconInfo ? reconInfo.actual_status : undefined,
     };
     if (upcomingSoon) upcoming++;
 
@@ -2136,7 +2229,7 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
   const stalePurged = purgeStaleCompositeLegs();
   const deduped = dedupeLogbookLegs();
   const dhPurged = purgeDeadheadsFromLogbook();
-  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} upcoming=${upcoming} no_crew=${no_crew} stale_purged=${stalePurged} deduped=${deduped} dh_purged=${dhPurged}`);
+  console.log(`[auto-log] scanned=${scanned} created=${created} updated=${updated} skipped=${skipped} deadhead=${deadhead} upcoming=${upcoming} not_operated=${notOperated} no_crew=${no_crew} stale_purged=${stalePurged} deduped=${deduped} dh_purged=${dhPurged}`);
 
   // Fire-and-forget FA actuals fetch for any past legs without actual_in.
   // Throttled by the existing FA queue (10s gap). Doesn't block the response.
@@ -2401,6 +2494,11 @@ if (crewCacheReady) {
   // pass so the crew cache has a chance to settle.
   setTimeout(() => { importCompletedFlights().catch(() => {}); }, 60 * 1000);
   setInterval(() => { importCompletedFlights().catch(() => {}); }, 30 * 60 * 1000);
+  // Reconciliation sweep: re-check trips from the last 60 days for FTGs /
+  // drops that happened after auto-log already created the leg. 90 sec
+  // after boot, then every 6 hours.
+  setTimeout(() => { reconcileExistingLogbook().catch(() => {}); }, 90 * 1000);
+  setInterval(() => { reconcileExistingLogbook().catch(() => {}); }, 6 * 60 * 60 * 1000);
   // Daily APA logbook sync of the current month (the authoritative source
   // for completed legs — fills in crew + actuals + tail). Big multi-month
   // backfill is on-demand via the BACKFILL FROM APA button.
@@ -2753,6 +2851,18 @@ app.post("/api/logbook/dedupe", logbookAuth, (req, res) => {
 app.post("/api/logbook/purge-deadheads", logbookAuth, (req, res) => {
   const removed = purgeDeadheadsFromLogbook();
   res.json({ removed, total: Object.keys(logbook.legs).length });
+});
+
+// Manually trigger a reconciliation sweep against apa-sabre-service. Soft-
+// deletes any leg that was FTG'd/dropped/replaced. Restores any leg
+// previously soft-deleted but now reported as operated.
+app.post("/api/logbook/reconcile", logbookAuth, async (req, res) => {
+  try {
+    const result = await reconcileExistingLogbook();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Re-resolve any "emp:XXXXX" placeholder names in existing legbook legs.
