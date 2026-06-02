@@ -88,11 +88,11 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-06-02.2</span>
+    <span class="meta" title="Build version">v2026-06-02.3</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <span class="meta" id="apa-stats-summary" style="display:none"></span>
     <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
-    <button class="btn" id="apa-sync-current-btn" onclick="runApaSyncCurrentMonth()" style="display:none" title="Sync just the current bid month from APA (fast, ~5 sec)">↻ MONTH</button>
+    <button class="btn" id="apa-sync-current-btn" onclick="runApaSyncCurrentMonth()" style="display:none" title="Sync current AND previous month from APA. Catches premium trips picked up around month boundaries.">↻ RECENT</button>
     <button class="btn" id="import-btn" onclick="runImportFromCalendar()" style="display:none" title="Pull completed flights from calendar, fill crew from APA, fetch FA actuals for the last 14 days">📥 CALENDAR</button>
     <button class="btn" id="import-force-btn" onclick="runImportFromCalendar(true)" style="display:none" title="Re-import everything, overwriting auto-filled crew (preserves notes)">⟳ FORCE</button>
     <button class="btn" id="sync-apa-btn" onclick="runSyncApaCrew()" style="display:none" title="Fill crew on existing legs that have empty crew arrays">⛏ SYNC APA CREW</button>

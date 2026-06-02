@@ -2678,14 +2678,19 @@ if (crewCacheReady) {
   // after boot, then every 6 hours.
   setTimeout(() => { reconcileExistingLogbook().catch(() => {}); }, 90 * 1000);
   setInterval(() => { reconcileExistingLogbook().catch(() => {}); }, 6 * 60 * 60 * 1000);
-  // Daily APA logbook sync of the current month (the authoritative source
-  // for completed legs — fills in crew + actuals + tail). Big multi-month
-  // backfill is on-demand via the BACKFILL FROM APA button.
-  setInterval(() => {
+  // Daily APA logbook sync covering current month AND previous month.
+  // Includes prior month so premium / picked-up trips at a month boundary
+  // (e.g. May 31 trip first appearing in HI on June 2) flow into the
+  // logbook automatically. The big multi-month backfill is still on-
+  // demand via the BACKFILL FROM APA button.
+  function recentSyncSince() {
     const now = new Date();
-    const ym = now.getFullYear() * 100 + (now.getMonth() + 1);
-    backfillFromApa({ since: ym, force: false }).catch(() => {});
-  }, 24 * 60 * 60 * 1000);
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    return prev.getFullYear() * 100 + (prev.getMonth() + 1);
+  }
+  // Boot pass at +75s, then every 24h thereafter.
+  setTimeout(() => { backfillFromApa({ since: recentSyncSince(), force: false }).catch(() => {}); }, 75 * 1000);
+  setInterval(() => { backfillFromApa({ since: recentSyncSince(), force: false }).catch(() => {}); }, 24 * 60 * 60 * 1000);
 }
 
 app.get("/api/crew/health", async (req, res) => {
@@ -3003,10 +3008,16 @@ app.post("/api/logbook/backfill-from-apa", logbookAuth, express.json(), (req, re
 });
 
 app.post("/api/logbook/sync-current-month", logbookAuth, async (req, res) => {
+  // Despite the name, this syncs the current month AND the previous month.
+  // Premium / picked-up trips often appear in HI only after auto-log has
+  // already moved on from the calendar event date, and trips that span
+  // month boundaries (May 31 → June 1) would otherwise need a manual
+  // backfill to surface.
   const now = new Date();
-  const ym = now.getFullYear() * 100 + (now.getMonth() + 1);
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const since = prev.getFullYear() * 100 + (prev.getMonth() + 1);
   try {
-    const result = await backfillFromApa({ since: ym, force: false });
+    const result = await backfillFromApa({ since, force: false });
     res.json(result);
   } catch (err) {
     res.status(503).json({ error: err.message });
