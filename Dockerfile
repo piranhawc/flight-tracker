@@ -7,6 +7,7 @@ COPY server.js .
 COPY apa-sabre-client.js .
 COPY apa-logbook-client.js .
 COPY crew-cache.js .
+COPY fa-tracker.js .
 COPY gates-seed.json .
 COPY public/ public/
 RUN mkdir -p /app/data /data

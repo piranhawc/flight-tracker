@@ -21,6 +21,43 @@ const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
 const apa = require("./apa-sabre-client");
 const apaLogbook = require("./apa-logbook-client");
 const crewCache = require("./crew-cache");
+const faTracker = require("./fa-tracker");
+let faTrackerReady = false;
+try { faTracker.init(); faTrackerReady = true; } catch (e) {
+  console.error("[fa-tracker] init failed:", e.message);
+}
+
+// Central wrapper for every AeroAPI call. Adds the x-apikey header, logs
+// the call into fa_call_log for the usage dashboard, and returns the
+// fetch Response unchanged so callers stay simple. `category` should be
+// one of the labels the dashboard groups on (live-flight, inbound-tracker,
+// registration, commute-today, commute-week, actuals-backfill, test).
+async function faFetch(category, url, opts = {}) {
+  const t0 = Date.now();
+  let status = null, bytes = null;
+  try {
+    const resp = await fetch(url, Object.assign({}, opts, {
+      headers: Object.assign({}, opts.headers || {}, { "x-apikey": FA_API_KEY }),
+    }));
+    status = resp.status;
+    const cl = resp.headers.get("content-length");
+    bytes = cl ? parseInt(cl, 10) : null;
+    return resp;
+  } catch (err) {
+    status = -1;
+    throw err;
+  } finally {
+    if (faTrackerReady) {
+      faTracker.logCall({
+        category,
+        endpoint: url,
+        http_status: status,
+        duration_ms: Date.now() - t0,
+        response_bytes: bytes,
+      });
+    }
+  }
+}
 
 // --- Persistent cache helpers ---
 function loadCache(file) {
@@ -160,13 +197,28 @@ app.get("/api/flights", async (req, res) => {
   }
 });
 
+// --- FA usage dashboard data ---
+// Returns daily totals, per-day-per-category breakdown, top endpoints, and
+// month-to-date stats. The frontend at /fa-usage.html charts this.
+app.get("/api/fa-usage", (req, res) => {
+  if (!faTrackerReady) return res.status(503).json({ error: "tracker not initialized" });
+  const days = Math.max(1, Math.min(parseInt(req.query.days || "30", 10), 90));
+  res.json({
+    days,
+    daily_totals: faTracker.getDailyTotals(days),
+    daily_by_category: faTracker.getDailyByCategory(days),
+    top_endpoints: faTracker.getTopEndpoints(days, 30),
+    category_totals: faTracker.getCategoryTotals(days),
+    month_to_date: faTracker.getMonthToDateCount(),
+    all_time_count: faTracker.countAll(),
+  });
+});
+
 // --- AeroAPI: lookup flight by ident (ICAO like AAL1582) ---
 app.get("/api/fa/flights/:ident", async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
-    const resp = await fetch(`${FA_BASE}/flights/${req.params.ident}`, {
-      headers: { "x-apikey": FA_API_KEY },
-    });
+    const resp = await faFetch("live-flight", `${FA_BASE}/flights/${req.params.ident}`);
     if (!resp.ok) throw new Error(`FA returned ${resp.status}`);
     res.json(await resp.json());
   } catch (e) {
@@ -178,9 +230,7 @@ app.get("/api/fa/flights/:ident", async (req, res) => {
 app.get("/api/fa/position/:id", async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
-    const resp = await fetch(`${FA_BASE}/flights/${req.params.id}/position`, {
-      headers: { "x-apikey": FA_API_KEY },
-    });
+    const resp = await faFetch("live-flight", `${FA_BASE}/flights/${req.params.id}/position`);
     if (!resp.ok) throw new Error(`FA returned ${resp.status}`);
     res.json(await resp.json());
   } catch (e) {
@@ -192,9 +242,7 @@ app.get("/api/fa/position/:id", async (req, res) => {
 app.get("/api/fa/track/:id", async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
-    const resp = await fetch(`${FA_BASE}/flights/${req.params.id}/track`, {
-      headers: { "x-apikey": FA_API_KEY },
-    });
+    const resp = await faFetch("live-flight", `${FA_BASE}/flights/${req.params.id}/track`);
     if (!resp.ok) throw new Error(`FA returned ${resp.status}`);
     res.json(await resp.json());
   } catch (e) {
@@ -209,9 +257,7 @@ app.get("/api/track/:flightNum", async (req, res) => {
   try {
     const ident = `AAL${req.params.flightNum}`;
     // Get flights for this ident
-    const fResp = await fetch(`${FA_BASE}/flights/${ident}`, {
-      headers: { "x-apikey": FA_API_KEY },
-    });
+    const fResp = await faFetch("live-flight", `${FA_BASE}/flights/${ident}`);
     if (!fResp.ok) throw new Error(`FA flights returned ${fResp.status}`);
     const fData = await fResp.json();
 
@@ -278,9 +324,7 @@ app.get("/api/track/:flightNum", async (req, res) => {
 
     // Get position (may return no data if not departed yet — that's ok)
     let position = null;
-    const pResp = await fetch(`${FA_BASE}/flights/${target.fa_flight_id}/position`, {
-      headers: { "x-apikey": FA_API_KEY },
-    });
+    const pResp = await faFetch("live-flight", `${FA_BASE}/flights/${target.fa_flight_id}/position`);
     if (pResp.ok) {
       position = await pResp.json();
     }
@@ -288,9 +332,7 @@ app.get("/api/track/:flightNum", async (req, res) => {
     // Get track if en route or recently arrived (for arrival visualization)
     let track = null;
     if (enRoute || recentlyArrived || target.progress_percent > 0) {
-      const tResp = await fetch(`${FA_BASE}/flights/${target.fa_flight_id}/track`, {
-        headers: { "x-apikey": FA_API_KEY },
-      });
+      const tResp = await faFetch("live-flight", `${FA_BASE}/flights/${target.fa_flight_id}/track`);
       if (tResp.ok) {
         track = await tResp.json();
       }
@@ -371,10 +413,7 @@ app.get("/api/inbound", async (req, res) => {
     let track = null;
     if (wantTrack && inbound && inbound.flight && inbound.flight.fa_flight_id) {
       try {
-        const tResp = await fetch(
-          `${FA_BASE}/flights/${inbound.flight.fa_flight_id}/track`,
-          { headers: { "x-apikey": FA_API_KEY } }
-        );
+        const tResp = await faFetch("inbound-tracker", `${FA_BASE}/flights/${inbound.flight.fa_flight_id}/track`);
         if (tResp.ok) track = await tResp.json();
       } catch (e) {
         console.log(`  [inbound track] fetch failed: ${e.message}`);
@@ -416,7 +455,7 @@ async function fetchAircraftInbound(registration, ownFaFlightId, ownOriginCode) 
     // aircraft registration), and IS in Personal — we already use it for
     // AAL1234 lookups elsewhere.
     const url = `${FA_BASE}/flights/${encodeURIComponent(registration)}?max_pages=1`;
-    const resp = await fetch(url, { headers: { "x-apikey": FA_API_KEY } });
+    const resp = await faFetch("inbound-tracker", url);
     if (!resp.ok) {
       const txt = await resp.text().catch(() => "");
       console.log(`[inbound] ${registration} /flights/{reg} FA ${resp.status}: ${txt.substring(0,200)}`);
@@ -472,10 +511,7 @@ async function fetchAircraftInbound(registration, ownFaFlightId, ownOriginCode) 
     position = posCached.data;
   } else {
     try {
-      const pResp = await fetch(
-        `${FA_BASE}/flights/${inboundFlight.fa_flight_id}/position`,
-        { headers: { "x-apikey": FA_API_KEY } }
-      );
+      const pResp = await faFetch("inbound-tracker", `${FA_BASE}/flights/${inboundFlight.fa_flight_id}/position`);
       if (pResp.ok) {
         position = await pResp.json();
         inboundPositionCache[posKey] = { ts: Date.now(), data: position };
@@ -493,9 +529,7 @@ app.get("/api/test-track/:ident", async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
     const ident = req.params.ident;
-    const fResp = await fetch(`${FA_BASE}/flights/${ident}`, {
-      headers: { "x-apikey": FA_API_KEY },
-    });
+    const fResp = await faFetch("test", `${FA_BASE}/flights/${ident}`);
     if (!fResp.ok) throw new Error(`FA returned ${fResp.status}`);
     const fData = await fResp.json();
 
@@ -504,15 +538,11 @@ app.get("/api/test-track/:ident", async (req, res) => {
     );
     if (!active) return res.status(404).json({ error: "No active flight found for " + ident });
 
-    const pResp = await fetch(`${FA_BASE}/flights/${active.fa_flight_id}/position`, {
-      headers: { "x-apikey": FA_API_KEY },
-    });
+    const pResp = await faFetch("test", `${FA_BASE}/flights/${active.fa_flight_id}/position`);
     let position = null;
     if (pResp.ok) position = await pResp.json();
 
-    const tResp = await fetch(`${FA_BASE}/flights/${active.fa_flight_id}/track`, {
-      headers: { "x-apikey": FA_API_KEY },
-    });
+    const tResp = await faFetch("test", `${FA_BASE}/flights/${active.fa_flight_id}/track`);
     let track = null;
     if (tResp.ok) track = await tResp.json();
 
@@ -573,10 +603,7 @@ app.get("/api/fa/registration/:flightNum/:date", async (req, res) => {
     }
 
     // Query without date params — returns last ~14 days of this flight number
-    const resp = await fetch(
-      `${FA_BASE}/flights/${ident}`,
-      { headers: { "x-apikey": FA_API_KEY } }
-    );
+    const resp = await faFetch("registration", `${FA_BASE}/flights/${ident}`);
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");
       console.error(`FA registration lookup failed: ${resp.status} ${errText}`);
@@ -976,7 +1003,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 let lastFaCallTs = 0;
 const FA_MIN_INTERVAL_MS = 10000;
 let faChain = Promise.resolve();
-function enqueueFaFetch(label, url) {
+function enqueueFaFetch(label, url, category) {
   const next = faChain.then(async () => {
     const since = Date.now() - lastFaCallTs;
     if (since < FA_MIN_INTERVAL_MS) {
@@ -985,7 +1012,7 @@ function enqueueFaFetch(label, url) {
       await sleep(wait);
     }
     lastFaCallTs = Date.now();
-    return fetch(url, { headers: { "x-apikey": FA_API_KEY } });
+    return faFetch(category || "queued", url);
   });
   // Chain continues even if this call rejects, so a failure doesn't stall the queue.
   faChain = next.then(() => {}, () => {});
@@ -1021,7 +1048,7 @@ async function fetchAirportFlights(airport, endpoint, startStr, endStr) {
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const resp = await enqueueFaFetch(`${airport}/${endpoint}`, url);
+          const resp = await enqueueFaFetch(`${airport}/${endpoint}`, url, "commute-today");
           if (resp.ok) {
             const data = await resp.json();
             const flights = data[endpoint] || data.flights || [];
@@ -1304,7 +1331,7 @@ async function fetchFASchedulesForDay(from, to, dateStr) {
   const endISO = addDaysISO(dateStr, 1) + "T00:00:00Z";
   const url = `${FA_BASE}/schedules/${startISO}/${endISO}?origin=${orig}&destination=${dest}&max_pages=3`;
   try {
-    const r = await enqueueFaFetch(`schedules ${from}->${to} ${dateStr}`, url);
+    const r = await enqueueFaFetch(`schedules ${from}->${to} ${dateStr}`, url, "commute-week");
     if (!r.ok) {
       const txt = await r.text().catch(() => "");
       console.log(`  [schedules fail] ${from}->${to} ${dateStr} ${r.status}: ${txt.substring(0, 120)}`);

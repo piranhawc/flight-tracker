@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FA Usage</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#080808; color:#ddd; font-family:Menlo,Monaco,monospace; font-size:11px; margin:0; padding:0; }
+  #top { padding:10px 14px; border-bottom:1px solid #1a1a1a; display:flex; align-items:center; justify-content:space-between; }
+  #top .title { font-size:12px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
+  #top .meta { color:#666; font-size:10px; }
+  #top .btn { background:#0e0e0e; border:1px solid #222; color:#ddd; padding:4px 10px; border-radius:2px; font-family:inherit; font-size:10px; cursor:pointer; margin-left:4px; }
+  #top .btn:hover { border-color:#06d6a0; color:#06d6a0; }
+  #top .btn.active { background:#0a2018; border-color:#06d6a0; color:#06d6a0; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:14px; padding:14px; }
+  .panel { background:#0c0c0c; border:1px solid #181818; border-radius:3px; padding:12px; }
+  .panel h2 { font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:1.5px; margin:0 0 10px 0; }
+  .panel.wide { grid-column:1 / -1; }
+  canvas { width:100%; max-width:100%; display:block; }
+  table { width:100%; border-collapse:collapse; font-size:10px; }
+  table th, table td { padding:4px 6px; text-align:left; border-bottom:1px solid #161616; }
+  table th { color:#888; font-weight:600; }
+  table td.num { text-align:right; }
+  table td.bad { color:#f44; }
+  table td.warn { color:#ffd166; }
+  .kpi { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; }
+  .kpi .card { background:#0a0a0a; border:1px solid #161616; border-radius:2px; padding:8px 12px; }
+  .kpi .card .label { color:#666; font-size:9px; letter-spacing:1px; text-transform:uppercase; }
+  .kpi .card .value { color:#ddd; font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .card .sub { color:#666; font-size:9px; margin-top:2px; }
+  .kpi .card .value.good { color:#06d6a0; }
+  .kpi .card .value.warn { color:#ffd166; }
+  .kpi .card .value.bad { color:#f44; }
+  .legend { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; font-size:9px; color:#aaa; }
+  .legend .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<div id="top">
+  <div>
+    <span class="title">FA AeroAPI USAGE</span>
+    <span class="meta" id="meta"></span>
+  </div>
+  <div>
+    <button class="btn range-btn" data-days="7">7d</button>
+    <button class="btn range-btn active" data-days="30">30d</button>
+    <button class="btn range-btn" data-days="60">60d</button>
+    <button class="btn" onclick="window.location='/'">← FLIGHTS</button>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel wide">
+    <h2>SUMMARY</h2>
+    <div class="kpi" id="kpi"></div>
+  </div>
+
+  <div class="panel wide">
+    <h2>DAILY CALLS BY CATEGORY</h2>
+    <canvas id="chart-daily" height="320"></canvas>
+    <div class="legend" id="chart-legend"></div>
+  </div>
+
+  <div class="panel">
+    <h2>CATEGORY TOTALS</h2>
+    <table id="cat-table"><thead><tr><th>Category</th><th class="num">Calls</th><th class="num">%</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>TOP ENDPOINTS</h2>
+    <table id="ep-table"><thead><tr><th>Category</th><th>Endpoint</th><th class="num">Calls</th><th class="num">429</th><th class="num">Err</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<script>
+var BUDGET_USD = 20;
+var COST_PER_CALL = 0.0095;  // rough AeroAPI Personal-tier estimate; adjust per FA invoice
+var CATEGORY_COLORS = {
+  "live-flight":     "#e63946",
+  "inbound-tracker": "#ff9f1c",
+  "registration":    "#06d6a0",
+  "commute-today":   "#7ec8ff",
+  "commute-week":    "#9b5de5",
+  "actuals-backfill":"#ffd166",
+  "test":            "#888",
+  "queued":          "#555",
+  "unknown":         "#444"
+};
+function colorFor(cat) { return CATEGORY_COLORS[cat] || "#666"; }
+
+var currentDays = 30;
+document.querySelectorAll(".range-btn").forEach(function(btn) {
+  btn.addEventListener("click", function() {
+    document.querySelectorAll(".range-btn").forEach(function(b){ b.classList.remove("active"); });
+    btn.classList.add("active");
+    currentDays = parseInt(btn.dataset.days, 10);
+    load();
+  });
+});
+
+async function load() {
+  var r = await fetch("/api/fa-usage?days=" + currentDays);
+  if (!r.ok) { document.getElementById("meta").textContent = "load failed"; return; }
+  var d = await r.json();
+  renderKpi(d);
+  renderChart(d);
+  renderCatTable(d);
+  renderEpTable(d);
+  document.getElementById("meta").textContent =
+    "last " + currentDays + "d · " + d.all_time_count.toLocaleString() + " calls all-time";
+}
+
+function renderKpi(d) {
+  var mtd = d.month_to_date.total;
+  var mtdCost = mtd * COST_PER_CALL;
+  var projectedMonthly = projectMonthly(mtd, d.month_to_date.month_start);
+  var projectedCost = projectedMonthly * COST_PER_CALL;
+  var windowTotal = d.daily_totals.reduce(function(s, r){ return s + r.calls; }, 0);
+  var avgDaily = windowTotal / Math.max(1, currentDays);
+  var costCls = projectedCost <= BUDGET_USD ? "good" : projectedCost <= BUDGET_USD * 1.5 ? "warn" : "bad";
+  var html = "";
+  html += '<div class="card"><div class="label">Month-to-date</div><div class="value">' + mtd.toLocaleString() + '</div><div class="sub">~$' + mtdCost.toFixed(2) + '</div></div>';
+  html += '<div class="card"><div class="label">Projected month</div><div class="value ' + costCls + '">$' + projectedCost.toFixed(2) + '</div><div class="sub">budget $' + BUDGET_USD + '</div></div>';
+  html += '<div class="card"><div class="label">Avg daily (' + currentDays + 'd)</div><div class="value">' + Math.round(avgDaily) + '</div><div class="sub">' + windowTotal.toLocaleString() + ' total</div></div>';
+  html += '<div class="card"><div class="label">Top category</div><div class="value" style="font-size:13px;color:' + (d.category_totals[0] ? colorFor(d.category_totals[0].category) : "#666") + '">' + (d.category_totals[0] ? d.category_totals[0].category : "—") + '</div><div class="sub">' + (d.category_totals[0] ? d.category_totals[0].calls.toLocaleString() + " calls" : "no data") + '</div></div>';
+  document.getElementById("kpi").innerHTML = html;
+}
+
+function projectMonthly(mtdCount, monthStartISO) {
+  var now = new Date();
+  var monthStart = new Date(monthStartISO);
+  var daysElapsed = Math.max(1, (now - monthStart) / 86400000);
+  var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  var daysInMonth = monthEnd.getDate();
+  return Math.round(mtdCount / daysElapsed * daysInMonth);
+}
+
+function renderChart(d) {
+  // Stacked bar chart, one bar per day.
+  var canvas = document.getElementById("chart-daily");
+  var ctx = canvas.getContext("2d");
+  var dpr = window.devicePixelRatio || 1;
+  var w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr; ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  // Build day × category matrix
+  var dayMap = {};
+  d.daily_by_category.forEach(function(r) {
+    if (!dayMap[r.day]) dayMap[r.day] = {};
+    dayMap[r.day][r.category] = r.calls;
+  });
+  var days = Object.keys(dayMap).sort();
+  if (!days.length) { ctx.fillStyle = "#444"; ctx.font = "11px Menlo"; ctx.fillText("No data yet", 20, h/2); return; }
+
+  // Determine category order (most → least over window)
+  var catOrder = d.category_totals.map(function(c){ return c.category; });
+
+  // Max stacked total for y-scale
+  var maxTotal = 0;
+  days.forEach(function(day) {
+    var t = 0;
+    Object.values(dayMap[day]).forEach(function(v){ t += v; });
+    if (t > maxTotal) maxTotal = t;
+  });
+  if (maxTotal === 0) maxTotal = 1;
+  // Round up for nicer axis
+  var yScale = Math.pow(10, Math.floor(Math.log10(maxTotal)));
+  maxTotal = Math.ceil(maxTotal / yScale) * yScale;
+
+  var pad = { top:10, right:10, bottom:30, left:46 };
+  var chartW = w - pad.left - pad.right;
+  var chartH = h - pad.top - pad.bottom;
+  var barGap = 2;
+  var barW = Math.max(3, (chartW - barGap * (days.length - 1)) / days.length);
+
+  // Axis: 5 gridlines
+  ctx.strokeStyle = "#1a1a1a";
+  ctx.fillStyle = "#666";
+  ctx.font = "9px Menlo";
+  for (var i = 0; i <= 5; i++) {
+    var v = (maxTotal / 5) * i;
+    var y = pad.top + chartH - (v / maxTotal) * chartH;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + chartW, y); ctx.stroke();
+    ctx.textAlign = "right"; ctx.fillText(Math.round(v).toLocaleString(), pad.left - 4, y + 3);
+  }
+
+  // Bars
+  days.forEach(function(day, idx) {
+    var x = pad.left + idx * (barW + barGap);
+    var stackY = pad.top + chartH;
+    catOrder.forEach(function(cat) {
+      var v = dayMap[day][cat] || 0;
+      if (!v) return;
+      var segH = (v / maxTotal) * chartH;
+      ctx.fillStyle = colorFor(cat);
+      ctx.fillRect(x, stackY - segH, barW, segH);
+      stackY -= segH;
+    });
+  });
+
+  // X-axis labels: show every Nth day depending on width
+  ctx.fillStyle = "#666";
+  var labelEvery = Math.max(1, Math.ceil(days.length / Math.floor(chartW / 50)));
+  days.forEach(function(day, idx) {
+    if (idx % labelEvery !== 0 && idx !== days.length - 1) return;
+    var x = pad.left + idx * (barW + barGap) + barW/2;
+    ctx.textAlign = "center";
+    ctx.fillText(day.slice(5), x, pad.top + chartH + 14);
+  });
+
+  // Legend
+  var legend = document.getElementById("chart-legend");
+  legend.innerHTML = catOrder.map(function(cat) {
+    return '<span><span class="sw" style="background:' + colorFor(cat) + '"></span>' + cat + '</span>';
+  }).join("");
+}
+
+function renderCatTable(d) {
+  var tbody = document.querySelector("#cat-table tbody");
+  var total = d.category_totals.reduce(function(s, r){ return s + r.calls; }, 0);
+  tbody.innerHTML = d.category_totals.map(function(r) {
+    var pct = total > 0 ? (r.calls / total * 100).toFixed(1) : "0.0";
+    return "<tr><td><span class='sw' style='display:inline-block;width:8px;height:8px;border-radius:1px;margin-right:6px;vertical-align:middle;background:" + colorFor(r.category) + "'></span>" + r.category + "</td><td class='num'>" + r.calls.toLocaleString() + "</td><td class='num'>" + pct + "%</td></tr>";
+  }).join("");
+}
+
+function renderEpTable(d) {
+  var tbody = document.querySelector("#ep-table tbody");
+  tbody.innerHTML = d.top_endpoints.map(function(r) {
+    return "<tr><td>" + r.category + "</td><td>" + r.endpoint + "</td><td class='num'>" + r.calls.toLocaleString() + "</td><td class='num " + (r.rate_limited > 0 ? "warn" : "") + "'>" + r.rate_limited + "</td><td class='num " + (r.errors > 0 ? "bad" : "") + "'>" + r.errors + "</td></tr>";
+  }).join("");
+}
+
+window.addEventListener("resize", function() { load(); });
+load();
+</script>
+</body>
+</html>
