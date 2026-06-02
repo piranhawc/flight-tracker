@@ -991,7 +991,7 @@ function getMarketingCarrier(f) {
 // Airport flight list cache (in-memory, 1-hour TTL with stale-while-revalidate)
 // Multiple commute routes share the same airport data
 const airportCache = {};
-const AIRPORT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const AIRPORT_CACHE_TTL = 3 * 60 * 60 * 1000; // 3 hours — matches frontend 3h refresh cadence so multiple page loads inside one slot reuse the cached response
 const AIRPORT_CACHE_STALE_TTL = 24 * 60 * 60 * 1000; // serve stale for up to 24 hrs if API fails
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
