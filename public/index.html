@@ -75,6 +75,7 @@
   .commute-row.cancelled { opacity:.4; }
   .commute-row.delayed { background:rgba(230,57,70,.05); }
   .commute-row .c-ident { font-weight:700; color:#06d6a0; min-width:60px; font-size:11px; }
+  .commute-row .c-type { display:inline-block; padding:1px 5px; border-radius:2px; background:#1a1a1a; color:#888; font-size:9px; letter-spacing:.5px; font-weight:700; }
   .commute-row .c-airline { display:inline-block; font-size:9px; font-weight:800; padding:2px 5px; border-radius:2px; letter-spacing:0.5px; min-width:24px; text-align:center; }
   .commute-row .c-time { color:#aaa; font-size:10px; }
   .commute-row .c-time-strike { color:#444; font-size:9px; text-decoration:line-through; margin-left:4px; }
@@ -159,7 +160,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-06-02.3</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-06-02.4</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <a class="btn" href="/fa-usage.html" title="FlightAware API usage" style="text-decoration:none">📊 FA</a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
@@ -1595,9 +1596,13 @@ function renderCommuteFlights(flights, route) {
         (isGhostActive ? '✕' : '📍') + '</a>';
     }
 
+    var typeHtml = f.aircraft_type
+      ? '<span class="c-type">' + String(f.aircraft_type).trim().toUpperCase() + '</span>'
+      : '';
     return '<div class="' + rowClass + '">' +
       airlineHtml +
       '<span class="c-ident">' + f.ident + '</span>' +
+      typeHtml +
       timeHtml +
       (f.gate_origin ? '<span class="c-est">Gate ' + f.gate_origin + '</span>' : '') +
       '<span class="c-status ' + badge.cls + '">' + badge.text + '</span>' +
@@ -1807,9 +1812,13 @@ function toggleCommuteWeekDay(dayKey) {
       var dep = fmtLocalTime(f.scheduled_out, f.origin_timezone);
       var arr = fmtLocalTime(f.scheduled_in, f.destination_timezone);
       var carrier = f.marketing_carrier || "";
+      var typeHtml = f.aircraft_type
+        ? '<span class="c-type">' + String(f.aircraft_type).trim().toUpperCase() + '</span>'
+        : '';
       return '<div class="commute-row">' +
         '<span class="c-airline" style="background:' + carrierColor(carrier) + '">' + carrier + '</span>' +
         '<span class="c-ident">' + (f.ident || "?") + '</span>' +
+        typeHtml +
         '<span class="c-time">' + dep + " → " + arr + '</span>' +
       '</div>';
     }).join("");
