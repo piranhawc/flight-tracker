@@ -307,9 +307,9 @@ app.post("/api/friends/signup/verify", express.json(), (req, res) => {
 // so the UI can show "waiting for backend".
 app.post("/api/friends/signup/submit", express.json(), async (req, res) => {
   if (!signupTrackerReady) return res.status(503).json({ error: "signup unavailable" });
-  const { token, sabre_username, sabre_password, name } = req.body || {};
-  if (!token || !sabre_username || !sabre_password) {
-    return res.status(400).json({ error: "token, sabre_username, sabre_password required" });
+  const { token, apa_username, apa_password, sabre_username, sabre_password, name } = req.body || {};
+  if (!token || !apa_username || !apa_password || !sabre_username || !sabre_password) {
+    return res.status(400).json({ error: "token, apa_username/password, sabre_username/password all required" });
   }
   const ip = getClientIp(req);
   const row = signupTracker.consumeSession(token);
@@ -318,11 +318,18 @@ app.post("/api/friends/signup/submit", express.json(), async (req, res) => {
     return res.status(400).json({ error: "invalid or unverified session" });
   }
   // Forward to apa-sabre-service /friends/add (Phase 1B will add this).
+  // Two credential pairs because the login chain is APA portal (ADFS) →
+  // TASC Sabre gateway — two separate forms, almost always different passwords.
   try {
     const r = await fetch(`${apa.APA_SABRE_BASE}/friends/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name || row.email, email: row.email, sabre_username, sabre_password }),
+      body: JSON.stringify({
+        name: name || row.email,
+        email: row.email,
+        apa_username, apa_password,
+        sabre_username, sabre_password,
+      }),
       signal: AbortSignal.timeout(60000),
     });
     if (!r.ok) {

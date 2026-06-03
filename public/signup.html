@@ -56,19 +56,28 @@
   </div>
 
   <div class="step" id="step-creds">
-    <h2><span class="num">3.</span> SABRE</h2>
+    <h2><span class="num">3.</span> CREDENTIALS</h2>
     <div class="consent">
-      <b>Consent:</b> by submitting your Sabre login, you authorize this
-      system to log in as you, read your schedule, and display your trips
-      back to you on your private flight-tracker page. Your password is
+      <b>Consent:</b> by submitting your APA and Sabre logins, you authorize
+      this system to log in as you (through alliedpilots.org and the TASC
+      Sabre gateway), read your schedule, and display your trips back to
+      you on your private flight-tracker page. Both passwords are
       encrypted at rest. You can revoke at any time.
     </div>
     <label for="name">Your name</label>
     <input id="name" type="text" placeholder="Jane Smith">
-    <label for="sabre-username">Sabre username</label>
-    <input id="sabre-username" type="text" autocomplete="username">
+    <label for="apa-username">APA member ID / employee #</label>
+    <input id="apa-username" type="text" autocomplete="username" inputmode="numeric">
+    <div class="hint">Same number you use at alliedpilots.org login.</div>
+    <label for="apa-password">APA password</label>
+    <input id="apa-password" type="password" autocomplete="current-password">
+    <div class="hint">For alliedpilots.org / ADFS sign-in.</div>
+    <label for="sabre-username">Sabre / DECS user ID</label>
+    <input id="sabre-username" type="text" autocomplete="username" inputmode="numeric">
+    <div class="hint">Usually the same as your APA member ID. Click <a href="#" id="same-as-apa" style="color:#06d6a0">auto-fill from above</a> if so.</div>
     <label for="sabre-password">Sabre password</label>
     <input id="sabre-password" type="password" autocomplete="current-password">
+    <div class="hint">The DECS password — usually different from your APA password.</div>
     <button id="btn-submit">LOG ME IN</button>
     <div id="err-creds" class="err"></div>
   </div>
@@ -163,20 +172,32 @@ document.getElementById("btn-verify").addEventListener("click", async function()
   }
 });
 
+document.getElementById("same-as-apa").addEventListener("click", function(e) {
+  e.preventDefault();
+  document.getElementById("sabre-username").value = document.getElementById("apa-username").value;
+});
+
 document.getElementById("btn-submit").addEventListener("click", async function() {
   var btn = this;
   var name = document.getElementById("name").value.trim();
-  var u = document.getElementById("sabre-username").value.trim();
-  var p = document.getElementById("sabre-password").value;
+  var apaU = document.getElementById("apa-username").value.trim();
+  var apaP = document.getElementById("apa-password").value;
+  var sU = document.getElementById("sabre-username").value.trim();
+  var sP = document.getElementById("sabre-password").value;
   var err = document.getElementById("err-creds");
   err.textContent = "";
-  if (!u || !p) { err.textContent = "enter your Sabre username and password"; return; }
+  if (!apaU || !apaP) { err.textContent = "enter APA member ID and password"; return; }
+  if (!sU || !sP) { err.textContent = "enter Sabre user ID and password"; return; }
   btn.disabled = true; btn.textContent = "LOGGING IN... (≈45 sec)";
   try {
     var r = await fetch("/api/friends/signup/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: state.token, name: name, sabre_username: u, sabre_password: p }),
+      body: JSON.stringify({
+        token: state.token, name: name,
+        apa_username: apaU, apa_password: apaP,
+        sabre_username: sU, sabre_password: sP,
+      }),
     });
     var d = await r.json();
     if (!r.ok) {
