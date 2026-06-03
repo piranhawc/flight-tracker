@@ -68,6 +68,9 @@
   #commute-header:hover { background:#111; }
   #commute-title { font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
   #commute-toggle { font-size:10px; color:#555; transition:transform .15s; }
+  #commute-refresh { font-size:12px; color:#555; cursor:pointer; padding:0 8px; margin-right:4px; user-select:none; }
+  #commute-refresh:hover { color:#06d6a0; }
+  #commute-refresh:active { transform:rotate(180deg); transition:transform .15s; }
   #commute-panel.open #commute-toggle { transform:rotate(90deg); }
   #commute-body { max-height:400px; overflow-y:auto; border-top:1px solid #141414; }
   .commute-row { display:flex; align-items:center; gap:8px; padding:6px 14px; border-bottom:1px solid #141414; font-size:10px; }
@@ -160,7 +163,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-06-03.8</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-06-03.9</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <a class="btn" href="/friends.html" title="Friends" style="text-decoration:none">👥 FRIENDS</a>
     <a class="btn" href="/fa-usage.html" title="FlightAware API usage" style="text-decoration:none">📊 FA</a>
@@ -187,6 +190,7 @@
     <div id="commute-header" onclick="toggleCommute()">
       <span id="commute-title">COMMUTE</span>
       <span id="commute-status"></span>
+      <span id="commute-refresh" title="Force refresh now (bypasses cache)" onclick="manualRefreshCommute(event)">↻</span>
       <span id="commute-toggle">▸</span>
     </div>
     <div id="commute-body" style="display:none">
@@ -1612,10 +1616,42 @@ function renderCommuteFlights(flights, route) {
   }).join("");
 }
 
-async function loadCommuteRoute(route, dateStr) {
+// --- Browser-side commute cache ---
+// We already cache 3h on the server (AIRPORT_CACHE_TTL), but page reloads
+// still re-hit /api/commute and re-render the loading spinner. Persist the
+// last good fetch in localStorage so a reload shows commute data instantly
+// with no network call. The slot-based 3-hour cron (or the manual refresh
+// button) is what re-fetches.
+var COMMUTE_CACHE_KEY = "commute-cache-v2";
+var COMMUTE_CACHE_TTL_MS = 3 * 60 * 60 * 1000;
+function readCommuteCache() {
+  try { return JSON.parse(localStorage.getItem(COMMUTE_CACHE_KEY) || "null"); }
+  catch(e) { return null; }
+}
+function writeCommuteCache(c) {
+  try { localStorage.setItem(COMMUTE_CACHE_KEY, JSON.stringify(c)); } catch(e) {}
+}
+function isCommuteCacheFresh(c, dateStr) {
+  if (!c || !c.routes || c.date !== dateStr || !c.generated_at) return false;
+  return (Date.now() - new Date(c.generated_at).getTime()) < COMMUTE_CACHE_TTL_MS;
+}
+function renderRouteFromCacheEntry(route, entry) {
   var sectionId = "commute-" + route.from + "-" + route.to;
   var el = document.getElementById(sectionId + "-body");
   if (!el) return;
+  var ageHtml = "";
+  if (entry.generated_at) {
+    var ageMin = Math.floor((Date.now() - new Date(entry.generated_at).getTime()) / 60000);
+    var ageStr = ageMin < 1 ? "just now" : ageMin < 60 ? ageMin + "m ago" : Math.floor(ageMin / 60) + "h ago";
+    ageHtml = '<div class="commute-cache-info">Updated ' + ageStr + '</div>';
+  }
+  el.innerHTML = renderCommuteFlights(entry.flights || [], route) + ageHtml;
+}
+
+async function loadCommuteRoute(route, dateStr) {
+  var sectionId = "commute-" + route.from + "-" + route.to;
+  var el = document.getElementById(sectionId + "-body");
+  if (!el) return null;
   // Only show loading indicator if there's no existing content
   if (!el.querySelector(".commute-row")) {
     el.innerHTML = '<div class="commute-loading-active">' +
@@ -1627,7 +1663,7 @@ async function loadCommuteRoute(route, dateStr) {
     var resp = await fetch("/api/commute/" + route.from + "/" + route.to + "/" + dateStr);
     if (!resp.ok) {
       el.innerHTML = '<div class="commute-loading" style="padding:8px">Failed to load</div>';
-      return;
+      return null;
     }
     var data = await resp.json();
     var ageHtml = "";
@@ -1640,8 +1676,11 @@ async function loadCommuteRoute(route, dateStr) {
       '</div>';
     }
     el.innerHTML = renderCommuteFlights(data.flights, route) + ageHtml;
+    return { flights: data.flights || [], generated_at: new Date().toISOString(),
+             stale: !!data.stale, server_cache_age_s: data.cacheAge || 0 };
   } catch(e) {
     el.innerHTML = '<div class="commute-loading" style="padding:8px">Error</div>';
+    return null;
   }
 }
 
@@ -1650,27 +1689,53 @@ function setCommuteStatus(msg) {
   if (status) status.textContent = msg || "";
 }
 
-async function loadAllCommutes() {
+async function loadAllCommutes(opts) {
+  opts = opts || {};
   // Use local date — toISOString() returns UTC, which flips to "tomorrow"
   // after ~7pm CT and would request the wrong day.
   var d = new Date();
   var dateStr = d.getFullYear() + "-" +
     String(d.getMonth() + 1).padStart(2, "0") + "-" +
     String(d.getDate()).padStart(2, "0");
+
+  // Fast-path: if we have a fresh browser cache for today, render from it
+  // and don't touch the network. The scheduled cron (or manual refresh
+  // button) is what re-fetches.
+  if (!opts.force) {
+    var cache = readCommuteCache();
+    if (isCommuteCacheFresh(cache, dateStr)) {
+      COMMUTE_ROUTES.forEach(function(route) {
+        var entry = cache.routes[route.from + "/" + route.to];
+        if (entry) renderRouteFromCacheEntry(route, entry);
+      });
+      setCommuteStatus("");
+      return;
+    }
+  }
+
   var total = COMMUTE_ROUTES.length;
-  // Only show "Queued" for sections that have no data yet
   COMMUTE_ROUTES.forEach(function(route) {
     var el = document.getElementById("commute-" + route.from + "-" + route.to + "-body");
     if (el && !el.querySelector(".commute-row")) {
       el.innerHTML = '<div class="commute-loading" style="padding:8px">Queued...</div>';
     }
   });
-  // Run sequentially
+  var newCache = { version: 2, date: dateStr, generated_at: new Date().toISOString(), routes: {} };
   for (var i = 0; i < COMMUTE_ROUTES.length; i++) {
     setCommuteStatus("Loading " + (i+1) + "/" + total);
-    await loadCommuteRoute(COMMUTE_ROUTES[i], dateStr);
+    var route = COMMUTE_ROUTES[i];
+    var entry = await loadCommuteRoute(route, dateStr);
+    if (entry) newCache.routes[route.from + "/" + route.to] = entry;
   }
+  writeCommuteCache(newCache);
   setCommuteStatus("");
+}
+
+function manualRefreshCommute(e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  loadAllCommutes({ force: true });
+  load7DayPreviews();
+  return false;
 }
 
 function initCommutePanel() {
