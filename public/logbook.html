@@ -63,6 +63,9 @@
   table.legs .badge-removed { background:#1a0808; color:#f44; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; font-weight:700; }
   table.legs .badge-fa-ok { background:#0a2018; color:#06d6a0; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; }
   table.legs .badge-fa-short { background:#1a1208; color:#ffd166; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; }
+  table.legs .row-action { display:inline-block; margin-left:6px; color:#444; font-size:11px; cursor:pointer; text-decoration:none; padding:0 3px; }
+  table.legs .row-action:hover { color:#f44; }
+  table.legs tr.removed .row-action:hover { color:#06d6a0; }
   table.legs tr.removed td { opacity:.45; }
   table.legs tr.removed td:first-child { border-left:2px solid #f44; }
   table.legs tr.removed .col-flight, table.legs tr.removed .col-route { text-decoration:line-through; }
@@ -88,7 +91,7 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-06-02.4</span>
+    <span class="meta" title="Build version">v2026-06-03.1</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <span class="meta" id="apa-stats-summary" style="display:none"></span>
     <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
@@ -275,6 +278,30 @@ async function triggerReconcile() {
   await loadAll();
 }
 
+async function markLegRemoved(legId) {
+  var reason = prompt("Reason (OX, RV, trade, manual drop, ...):", "OX");
+  if (reason == null) return;
+  reason = reason.trim() || "Manually marked removed";
+  var r = await fetch("/api/logbook/legs/" + encodeURIComponent(legId) + "/remove", {
+    method: "POST",
+    headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+    body: JSON.stringify({ reason: reason }),
+  });
+  if (!r.ok) { setStatus("Remove failed", "#f44"); return; }
+  setStatus("Marked removed: " + reason);
+  await loadAll();
+}
+
+async function restoreLeg(legId) {
+  var r = await fetch("/api/logbook/legs/" + encodeURIComponent(legId) + "/restore", {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!r.ok) { setStatus("Restore failed", "#f44"); return; }
+  setStatus("Restored");
+  await loadAll();
+}
+
 function buildCrewIndex() {
   crewIndex = {};
   crewByDate = {};
@@ -402,6 +429,9 @@ function renderLegs() {
       ? '<span class="badge-removed" title="' + String(l._removed_reason || "").replace(/"/g, "&quot;") + '">' +
           String((l._reconciliation_status || "removed")).toUpperCase() + '</span>'
       : '';
+    var rowAction = l._removed_at
+      ? '<a class="row-action" title="Restore" onclick="restoreLeg(\'' + l.id + '\')">↻</a>'
+      : '<a class="row-action" title="Mark removed (OX, trade, manual drop, …)" onclick="markLegRemoved(\'' + l.id + '\')">✕</a>';
     var faBadge = !l._removed_at ? faCountBadge(l) : '';
 
     var crewPills = (l.crew || []).map(function(rawName) {
@@ -422,7 +452,7 @@ function renderLegs() {
     var rowCls = l._removed_at ? "removed" : (l._upcoming ? "upcoming" : "");
     rows.push("<tr" + (rowCls ? " class='" + rowCls + "'" : "") + ">" +
       "<td>" + dateStr + "</td>" +
-      "<td class='col-flight'>" + (l.flight || "—") + dh + upcomingBadge + removedBadge + "</td>" +
+      "<td class='col-flight'>" + (l.flight || "—") + dh + upcomingBadge + removedBadge + " " + rowAction + "</td>" +
       "<td class='col-route'>" + (l.dep || "?") + "→" + (l.arr || "?") + "</td>" +
       "<td class='col-time'>" + (actOut ? '<span class="actual">' + actOut + '</span>' : '<span class="sched">' + schedOut + '</span>') + "</td>" +
       "<td class='col-time'>" + (actIn ? '<span class="actual">' + actIn + '</span>' : '<span class="sched">' + schedIn + '</span>') + "</td>" +

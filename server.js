@@ -2144,7 +2144,10 @@ async function reconcileExistingLogbook() {
         } else {
           // Reconciliation now says this DID operate — un-remove if we had
           // previously soft-deleted it (FTG that got reversed, mis-reconcile).
-          if (leg._removed_at) {
+          // EXCEPT: manual removals stay sticky. The user used the UI to say
+          // "this is gone" (e.g. OX code that apa-sabre doesn't yet read);
+          // we trust the human until they explicitly restore.
+          if (leg._removed_at && !leg._removed_manual) {
             delete leg._removed_at;
             delete leg._removed_reason;
             console.log(`[reconcile-cleanup] restored ${leg.flight} ${leg.date} — now reported as operated`);
@@ -3053,6 +3056,34 @@ app.post("/api/logbook/reconcile", logbookAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Manual override: mark a leg removed without waiting for apa-sabre's
+// reconciliation. Used when Sabre HSS shows a removal code (OX, RV, etc.)
+// that the upstream service doesn't yet recognize. POST {reason: "..."}.
+// Soft-delete; SHOW REMOVED toggle still surfaces it for audit.
+app.post("/api/logbook/legs/:id/remove", logbookAuth, express.json(), (req, res) => {
+  const leg = logbook.legs[req.params.id];
+  if (!leg) return res.status(404).json({ error: "leg not found" });
+  if (leg._removed_at) return res.json({ ok: true, already_removed: true, leg });
+  const reason = (req.body && req.body.reason) || "Manually marked removed";
+  leg._removed_at = new Date().toISOString();
+  leg._removed_reason = reason;
+  leg._removed_manual = true;
+  saveLogbook();
+  res.json({ ok: true, leg });
+});
+
+// Restore a previously-removed leg (manual or reconciliation-sourced).
+app.post("/api/logbook/legs/:id/restore", logbookAuth, (req, res) => {
+  const leg = logbook.legs[req.params.id];
+  if (!leg) return res.status(404).json({ error: "leg not found" });
+  if (!leg._removed_at) return res.json({ ok: true, already_active: true, leg });
+  delete leg._removed_at;
+  delete leg._removed_reason;
+  delete leg._removed_manual;
+  saveLogbook();
+  res.json({ ok: true, leg });
 });
 
 // Re-resolve any "emp:XXXXX" placeholder names in existing legbook legs.
