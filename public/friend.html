@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Friend tracker</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#080808; color:#ddd; font-family:Menlo,Monaco,monospace; font-size:11px; margin:0; padding:0; }
+  #top { padding:10px 14px; border-bottom:1px solid #1a1a1a; display:flex; align-items:center; justify-content:space-between; }
+  #top .title { font-size:12px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
+  #top .btn { background:#0e0e0e; border:1px solid #222; color:#ddd; padding:4px 10px; border-radius:2px; font-family:inherit; font-size:10px; cursor:pointer; margin-left:4px; text-decoration:none; display:inline-block; }
+  #top .btn:hover { border-color:#06d6a0; color:#06d6a0; }
+  #wrap { max-width:600px; margin:40px auto; padding:0 14px; }
+  .card { background:#0c0c0c; border:1px solid #181818; border-radius:3px; padding:18px; margin-bottom:14px; }
+  .card h1 { font-size:14px; color:#06d6a0; letter-spacing:2px; margin:0 0 12px 0; }
+  .card .name { color:#ddd; font-size:18px; font-weight:700; }
+  .card .badges { margin-top:8px; }
+  .badge { display:inline-block; background:#1a1a1a; color:#aaa; font-size:9px; padding:2px 6px; border-radius:2px; margin-right:4px; letter-spacing:.5px; }
+  .badge.base { color:#06d6a0; } .badge.eq { color:#7ec8ff; } .badge.seat { color:#ffd166; }
+  .pending { padding:14px 16px; background:#1a1208; border-left:2px solid #ffd166; color:#bba; line-height:1.5; font-size:11px; }
+  .pending b { color:#ffd166; }
+  .err { padding:14px 16px; color:#f44; }
+</style>
+</head>
+<body>
+<div id="top">
+  <div><span class="title">FRIEND TRACKER</span></div>
+  <div>
+    <a class="btn" href="/friends.html">← FRIENDS</a>
+  </div>
+</div>
+
+<div id="wrap">
+  <div id="loading" class="card"><div style="color:#666">loading...</div></div>
+  <div id="content" style="display:none"></div>
+</div>
+
+<script>
+var token = new URLSearchParams(location.search).get("token");
+var friendsToken = localStorage.getItem("friends-token");
+
+async function load() {
+  if (!token) {
+    document.getElementById("loading").innerHTML = '<div class="err">no token in URL</div>';
+    return;
+  }
+  if (!friendsToken) {
+    document.getElementById("loading").innerHTML = '<div class="err">not authenticated — <a href="/friends.html" style="color:#06d6a0">log in via the friends page first</a></div>';
+    return;
+  }
+  try {
+    var r = await fetch("/api/friends/list", { headers: { "Authorization": "Bearer " + friendsToken } });
+    if (r.status === 401) {
+      localStorage.removeItem("friends-token");
+      document.getElementById("loading").innerHTML = '<div class="err">session expired — <a href="/friends.html" style="color:#06d6a0">log in again</a></div>';
+      return;
+    }
+    if (!r.ok) {
+      document.getElementById("loading").innerHTML = '<div class="err">load failed (' + r.status + ')</div>';
+      return;
+    }
+    var d = await r.json();
+    var friend = (d.friends || []).find(function(f) { return f.token === token; });
+    if (!friend) {
+      document.getElementById("loading").innerHTML = '<div class="err">no friend matches that token</div>';
+      return;
+    }
+    render(friend);
+  } catch (e) {
+    document.getElementById("loading").innerHTML = '<div class="err">network error: ' + e.message + '</div>';
+  }
+}
+
+function render(friend) {
+  var c = document.getElementById("content");
+  var loading = document.getElementById("loading");
+  loading.style.display = "none";
+  c.style.display = "block";
+  c.innerHTML =
+    '<div class="card">' +
+      '<h1>HELLO</h1>' +
+      '<div class="name">' + (friend.name || "(no name)") + '</div>' +
+      '<div class="badges">' +
+        '<span class="badge base">' + (friend.base || "?") + '</span>' +
+        '<span class="badge eq">' + (friend.eq || "?") + '</span>' +
+        '<span class="badge seat">' + (friend.seat || "?") + '</span>' +
+        (friend.emp ? ' <span class="badge">emp ' + friend.emp + '</span>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="card">' +
+      '<h1>YOUR FLIGHT TRACKER</h1>' +
+      '<div class="pending">' +
+        '<b>Coming soon.</b> Your personal tracker page is being built. ' +
+        'When ready, this view will show your current pairing, today\'s commute, ' +
+        'your logbook, and crew rosters — same shape as Mike\'s page, but ' +
+        'sourced from your own Sabre login.<br><br>' +
+        'Status: waiting on apa-sabre-service per-friend data endpoints ' +
+        '(<i>Phase 1B / Phase 2</i>).' +
+      '</div>' +
+    '</div>';
+}
+
+load();
+</script>
+</body>
+</html>
