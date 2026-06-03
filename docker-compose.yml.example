@@ -12,5 +12,7 @@ services:
       - LOGBOOK_PASSWORD=<set-a-real-password>
       - APA_SABRE_BASE=http://192.168.128.115:8765
       - CREW_DB_PATH=/data/flight-tracker.db
+      - AGENTMAIL_API_KEY=<your_agentmail_api_key>
+      - ADMIN_NOTIFY_EMAIL=you@example.com
     volumes:
       - ./data:/data

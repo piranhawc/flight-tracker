@@ -22,6 +22,24 @@ const apa = require("./apa-sabre-client");
 const apaLogbook = require("./apa-logbook-client");
 const crewCache = require("./crew-cache");
 const friends = require("./friends-client");
+const agentmail = require("./agentmail-client");
+const signupTracker = require("./signup-tracker");
+let signupTrackerReady = false;
+try { signupTracker.init(); signupTrackerReady = true; } catch (e) {
+  console.error("[signup-tracker] init failed:", e.message);
+}
+// Daily janitor for expired signup sessions
+if (signupTrackerReady) setInterval(() => signupTracker.janitor(), 24 * 60 * 60 * 1000);
+
+const ADMIN_NOTIFY_EMAIL = process.env.ADMIN_NOTIFY_EMAIL || "goeb26@gmail.com";
+
+function getClientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "")
+    .split(",")[0].trim();
+}
+function isPlausibleEmail(e) {
+  return typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
 const faTracker = require("./fa-tracker");
 let faTrackerReady = false;
 try { faTracker.init(); faTrackerReady = true; } catch (e) {
@@ -213,6 +231,107 @@ app.get("/api/fa-usage", (req, res) => {
     month_to_date: faTracker.getMonthToDateCount(),
     all_time_count: faTracker.countAll(),
   });
+});
+
+// --- Friend self-serve signup (Phase 1A) ---
+// Public endpoints. Step 1: friend POSTs email → server emails 6-digit OTP.
+// Step 2: friend POSTs token + OTP → verified. Step 3: friend POSTs token +
+// Sabre creds → forwarded to apa-sabre-service /friends/add (Phase 1B).
+// Rate limit: two requests on the same email within 2 min → 1h timeout +
+// admin notification.
+
+app.post("/api/friends/signup/request", express.json(), async (req, res) => {
+  if (!signupTrackerReady) return res.status(503).json({ error: "signup unavailable" });
+  const email = String((req.body && req.body.email) || "").trim().toLowerCase();
+  const ip = getClientIp(req);
+  if (!isPlausibleEmail(email)) {
+    signupTracker.logAudit({ email, ip, outcome: "bad_email" });
+    return res.status(400).json({ error: "invalid email" });
+  }
+  const throttle = signupTracker.checkThrottle(email);
+  if (!throttle.ok) {
+    signupTracker.logAudit({ email, ip, outcome: "throttled", detail: `blocked_until=${throttle.blocked_until}` });
+    if (throttle.just_triggered && signupTracker.shouldNotifyAdmin(email)) {
+      // Fire-and-forget admin notification
+      agentmail.sendMail({
+        to: ADMIN_NOTIFY_EMAIL,
+        subject: "flight-tracker signup rate-limit triggered",
+        text: `Email ${email} hit the signup rate limit and is blocked until ${throttle.blocked_until}.\n` +
+              `Last seen IP: ${ip}\nAttempts: ${throttle.attempts || "?"}\n\n` +
+              `Check the signup_attempts_audit table or the deployed dashboard if you want full context.`,
+      }).then(() => signupTracker.markAdminNotified(email))
+        .catch(err => console.error("[signup] admin notify failed:", err.message));
+    }
+    return res.status(429).json({ error: "rate_limited", blocked_until: throttle.blocked_until });
+  }
+  let session;
+  try { session = signupTracker.createSession(email); }
+  catch (err) { return res.status(500).json({ error: err.message }); }
+  try {
+    await agentmail.sendMail({
+      to: email,
+      subject: "Your flight-tracker signup code",
+      text: `Hi —\n\nYour signup code is: ${session.otp}\n\nIt expires in 10 minutes.\n\n` +
+            `If you didn't request this, ignore the email. After 2 requests within 2 minutes ` +
+            `the email goes into a 1-hour timeout, so please don't repeat the request.\n\n` +
+            `— flight-tracker`,
+    });
+  } catch (err) {
+    console.error("[signup] email send failed:", err.message);
+    signupTracker.logAudit({ email, ip, outcome: "send_failed", detail: err.message });
+    return res.status(502).json({ error: "could_not_send_email" });
+  }
+  signupTracker.logAudit({ email, ip, outcome: "sent" });
+  res.json({ ok: true, token: session.token, expires_at: session.expires_at });
+});
+
+app.post("/api/friends/signup/verify", express.json(), (req, res) => {
+  if (!signupTrackerReady) return res.status(503).json({ error: "signup unavailable" });
+  const { token, otp } = req.body || {};
+  if (!token || !otp) return res.status(400).json({ error: "token and otp required" });
+  const ip = getClientIp(req);
+  const result = signupTracker.verifyOtp(token, otp);
+  signupTracker.logAudit({ email: result.email || "", ip, outcome: result.ok ? "verified" : "verify_fail", detail: result.reason });
+  if (!result.ok) return res.status(400).json({ error: result.reason });
+  res.json({ ok: true, email: result.email });
+});
+
+// Final step: forward Sabre creds to apa-sabre-service /friends/add. The
+// service endpoint doesn't exist yet (Phase 1B). For now we accept the
+// creds, mark the session consumed, and return a "pending_service" status
+// so the UI can show "waiting for backend".
+app.post("/api/friends/signup/submit", express.json(), async (req, res) => {
+  if (!signupTrackerReady) return res.status(503).json({ error: "signup unavailable" });
+  const { token, sabre_username, sabre_password, name } = req.body || {};
+  if (!token || !sabre_username || !sabre_password) {
+    return res.status(400).json({ error: "token, sabre_username, sabre_password required" });
+  }
+  const ip = getClientIp(req);
+  const row = signupTracker.consumeSession(token);
+  if (!row) {
+    signupTracker.logAudit({ email: "", ip, outcome: "submit_bad_session", detail: token.slice(0, 8) });
+    return res.status(400).json({ error: "invalid or unverified session" });
+  }
+  // Forward to apa-sabre-service /friends/add (Phase 1B will add this).
+  try {
+    const r = await fetch(`${apa.APA_SABRE_BASE}/friends/add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name || row.email, email: row.email, sabre_username, sabre_password }),
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      signupTracker.logAudit({ email: row.email, ip, outcome: "service_reject", detail: `${r.status}: ${txt.slice(0,120)}` });
+      return res.status(502).json({ error: "service_error", status: r.status, detail: txt.slice(0, 200) });
+    }
+    const friend = await r.json();
+    signupTracker.logAudit({ email: row.email, ip, outcome: "signed_up", detail: friend.token || "" });
+    res.json({ ok: true, friend });
+  } catch (err) {
+    signupTracker.logAudit({ email: row.email, ip, outcome: "service_unreachable", detail: err.message });
+    res.status(502).json({ error: "service_unreachable", detail: err.message });
+  }
 });
 
 // --- Friends (phase 0: read-only proxy to apa-sabre-service) ---
