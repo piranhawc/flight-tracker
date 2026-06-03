@@ -10,6 +10,7 @@ services:
       - ICS_URL=https://cal.example.com/yourcalendarid.ics
       - FA_API_KEY=<Your_FlightAware_Token>
       - LOGBOOK_PASSWORD=<set-a-real-password>
+      - FRIENDS_PASSWORD=<shared-password-all-friends-use>
       - APA_SABRE_BASE=http://192.168.128.115:8765
       - CREW_DB_PATH=/data/flight-tracker.db
       - AGENTMAIL_API_KEY=<your_agentmail_api_key>

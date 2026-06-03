@@ -17,6 +17,7 @@ const LOGBOOK_FILE = path.join(CACHE_DIR, "logbook.json");
 const COMMUTE_WEEK_FILE = path.join(CACHE_DIR, "commute-week.json");
 const CREW_FILE = path.join(CACHE_DIR, "crew.json");
 const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
+const FRIENDS_PASSWORD = process.env.FRIENDS_PASSWORD || "3238th";
 
 const apa = require("./apa-sabre-client");
 const apaLogbook = require("./apa-logbook-client");
@@ -349,7 +350,7 @@ app.post("/api/friends/signup/submit", express.json(), async (req, res) => {
 // --- Friends (phase 0: read-only proxy to apa-sabre-service) ---
 // Per-friend Sabre auth + HI lookups ship in phase 1+ on the service side.
 // For now this just surfaces the registry so the UI page can render.
-app.get("/api/friends/list", logbookAuth, async (req, res) => {
+app.get("/api/friends/list", friendsAuth, async (req, res) => {
   try {
     const data = await friends.listFriends();
     res.json({ friends: data });
@@ -1714,6 +1715,26 @@ app.post("/api/logbook/auth", express.json(), (req, res) => {
   }
   const token = crypto.randomBytes(24).toString("hex");
   logbookSessions.add(token);
+  res.json({ token });
+});
+
+// --- Friends-area auth (shared password — all friends use the same) ---
+// FRIENDS_PASSWORD unlocks /friends.html for everyone in the friends ring.
+// Mike's logbook token ALSO works here (logbook owner sees everything).
+const friendsSessions = new Set();
+function friendsAuth(req, res, next) {
+  const auth = req.headers.authorization || "";
+  const token = auth.replace(/^Bearer /, "");
+  if (token && (friendsSessions.has(token) || logbookSessions.has(token))) return next();
+  res.status(401).json({ error: "unauthorized" });
+}
+app.post("/api/friends/auth", express.json(), (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password !== FRIENDS_PASSWORD) {
+    return res.status(401).json({ error: "bad password" });
+  }
+  const token = crypto.randomBytes(24).toString("hex");
+  friendsSessions.add(token);
   res.json({ token });
 });
 
@@ -3282,5 +3303,6 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`ICS_URL: ${ICS_URL ? "configured" : "NOT SET"}`);
   console.log(`FA_API_KEY: ${FA_API_KEY ? "configured" : "NOT SET"}`);
   console.log(`Logbook: ${Object.keys(logbook.legs).length} legs, ${Object.keys(crew).length} crew · password=${LOGBOOK_PASSWORD === "logbook" ? "DEFAULT — set LOGBOOK_PASSWORD env var" : "configured"}`);
+  console.log(`Friends area password=${FRIENDS_PASSWORD === "3238th" ? "default (3238th) — set FRIENDS_PASSWORD env var to override" : "configured"}`);
   console.log(`Crew cache: ${crewCacheReady ? `ready (${crewCache.countAll()} legs) · APA service ${apa.APA_SABRE_BASE}` : "NOT INITIALIZED"}`);
 });

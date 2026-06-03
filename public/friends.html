@@ -72,7 +72,9 @@
 </div>
 
 <script>
-var token = localStorage.getItem("logbook-token") || null;
+// Separate token from the logbook so friends only know the friends password.
+// Mike's logbook token also works server-side, but the UI defaults to its own.
+var token = localStorage.getItem("friends-token") || null;
 function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
 
 async function init() {
@@ -91,7 +93,7 @@ document.getElementById("login-form").addEventListener("submit", async function(
   var pw = document.getElementById("pw").value;
   var err = document.getElementById("login-err");
   err.textContent = "";
-  var r = await fetch("/api/logbook/auth", {
+  var r = await fetch("/api/friends/auth", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ password: pw }),
@@ -99,7 +101,7 @@ document.getElementById("login-form").addEventListener("submit", async function(
   if (!r.ok) { err.textContent = "wrong password"; return; }
   var d = await r.json();
   token = d.token;
-  localStorage.setItem("logbook-token", token);
+  localStorage.setItem("friends-token", token);
   if (await loadAll()) showApp();
 });
 
@@ -111,7 +113,7 @@ function showApp() {
 async function loadAll() {
   var r = await fetch("/api/friends/list", { headers: authHeaders() });
   if (r.status === 401) {
-    localStorage.removeItem("logbook-token");
+    localStorage.removeItem("friends-token");
     token = null;
     return false;
   }
