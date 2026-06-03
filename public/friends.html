@@ -31,7 +31,8 @@
   .badge.eq { color:#7ec8ff; }
   .badge.seat { color:#ffd166; }
   .badge.base { color:#06d6a0; }
-  .tok { color:#444; font-size:9px; font-family:Menlo,monospace; }
+  .tok { color:#888; font-size:9px; font-family:Menlo,monospace; cursor:pointer; }
+  .tok:hover { color:#06d6a0; }
   .phase-hint { padding:10px 12px; background:#0a1208; border-left:2px solid #ffd166; color:#bba; font-size:10px; line-height:1.4; }
   .phase-hint b { color:#ffd166; }
 </style>
@@ -136,21 +137,33 @@ function renderFriends(list) {
     host.innerHTML = '<div class="empty">No friends registered yet. Phase 1 will surface the "Add Friend" form here.</div>';
     return;
   }
-  var rows = ['<table><thead><tr><th>Name</th><th>Emp #</th><th>Base / EQ / Seat</th><th>Token</th></tr></thead><tbody>'];
+  var rows = ['<table><thead><tr><th>Name</th><th>Emp #</th><th>Base / EQ / Seat</th><th title="Public-safe lookup handle. Phase 2+ flight-tracker uses this to query the friend\'s schedule without ever exposing creds.">Token (click to copy)</th></tr></thead><tbody>'];
   list.forEach(function(f) {
     var badges =
       '<span class="badge base">' + (f.base || "?") + '</span>' +
       '<span class="badge eq">' + (f.eq || "?") + '</span>' +
       '<span class="badge seat">' + (f.seat || "?") + '</span>';
+    var tok = f.token || "";
     rows.push("<tr>" +
       '<td><span class="name">' + (f.name || "—") + '</span></td>' +
       "<td>" + (f.emp || "—") + "</td>" +
       "<td>" + badges + "</td>" +
-      '<td class="tok">' + (f.token || "").slice(0, 8) + "…</td>" +
+      '<td class="tok" title="Click to copy full token: ' + tok + '" onclick="copyToken(\'' + tok + '\')">' + tok.slice(0, 8) + "…</td>" +
     "</tr>");
   });
   rows.push("</tbody></table>");
   host.innerHTML = rows.join("");
+}
+
+function copyToken(t) {
+  if (!t) return;
+  navigator.clipboard.writeText(t).then(function() {
+    document.getElementById("meta").textContent = "copied: " + t.slice(0, 8) + "…";
+    setTimeout(function() {
+      document.getElementById("meta").textContent = "";
+      loadAll();
+    }, 1500);
+  });
 }
 
 init();
