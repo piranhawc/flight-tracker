@@ -21,6 +21,7 @@ const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
 const apa = require("./apa-sabre-client");
 const apaLogbook = require("./apa-logbook-client");
 const crewCache = require("./crew-cache");
+const friends = require("./friends-client");
 const faTracker = require("./fa-tracker");
 let faTrackerReady = false;
 try { faTracker.init(); faTrackerReady = true; } catch (e) {
@@ -212,6 +213,18 @@ app.get("/api/fa-usage", (req, res) => {
     month_to_date: faTracker.getMonthToDateCount(),
     all_time_count: faTracker.countAll(),
   });
+});
+
+// --- Friends (phase 0: read-only proxy to apa-sabre-service) ---
+// Per-friend Sabre auth + HI lookups ship in phase 1+ on the service side.
+// For now this just surfaces the registry so the UI page can render.
+app.get("/api/friends/list", logbookAuth, async (req, res) => {
+  try {
+    const data = await friends.listFriends();
+    res.json({ friends: data });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 // --- AeroAPI: lookup flight by ident (ICAO like AAL1582) ---

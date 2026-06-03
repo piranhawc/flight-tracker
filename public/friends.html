@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Friends</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#080808; color:#ddd; font-family:Menlo,Monaco,monospace; font-size:11px; margin:0; padding:0; }
+  #top { padding:10px 14px; border-bottom:1px solid #1a1a1a; display:flex; align-items:center; justify-content:space-between; }
+  #top .title { font-size:12px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
+  #top .meta { color:#666; font-size:10px; margin-left:10px; }
+  #top .btn { background:#0e0e0e; border:1px solid #222; color:#ddd; padding:4px 10px; border-radius:2px; font-family:inherit; font-size:10px; cursor:pointer; margin-left:4px; text-decoration:none; display:inline-block; }
+  #top .btn:hover { border-color:#06d6a0; color:#06d6a0; }
+  #login { max-width:280px; margin:60px auto; padding:20px; background:#0c0c0c; border:1px solid #181818; border-radius:3px; }
+  #login h2 { font-size:12px; color:#06d6a0; letter-spacing:2px; margin:0 0 16px 0; }
+  #login input { width:100%; box-sizing:border-box; background:#080808; border:1px solid #222; color:#ddd; font-family:inherit; padding:8px; margin-bottom:10px; font-size:11px; }
+  #login button { width:100%; background:#0a2018; border:1px solid #06d6a0; color:#06d6a0; padding:8px; cursor:pointer; font-family:inherit; font-size:11px; letter-spacing:1px; }
+  #login .err { color:#f44; font-size:9px; min-height:12px; }
+  #app { display:none; padding:14px; }
+  #app.shown { display:block; }
+  .panel { background:#0c0c0c; border:1px solid #181818; border-radius:3px; padding:12px; margin-bottom:14px; }
+  .panel h2 { font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:1.5px; margin:0 0 10px 0; }
+  table { width:100%; border-collapse:collapse; font-size:11px; }
+  table th, table td { padding:6px 8px; text-align:left; border-bottom:1px solid #161616; }
+  table th { color:#888; font-weight:600; font-size:9px; letter-spacing:1px; text-transform:uppercase; }
+  table td.num { text-align:right; }
+  .empty { color:#666; font-style:italic; padding:14px 0; }
+  .name { color:#06d6a0; font-weight:700; }
+  .badge { display:inline-block; background:#1a1a1a; color:#aaa; font-size:9px; padding:1px 5px; border-radius:2px; margin-right:4px; letter-spacing:.5px; }
+  .badge.eq { color:#7ec8ff; }
+  .badge.seat { color:#ffd166; }
+  .badge.base { color:#06d6a0; }
+  .tok { color:#444; font-size:9px; font-family:Menlo,monospace; }
+  .phase-hint { padding:10px 12px; background:#0a1208; border-left:2px solid #ffd166; color:#bba; font-size:10px; line-height:1.4; }
+  .phase-hint b { color:#ffd166; }
+</style>
+</head>
+<body>
+<div id="top">
+  <div>
+    <span class="title">FRIENDS</span>
+    <span class="meta" id="meta"></span>
+  </div>
+  <div>
+    <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
+    <a class="btn" href="/logbook.html" title="Pilot logbook">📔 LOG</a>
+  </div>
+</div>
+
+<div id="login">
+  <h2>UNLOCK</h2>
+  <form id="login-form">
+    <input id="pw" type="password" placeholder="password" autofocus>
+    <button type="submit">UNLOCK</button>
+    <div id="login-err" class="err"></div>
+  </form>
+</div>
+
+<div id="app">
+  <div class="phase-hint">
+    <b>Phase 0:</b> read-only view of the friends registry. Add / remove /
+    refresh-auth controls land in <b>Phase 1</b> alongside service-side
+    per-friend Sabre login.
+  </div>
+  <div class="panel">
+    <h2>REGISTERED FRIENDS</h2>
+    <div id="friends-host"></div>
+  </div>
+</div>
+
+<script>
+var token = localStorage.getItem("logbook-token") || null;
+function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+
+async function init() {
+  if (token) {
+    if (await loadAll()) {
+      showApp();
+      return;
+    }
+  }
+  document.getElementById("login").style.display = "block";
+  document.getElementById("app").classList.remove("shown");
+}
+
+document.getElementById("login-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  var pw = document.getElementById("pw").value;
+  var err = document.getElementById("login-err");
+  err.textContent = "";
+  var r = await fetch("/api/logbook/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: pw }),
+  });
+  if (!r.ok) { err.textContent = "wrong password"; return; }
+  var d = await r.json();
+  token = d.token;
+  localStorage.setItem("logbook-token", token);
+  if (await loadAll()) showApp();
+});
+
+function showApp() {
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").classList.add("shown");
+}
+
+async function loadAll() {
+  var r = await fetch("/api/friends/list", { headers: authHeaders() });
+  if (r.status === 401) {
+    localStorage.removeItem("logbook-token");
+    token = null;
+    return false;
+  }
+  if (r.status === 502) {
+    document.getElementById("friends-host").innerHTML =
+      '<div class="empty" style="color:#f44">apa-sabre-service unreachable. Check service health.</div>';
+    document.getElementById("meta").textContent = "service offline";
+    return true;
+  }
+  if (!r.ok) {
+    document.getElementById("friends-host").innerHTML =
+      '<div class="empty" style="color:#f44">load failed (' + r.status + ')</div>';
+    return true;
+  }
+  var d = await r.json();
+  renderFriends(d.friends || []);
+  document.getElementById("meta").textContent = (d.friends || []).length + " registered";
+  return true;
+}
+
+function renderFriends(list) {
+  var host = document.getElementById("friends-host");
+  if (!list.length) {
+    host.innerHTML = '<div class="empty">No friends registered yet. Phase 1 will surface the "Add Friend" form here.</div>';
+    return;
+  }
+  var rows = ['<table><thead><tr><th>Name</th><th>Emp #</th><th>Base / EQ / Seat</th><th>Token</th></tr></thead><tbody>'];
+  list.forEach(function(f) {
+    var badges =
+      '<span class="badge base">' + (f.base || "?") + '</span>' +
+      '<span class="badge eq">' + (f.eq || "?") + '</span>' +
+      '<span class="badge seat">' + (f.seat || "?") + '</span>';
+    rows.push("<tr>" +
+      '<td><span class="name">' + (f.name || "—") + '</span></td>' +
+      "<td>" + (f.emp || "—") + "</td>" +
+      "<td>" + badges + "</td>" +
+      '<td class="tok">' + (f.token || "").slice(0, 8) + "…</td>" +
+    "</tr>");
+  });
+  rows.push("</tbody></table>");
+  host.innerHTML = rows.join("");
+}
+
+init();
+</script>
+</body>
+</html>
