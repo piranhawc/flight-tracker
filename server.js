@@ -248,18 +248,23 @@ app.post("/api/friends/signup/request", express.json(), async (req, res) => {
     signupTracker.logAudit({ email, ip, outcome: "bad_email" });
     return res.status(400).json({ error: "invalid email" });
   }
-  const throttle = signupTracker.checkThrottle(email);
+  const throttle = signupTracker.checkThrottle(ip, email);
   if (!throttle.ok) {
     signupTracker.logAudit({ email, ip, outcome: "throttled", detail: `blocked_until=${throttle.blocked_until}` });
-    if (throttle.just_triggered && signupTracker.shouldNotifyAdmin(email)) {
-      // Fire-and-forget admin notification
+    if (throttle.just_triggered && signupTracker.shouldNotifyAdmin(ip)) {
+      // Fire-and-forget admin notification — IP and the emails it tried
+      const emailList = (throttle.emails_seen || []).join(", ");
       agentmail.sendMail({
         to: ADMIN_NOTIFY_EMAIL,
         subject: "flight-tracker signup rate-limit triggered",
-        text: `Email ${email} hit the signup rate limit and is blocked until ${throttle.blocked_until}.\n` +
-              `Last seen IP: ${ip}\nAttempts: ${throttle.attempts || "?"}\n\n` +
-              `Check the signup_attempts_audit table or the deployed dashboard if you want full context.`,
-      }).then(() => signupTracker.markAdminNotified(email))
+        text: `An IP just submitted multiple different emails to the friend signup flow:\n\n` +
+              `  IP:            ${ip}\n` +
+              `  Emails tried:  ${emailList}\n` +
+              `  Blocked until: ${throttle.blocked_until}\n\n` +
+              `If this is a friend you expected, you can clear the block by deleting the IP's row from ` +
+              `signup_throttle_ip in flight-tracker.db. If it looks like abuse, leave it.\n\n` +
+              `Full per-attempt audit is in signup_attempts_audit.`,
+      }).then(() => signupTracker.markAdminNotified(ip))
         .catch(err => console.error("[signup] admin notify failed:", err.message));
     }
     return res.status(429).json({ error: "rate_limited", blocked_until: throttle.blocked_until });

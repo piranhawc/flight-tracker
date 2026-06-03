@@ -29,10 +29,11 @@ function init() {
     CREATE INDEX IF NOT EXISTS idx_signup_email ON signup_sessions(email);
     CREATE INDEX IF NOT EXISTS idx_signup_expires ON signup_sessions(expires_at);
 
-    CREATE TABLE IF NOT EXISTS signup_throttle (
-      email                 TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS signup_throttle_ip (
+      ip                    TEXT PRIMARY KEY,
+      first_attempt_at      TEXT NOT NULL,
       last_attempt_at       TEXT NOT NULL,
-      attempts_in_window    INTEGER NOT NULL DEFAULT 1,
+      emails_seen           TEXT NOT NULL,
       blocked_until         TEXT,
       notified_admin_at     TEXT
     );
@@ -59,51 +60,75 @@ const SESSION_TTL_MS = 10 * 60 * 1000;       // OTP valid for 10 min
 const THROTTLE_WINDOW_MS = 2 * 60 * 1000;    // 2 requests within 2 min triggers timeout
 const THROTTLE_BLOCK_MS = 60 * 60 * 1000;    // 1 hour timeout
 
-// Check throttle BEFORE creating a session. Returns:
-//   { ok: true } — proceed
-//   { ok: false, blocked_until, just_triggered } — reject; just_triggered=true on the call
-//     that pushed them over the limit, so caller can notify Mike
-function checkThrottle(email) {
-  if (!db) return { ok: true };
+// Rate limit by IP, not email. The abuse vector is one attacker submitting
+// many different addresses from one source; legitimate repeat requests from
+// the same email (forgotten code, etc.) are fine. The trigger is "2 DIFFERENT
+// emails from the same IP within the window" → 1-hour block on that IP.
+//
+// Returns:
+//   { ok: true }
+//   { ok: false, blocked_until, just_triggered, ip, emails_seen }
+function checkThrottle(ip, email) {
+  if (!db || !ip) return { ok: true };
   const now = new Date();
-  const row = db.prepare("SELECT * FROM signup_throttle WHERE email = ?").get(email);
+  const row = db.prepare("SELECT * FROM signup_throttle_ip WHERE ip = ?").get(ip);
+
+  // Currently blocked?
   if (row && row.blocked_until && new Date(row.blocked_until) > now) {
-    return { ok: false, blocked_until: row.blocked_until, just_triggered: false };
+    let existing;
+    try { existing = JSON.parse(row.emails_seen); } catch (e) { existing = []; }
+    return { ok: false, blocked_until: row.blocked_until, just_triggered: false, ip, emails_seen: existing };
   }
-  // Window check
-  if (row && (now.getTime() - new Date(row.last_attempt_at).getTime()) < THROTTLE_WINDOW_MS) {
-    // Inside the 2-min window — this is the trigger
-    const blocked_until = new Date(now.getTime() + THROTTLE_BLOCK_MS).toISOString();
-    const attempts = (row.attempts_in_window || 1) + 1;
-    db.prepare(`UPDATE signup_throttle SET last_attempt_at = ?, attempts_in_window = ?, blocked_until = ?
-                WHERE email = ?`).run(now.toISOString(), attempts, blocked_until, email);
-    return { ok: false, blocked_until, just_triggered: true, attempts };
+
+  // Within the 2-minute observation window?
+  if (row && (now.getTime() - new Date(row.first_attempt_at).getTime()) < THROTTLE_WINDOW_MS) {
+    let seen;
+    try { seen = JSON.parse(row.emails_seen); } catch (e) { seen = []; }
+    if (!seen.includes(email)) {
+      seen.push(email);
+      if (seen.length >= 2) {
+        // Two DIFFERENT emails inside the window — block this IP for an hour.
+        const blocked_until = new Date(now.getTime() + THROTTLE_BLOCK_MS).toISOString();
+        db.prepare(`UPDATE signup_throttle_ip SET last_attempt_at = ?, emails_seen = ?, blocked_until = ?
+                    WHERE ip = ?`).run(now.toISOString(), JSON.stringify(seen), blocked_until, ip);
+        return { ok: false, blocked_until, just_triggered: true, ip, emails_seen: seen };
+      }
+      // Same window, first appearance of this email — record and allow.
+      db.prepare(`UPDATE signup_throttle_ip SET last_attempt_at = ?, emails_seen = ? WHERE ip = ?`)
+        .run(now.toISOString(), JSON.stringify(seen), ip);
+    } else {
+      // Same email reappearing — that's the user retrying. Update last-seen, allow.
+      db.prepare(`UPDATE signup_throttle_ip SET last_attempt_at = ? WHERE ip = ?`)
+        .run(now.toISOString(), ip);
+    }
+    return { ok: true };
   }
-  // Either no prior row, or it was > THROTTLE_WINDOW_MS ago — reset window
+
+  // No prior row, or window expired — reset observation with just this email.
   if (row) {
-    db.prepare(`UPDATE signup_throttle SET last_attempt_at = ?, attempts_in_window = 1, blocked_until = NULL
-                WHERE email = ?`).run(now.toISOString(), email);
+    db.prepare(`UPDATE signup_throttle_ip SET first_attempt_at = ?, last_attempt_at = ?,
+                emails_seen = ?, blocked_until = NULL, notified_admin_at = NULL WHERE ip = ?`)
+      .run(now.toISOString(), now.toISOString(), JSON.stringify([email]), ip);
   } else {
-    db.prepare(`INSERT INTO signup_throttle (email, last_attempt_at, attempts_in_window)
-                VALUES (?, ?, 1)`).run(email, now.toISOString());
+    db.prepare(`INSERT INTO signup_throttle_ip (ip, first_attempt_at, last_attempt_at, emails_seen)
+                VALUES (?, ?, ?, ?)`).run(ip, now.toISOString(), now.toISOString(), JSON.stringify([email]));
   }
   return { ok: true };
 }
 
-function markAdminNotified(email) {
-  if (!db) return;
-  db.prepare(`UPDATE signup_throttle SET notified_admin_at = ? WHERE email = ?`)
-    .run(new Date().toISOString(), email);
+function markAdminNotified(ip) {
+  if (!db || !ip) return;
+  db.prepare(`UPDATE signup_throttle_ip SET notified_admin_at = ? WHERE ip = ?`)
+    .run(new Date().toISOString(), ip);
 }
 
-function shouldNotifyAdmin(email) {
-  if (!db) return false;
-  const row = db.prepare("SELECT notified_admin_at, blocked_until FROM signup_throttle WHERE email = ?").get(email);
+function shouldNotifyAdmin(ip) {
+  if (!db || !ip) return false;
+  const row = db.prepare("SELECT notified_admin_at, blocked_until FROM signup_throttle_ip WHERE ip = ?").get(ip);
   if (!row || !row.blocked_until) return false;
-  // Only notify once per blocked window
   if (!row.notified_admin_at) return true;
-  return new Date(row.notified_admin_at) < new Date(row.blocked_until).getTime() - THROTTLE_BLOCK_MS
-    ? true : false;
+  // Only notify once per block window
+  return new Date(row.notified_admin_at).getTime() < new Date(row.blocked_until).getTime() - THROTTLE_BLOCK_MS;
 }
 
 function createSession(email) {
@@ -155,7 +180,7 @@ function janitor() {
   if (!db) return;
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   db.prepare("DELETE FROM signup_sessions WHERE expires_at < ? OR consumed_at < ?").run(cutoff, cutoff);
-  db.prepare("DELETE FROM signup_throttle WHERE blocked_until IS NULL AND last_attempt_at < ?").run(cutoff);
+  db.prepare("DELETE FROM signup_throttle_ip WHERE blocked_until IS NULL AND last_attempt_at < ?").run(cutoff);
 }
 
 module.exports = {
