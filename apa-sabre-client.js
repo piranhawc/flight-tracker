@@ -17,9 +17,11 @@ async function getPairingCrew(ep, seq) {
 }
 
 // Reconciliation per leg: was it actually operated (vs FTG'd, dropped,
-// replaced)? Returns a Map keyed "flight-YYYY-MM-DD" → {actually_operated,
-// actual_status, note}. Returns an empty Map on any failure so the caller
-// can fall back to trusting calendar/pairing data.
+// replaced, OX'd)? Returns a Map keyed "flight-YYYY-MM-DD-DEP" → info.
+// The dep airport is part of the key so a same-flight-twice-in-a-day
+// turn (e.g. AA2348 CLT-PWM outbound + AA2348 PWM-CLT inbound on the
+// same date) is distinguishable. Returns an empty Map on any failure
+// so the caller can fall back to trusting calendar/pairing data.
 async function getPairingReconciliation(ep, seq) {
   try {
     const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}`, { signal: AbortSignal.timeout(15000) });
@@ -30,7 +32,7 @@ async function getPairingReconciliation(ep, seq) {
     const data = await r.json();
     const out = new Map();
     for (const leg of data.legs || []) {
-      const key = `${leg.flight}-${leg.date}`;
+      const key = `${leg.flight}-${leg.date}-${String(leg.dep_apt || "").toUpperCase()}`;
       out.set(key, {
         actually_operated: leg.actually_operated !== false,
         actual_status: leg.actual_status || "unknown",

@@ -2129,7 +2129,10 @@ async function reconcileExistingLogbook() {
       if (!recon || recon.size === 0) { kept += legs.length; continue; }
       for (const leg of legs) {
         const flightNum = leg.flight_number || String(leg.flight || "").replace(/^AA/i, "").replace(/^0+/, "");
-        const reconInfo = recon.get(`${flightNum}-${leg.date}`);
+        const depCode = String(leg.dep || "").toUpperCase();
+        // Try dep-aware key first (handles same-flight-twice-in-a-day turn);
+        // fall back to legacy 2-part key for tolerance during the rollout.
+        const reconInfo = recon.get(`${flightNum}-${leg.date}-${depCode}`) || recon.get(`${flightNum}-${leg.date}`);
         if (!reconInfo) { kept++; continue; }
         if (!reconInfo.actually_operated) {
           if (!leg._removed_at) {
@@ -2260,7 +2263,10 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     // If the leg already existed in the logbook, mark it removed so it
     // disappears from the default view.
     const recon = reconByTrip.get(`${parsed.ep}/${parsed.seq}`);
-    const reconInfo = recon ? recon.get(`${parsed.flight}-${parsed.date}`) : null;
+    const parsedDep = String(parsed.dep_apt || "").toUpperCase();
+    const reconInfo = recon
+      ? (recon.get(`${parsed.flight}-${parsed.date}-${parsedDep}`) || recon.get(`${parsed.flight}-${parsed.date}`))
+      : null;
     if (reconInfo && !reconInfo.actually_operated) {
       notOperated++;
       if (existing && !existing._removed_at) {
