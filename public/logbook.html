@@ -52,9 +52,9 @@
   table.legs .crew-pill { display:inline-block; padding:2px 6px; margin:1px 2px 1px 0; background:#1a1208; border:1px solid #2a1a08; color:#ffd166; border-radius:2px; font-size:9px; cursor:pointer; }
   table.legs .crew-pill:hover { background:#281a08; }
   table.legs .crew-pill.repeat { background:#0a2018; border-color:#0a4030; color:#06d6a0; }
-  table.legs .crew-pill[data-seat="FA"] { background:#0a1820; border-color:#0a3040; color:#7ec8ff; }
-  table.legs .crew-pill[data-seat="FA"]:hover { background:#0a2438; }
-  table.legs .crew-pill[data-seat="FA"].repeat { background:#0a2018; border-color:#0a4030; color:#06d6a0; }
+  /* FA pills use the same yellow base as pilots — yellow = "currently flying
+     with this person" across the whole trip. Green .repeat overlay below
+     still kicks in if the FA was on a PRIOR trip. */
   table.legs .crew-edit { background:#080808; border:1px solid #222; color:#ddd; padding:3px 6px; font-size:9px; font-family:inherit; width:100%; border-radius:2px; }
   table.legs .badge-dh { background:#222; color:#888; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; }
   table.legs .badge-upcoming { background:#1a1208; color:#ffd166; font-size:8px; padding:1px 4px; border-radius:2px; margin-left:4px; letter-spacing:.5px; font-weight:700; }
@@ -91,7 +91,7 @@
     <span class="meta" id="meta-info"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version">v2026-06-03.10</span>
+    <span class="meta" title="Build version">v2026-06-08.1</span>
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <span class="meta" id="apa-stats-summary" style="display:none"></span>
     <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
@@ -170,7 +170,9 @@ function displayNameForCrew(rawName) {
   var bareNum = /^0?(\d{1,2})$/.exec(seatDisplay);
   if (bareNum) seatDisplay = "FA" + bareNum[1];
   var isFA = isFASeat(parts.seat);
-  var color = isFA ? "#7ec8ff" : "#06d6a0";
+  // Seat-label color: pilots in green, FAs in yellow (matches the pill base
+  // colors set in the table CSS — yellow means "currently on this trip").
+  var color = isFA ? "#ffd166" : "#06d6a0";
   return '<span style="color:' + color + ';font-weight:700;margin-right:4px">' + seatDisplay + '</span>' + name;
 }
 function setStatus(msg, color) {

@@ -2295,9 +2295,11 @@ async function reconcileExistingLogbook() {
       for (const leg of legs) {
         const flightNum = leg.flight_number || String(leg.flight || "").replace(/^AA/i, "").replace(/^0+/, "");
         const depCode = String(leg.dep || "").toUpperCase();
-        // Try dep-aware key first (handles same-flight-twice-in-a-day turn);
-        // fall back to legacy 2-part key for tolerance during the rollout.
-        const reconInfo = recon.get(`${flightNum}-${leg.date}-${depCode}`) || recon.get(`${flightNum}-${leg.date}`);
+        // Key by (flight, dep_apt) only — date excluded because calendar
+        // ICS uses local date while apa-sabre uses pairing-day date and
+        // they can drift by 1 day for evening flights (e.g. pairing 9832
+        // logged 5-2/5-3 in the calendar but Sabre had 5-3/5-4).
+        const reconInfo = recon.get(`${flightNum}-${depCode}`);
         if (!reconInfo) { kept++; continue; }
         if (!reconInfo.actually_operated) {
           if (!leg._removed_at) {
@@ -2429,9 +2431,9 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     // disappears from the default view.
     const recon = reconByTrip.get(`${parsed.ep}/${parsed.seq}`);
     const parsedDep = String(parsed.dep_apt || "").toUpperCase();
-    const reconInfo = recon
-      ? (recon.get(`${parsed.flight}-${parsed.date}-${parsedDep}`) || recon.get(`${parsed.flight}-${parsed.date}`))
-      : null;
+    // (flight, dep_apt) — date excluded so calendar/Sabre date drift
+    // doesn't break the lookup. See notes in apa-sabre-client.js.
+    const reconInfo = recon ? recon.get(`${parsed.flight}-${parsedDep}`) : null;
     if (reconInfo && !reconInfo.actually_operated) {
       notOperated++;
       if (existing && !existing._removed_at) {

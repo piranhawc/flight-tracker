@@ -17,11 +17,13 @@ async function getPairingCrew(ep, seq) {
 }
 
 // Reconciliation per leg: was it actually operated (vs FTG'd, dropped,
-// replaced, OX'd)? Returns a Map keyed "flight-YYYY-MM-DD-DEP" → info.
-// The dep airport is part of the key so a same-flight-twice-in-a-day
-// turn (e.g. AA2348 CLT-PWM outbound + AA2348 PWM-CLT inbound on the
-// same date) is distinguishable. Returns an empty Map on any failure
-// so the caller can fall back to trusting calendar/pairing data.
+// replaced, OX'd)? Returns a Map keyed "flight-DEP" — date deliberately
+// excluded because the calendar ICS uses local departure date while
+// apa-sabre uses pairing-day date, which can drift by 1 day for evening
+// flights. Within a single pairing, (flight, dep_apt) is uniquely
+// identifying — the AA2348 CLT-PWM/PWM-CLT turn case works because the
+// dep airports differ. Returns an empty Map on any failure so the
+// caller can fall back to trusting calendar/pairing data.
 async function getPairingReconciliation(ep, seq) {
   try {
     const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}`, { signal: AbortSignal.timeout(15000) });
@@ -32,11 +34,12 @@ async function getPairingReconciliation(ep, seq) {
     const data = await r.json();
     const out = new Map();
     for (const leg of data.legs || []) {
-      const key = `${leg.flight}-${leg.date}-${String(leg.dep_apt || "").toUpperCase()}`;
+      const key = `${leg.flight}-${String(leg.dep_apt || "").toUpperCase()}`;
       out.set(key, {
         actually_operated: leg.actually_operated !== false,
         actual_status: leg.actual_status || "unknown",
         note: leg.reconciliation_note || "",
+        sabre_date: leg.date,  // kept for debugging when calendar/sabre dates drift
       });
     }
     return out;
