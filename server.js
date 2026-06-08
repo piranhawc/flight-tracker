@@ -1763,9 +1763,22 @@ function lbTitleCase(s) {
 }
 function apaCrewToDisplayName(c) {
   const first = c.nickname || c.first_name || "";
-  const last = (c.name || "").split(" ")[0];
+  // Sabre crew name format is "LASTNAME [LASTNAME2 ...] INITIALS" — the
+  // last whitespace-separated token is initials (1-3 capitals). For
+  // multi-word last names like "EL KASSABANY AM" we need to keep both
+  // "EL" and "KASSABANY", not just the first word.
+  const rawName = (c.name || "").trim();
+  let last = rawName;
+  if (rawName) {
+    const parts = rawName.split(/\s+/);
+    if (parts.length > 1 && /^[A-Z]{1,3}$/.test(parts[parts.length - 1])) {
+      last = parts.slice(0, -1).join(" ");
+    } else {
+      last = parts[0];
+    }
+  }
   if (first && last) return lbTitleCase(first) + " " + lbTitleCase(last);
-  return c.name || "";
+  return rawName || "";
 }
 function normalizeLogbookLegKey(leg) {
   if (!leg || (!leg.flight && !leg.flight_number) || !leg.date) return null;
