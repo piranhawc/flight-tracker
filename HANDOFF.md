@@ -40,6 +40,14 @@ edit `~/apa-sabre-service/`, reload via the LaunchDaemon.
 | Soft-delete of bad logbook entries | flight-tracker | DB writes |
 | ICS file generation for Apple Calendar | A script on the Mac mini (`~/.openclaw/scripts/apa_trips_to_ics.py`) writes the ICS and scp's to Unraid | Predates flight-tracker; works well |
 
+> **Scheduling update (June 11, 2026):** the ICS script is now driven by
+> **mikeg's crontab every 15 minutes** (`*/15 * * * *`). The old root
+> LaunchDaemon `com.mikeg.apa-trips` was retired (plist moved to
+> `~/disabled-launchdaemons/`) — its scp had silently failed forever
+> because root on the mini never had Unraid's host key. HI1/HI3 cache
+> TTL on the service is now 15 min (HI2 stays 1 hour), so a trip drop
+> or premium pickup reaches the calendar in ≤ ~30 min worst case.
+
 If you find yourself needing to add a parser to flight-tracker for
 Sabre data — pause. Almost certainly the right move is to add or
 extend an endpoint on the service. The service is the only thing that
