@@ -1987,7 +1987,9 @@ function bareCrewName(s) {
 app.get("/api/logbook/crew", logbookAuth, (req, res) => {
   const stats = {};
   const seatsByName = {};
-  Object.values(logbook.legs).forEach(leg => {
+  // Removed legs (FTG'd, dropped, reassigned) don't count as having flown
+  // with someone — same filter as /api/logbook/legs.
+  Object.values(logbook.legs).filter(l => !l._removed_at && l.isDH !== true).forEach(leg => {
     (leg.crew || []).forEach(rawName => {
       const name = bareCrewName(rawName);
       if (!name) return;
