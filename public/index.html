@@ -703,8 +703,11 @@ function drawTestFlight() {
   }
 
   var lp = position ? position.last_position : null;
+  var isArrived = !!flight && (flight.progress_percent >= 100 || !!flight.actual_in);
   if (lp && lp.latitude) {
-    var hdg = lp.heading || 0;
+    // Plane marker at the last known position. For an arrived flight this
+    // is where it blocked in — keep showing it parked at the gate.
+    var hdg = isArrived ? 0 : (lp.heading || 0);
     planeMarker = L.marker([lp.latitude, lp.longitude], {
       icon: L.divIcon({
         className: "",
@@ -713,7 +716,8 @@ function drawTestFlight() {
       })
     }).addTo(map);
     bounds.push([lp.latitude, lp.longitude]);
-
+  }
+  if (lp && lp.latitude && !isArrived) {
     var li = document.getElementById("live-info");
     li.style.display = "block";
     document.getElementById("live-ident").innerHTML = ((testMode && testMode._displayIdent) || flight.ident_iata || flight.ident) + '<span class="tracking-badge">LIVE</span>';
@@ -723,13 +727,13 @@ function drawTestFlight() {
       "GS: " + lp.groundspeed + "kts · Hdg: " + lp.heading + "°<br>" +
       "Progress: " + flight.progress_percent + "%";
   } else if (flight) {
-    // Pre-departure OR arrived: show flight info without position
+    // Pre-departure OR arrived: show flight info (arrived may still have a
+    // parked position drawn above)
     var li = document.getElementById("live-info");
     li.style.display = "block";
     var statusText = flight.status || "Scheduled";
     var badgeColor = "#666";
     var badgeLabel = "PRE-DEP";
-    var isArrived = flight.progress_percent >= 100 || flight.actual_in;
     if (isArrived) { badgeLabel = "ARRIVED"; badgeColor = "#06d6a0"; }
     else if (statusText.indexOf("Taxi") >= 0 || flight.actual_out) { badgeLabel = "TAXI"; badgeColor = "#ffd166"; }
     if (flight.progress_percent > 0 && flight.progress_percent < 100) { badgeLabel = "LIVE"; badgeColor = "#e63946"; }
@@ -936,12 +940,16 @@ function drawTestFlight() {
     inboundAtOrigin = Math.sqrt(dLat2*dLat2*111*111 + dLon2*dLon2*85*85) < 30;
   }
 
-  if (hasLivePos && bounds.length) {
+  if (isArrivedFlight && gateLat !== null) {
+    // Terminated — zoom straight to where it blocked in, not the route.
+    map.setView([gateLat, gateLon], 17);
+  } else if (hasLivePos && bounds.length && !isArrivedFlight) {
     // En-route or taxiing — fit the bounds (route + plane), but if we also
     // have a gate chip, allow zoom 17 so the user sees the plane settle.
     map.fitBounds(bounds, {padding:[50,50], maxZoom: gateLat !== null ? 17 : 16});
-  } else if (isArrivedFlight && gateLat !== null) {
-    map.setView([gateLat, gateLon], 17);
+  } else if (isArrivedFlight && lp && lp.latitude) {
+    // No gate chip but we do have the parked position — center on it.
+    map.setView([lp.latitude, lp.longitude], 17);
   } else if (isArrivedFlight && flight.destination) {
     var dCode = flight.destination.code_iata;
     if (AP[dCode]) map.setView([AP[dCode].lat, AP[dCode].lon], 16);
@@ -1076,35 +1084,45 @@ async function loadFlights() {
   }
 }
 
+function legTrackKey(l) { return l.num + "|" + l.start; }
+
 async function checkActiveLeg(legs) {
   var now = new Date();
-  var PRE_DEPART_MS = 45 * 60 * 1000;       // tight active window: 45 min before
-  var POST_ARRIVE_MS = 30 * 60 * 1000;      // ...to 30 min after scheduled arrival
+  var PRE_DEPART_MS = 45 * 60 * 1000;        // tight active window: 45 min before
+  var POST_ARRIVE_MS = 30 * 60 * 1000;       // ...to 30 min after scheduled arrival
+  var SWITCH_NEXT_MS = 2 * 60 * 60 * 1000;   // hand over to the next leg 2 hr before its departure
+  var SHOW_ARRIVED_MS = 6 * 60 * 60 * 1000;  // keep the terminated leg's gate view up to 6 hr
   var FAR_LOOKAHEAD_MS = 8 * 60 * 60 * 1000; // fall back to next leg within ~8 hr
 
   var sorted = legs.slice().sort(function(a, b) {
     return new Date(a.start) - new Date(b.start);
   });
 
-  // Tight active window first. If we already have testMode showing the
-  // flight as arrived (actual_in set), that one's done — don't re-pick it.
+  // Tight active window first.
   var active = sorted.find(function(l) {
     if (l.isDH) return false;
-    if (testMode && testMode.flight && testMode.flight.actual_in &&
-        String(testMode.flight.flight_number) === String(l.num)) return false;
     var s = new Date(l.start), e = new Date(l.end);
     return now >= new Date(s.getTime() - PRE_DEPART_MS) &&
            now <= new Date(e.getTime() + POST_ARRIVE_MS);
   });
 
-  // Fall back to the next non-DH leg within the lookahead window so the
-  // tracker shows tonight's flight even when it's still hours away.
+  // Between legs: keep showing the just-terminated flight parked at its
+  // arrival gate, and hand over to the next leg ~2 hr before departure.
   if (!active) {
-    active = sorted.find(function(l) {
-      if (l.isDH) return false;
-      var s = new Date(l.start);
-      return s > now && (s.getTime() - now.getTime() < FAR_LOOKAHEAD_MS);
+    var next = sorted.find(function(l) {
+      return !l.isDH && new Date(l.start) > now;
     });
+    var prev = null;
+    for (var i = sorted.length - 1; i >= 0; i--) {
+      if (!sorted[i].isDH && new Date(sorted[i].end) <= now) { prev = sorted[i]; break; }
+    }
+    if (next && new Date(next.start).getTime() - now.getTime() < SWITCH_NEXT_MS) {
+      active = next;
+    } else if (prev && now.getTime() - new Date(prev.end).getTime() < SHOW_ARRIVED_MS) {
+      active = prev;
+    } else if (next && new Date(next.start).getTime() - now.getTime() < FAR_LOOKAHEAD_MS) {
+      active = next;
+    }
   }
 
   if (!active) {
@@ -1117,6 +1135,13 @@ async function checkActiveLeg(legs) {
     return;
   }
 
+  var key = legTrackKey(active);
+  if (key !== currentLegKey) { currentLegKey = key; arrivedFirstSeenAt = null; }
+  // Already settled at the arrival gate — the display is static, so don't
+  // burn FA quota re-fetching. The 5-min loadFlights cycle re-runs this
+  // check and switches legs when the next departure gets close.
+  if (key === settledLegKey && testMode && testMode.flight && testMode.flight.actual_in) return;
+
   await fetchAndShowActive(active);
 }
 
@@ -1124,9 +1149,14 @@ async function checkActiveLeg(legs) {
 // keep polling for ~3 min after arrival to capture a stable gate position.
 // Resets back to null whenever a poll shows the flight not-yet-arrived.
 var arrivedFirstSeenAt = null;
+// Which leg is currently displayed, and which leg has settled at its
+// arrival gate (no more fetching needed — display stays until handover).
+var currentLegKey = null;
+var settledLegKey = null;
 
 async function fetchAndShowActive(active) {
-  var routeQuery = "?dep=" + encodeURIComponent(active.dep) + "&arr=" + encodeURIComponent(active.arr);
+  var routeQuery = "?dep=" + encodeURIComponent(active.dep) + "&arr=" + encodeURIComponent(active.arr) +
+    "&start=" + encodeURIComponent(new Date(active.start).toISOString());
   var done = false;
   try {
     var resp = await fetch("/api/track/" + active.num + routeQuery);
@@ -1144,8 +1174,11 @@ async function fetchAndShowActive(active) {
           if (!arrivedFirstSeenAt) arrivedFirstSeenAt = Date.now();
           // Keep polling for 3 min post-arrival so the plane settles at the
           // gate and we get a stable position for the chip + auto-learn.
+          // Then mark the leg settled — checkActiveLeg keeps the gate view
+          // on screen without re-fetching until the next leg takes over.
           if (Date.now() - arrivedFirstSeenAt > 3 * 60 * 1000) {
             done = true;
+            settledLegKey = legTrackKey(active);
             if (liveInterval) { clearTimeout(liveInterval); clearInterval(liveInterval); liveInterval = null; }
           }
         } else {

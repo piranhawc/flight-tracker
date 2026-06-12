@@ -434,6 +434,24 @@ app.get("/api/track/:flightNum", async (req, res) => {
       }
     }
 
+    // If the caller passed the leg's scheduled departure, lock onto the FA
+    // instance closest to it. AA reuses flight numbers daily, so the 24h
+    // "upcoming" window below would otherwise roll over to TOMORROW's
+    // instance once today's flight terminated — showing PRE-DEP for a
+    // flight the user already completed.
+    const reqStartMs = req.query.start ? new Date(req.query.start).getTime() : NaN;
+    if (!isNaN(reqStartMs)) {
+      const dated = candidates
+        .filter(f => !f.cancelled && (f.scheduled_out || f.scheduled_off))
+        .map(f => ({ f, diff: Math.abs(new Date(f.scheduled_out || f.scheduled_off).getTime() - reqStartMs) }))
+        .filter(x => x.diff < 12 * 60 * 60 * 1000)
+        .sort((a, b) => a.diff - b.diff);
+      if (dated.length) {
+        candidates = [dated[0].f];
+        console.log(`Track AAL${req.params.flightNum}: locked to instance ${dated[0].f.fa_flight_id} (${Math.round(dated[0].diff / 60000)} min from requested start)`);
+      }
+    }
+
     // Priority:
     // 1) Currently en-route (has position data, 0 < progress < 100)
     // 2) Very recently arrived (within last 30 min) - transponder still on
