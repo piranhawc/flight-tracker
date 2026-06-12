@@ -2247,27 +2247,35 @@ function parseCalendarEvent(event) {
   };
 }
 
+// status: "operating"  — user confirmed at a pilot seat (CA/FO/RC) on this leg
+//         "deadhead"   — crew is known and the user is NOT at a pilot seat
+//         "unknown"    — no crew data for this leg yet (don't log, don't purge)
 function getCrewForCalendarLeg(parsed) {
-  if (!crewCacheReady || !parsed) return { crew: [], isDeadhead: false };
+  if (!crewCacheReady || !parsed) return { crew: [], status: "unknown" };
   // Disambiguate by dep/arr — same flight number can have multiple legs on
   // the same date (out-and-back), and the pure (flight, date) lookup would
   // grab whichever row sqlite returned first.
   const cacheRows = crewCache.getLegByFlight(parsed.flight, parsed.date, parsed.dep_apt, parsed.arr_apt);
-  if (cacheRows.length === 0) return { crew: [], isDeadhead: false };
+  if (cacheRows.length === 0) return { crew: [], status: "unknown" };
   const row = cacheRows[0];
   // Accumulate crew through the pairing up to this leg.
   const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
-  if (!crewRows.length) return { crew: [], isDeadhead: false };
+  if (!crewRows.length) return { crew: [], status: "unknown" };
 
-  // Deadhead detection: user not in accumulated operating crew.
-  const userInCrew = crewRows.some(c => String(c.emp_num || "") === LOGBOOK_USER_EMP_NUM);
-  if (!userInCrew) return { crew: [], isDeadhead: true };
+  // Operating check: the user must hold a pilot seat (CA/FO/RC) on THIS
+  // leg. Merely appearing somewhere in the crew list (deadheading,
+  // jumpseating, a stale snapshot from before a reassignment) doesn't
+  // count — scheduled deadheads must never reach the logbook.
+  const userOperating = crewRows.some(c =>
+    String(c.emp_num || "") === LOGBOOK_USER_EMP_NUM &&
+    PILOT_SEATS.has(String(c.seat || "").toUpperCase()));
+  if (!userOperating) return { crew: [], status: "deadhead" };
 
   // Include FAs in the logbook entry — the auto-log path is private (only
   // writes to /data/logbook.json) so this is the right place to capture them.
   return {
     crew: getApaCrewForLogbookLeg({ flight_number: parsed.flight, date: parsed.date, dep: parsed.dep_apt, arr: parsed.arr_apt }),
-    isDeadhead: false,
+    status: "operating",
   };
 }
 
@@ -2436,7 +2444,13 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
       if (userTouched) { skipped++; continue; }
     }
 
-    if (parsed.isDH) { deadhead++; continue; }
+    if (parsed.isDH) {
+      deadhead++;
+      // A prior run may have logged this leg before the calendar showed
+      // (DH). Flag it so purgeDeadheadsFromLogbook() below removes it.
+      if (existing && existing._auto_filled) existing.isDH = true;
+      continue;
+    }
 
     // Reconciliation check: if Sabre HI says this leg wasn't actually
     // operated (FTG, dropped, replaced, admin), skip the write entirely.
@@ -2457,8 +2471,21 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
       continue;
     }
 
-    const { crew, isDeadhead } = getCrewForCalendarLeg(parsed);
-    if (isDeadhead) { deadhead++; continue; }
+    const { crew, status } = getCrewForCalendarLeg(parsed);
+    if (status === "deadhead") {
+      deadhead++;
+      // Crew snapshot may have been stale (pre-reassignment) when an
+      // earlier run logged this leg — flag it so the purge below removes it.
+      if (existing && existing._auto_filled) existing.isDH = true;
+      continue;
+    }
+    if (status === "unknown") {
+      // No crew data yet — can't confirm the user is at a pilot seat, so
+      // don't log. The 30-min poller retries once the cache fills in, and
+      // the APA backfill catches anything that ages out of Sabre's window.
+      no_crew++;
+      continue;
+    }
 
     const legRecord = {
       id: parsed.leg_id,
