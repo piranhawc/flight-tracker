@@ -1013,11 +1013,11 @@ app.get("/api/gate", async (req, res) => {
     return res.json({ lat: o.lat, lon: o.lon, ref: gateUpper, source: "override" });
   }
 
-  // 2) Authoritative seed data shipped with the project (e.g., CDA-published
-  //    gate positions for ORD).
+  // 2) Authoritative seed data shipped with the project — operator/government
+  //    GIS layers fetched by scripts/fetch-gate-seeds.js (see gate-sources.json).
   if (gateSeed[airportKey] && gateSeed[airportKey][gateUpper]) {
     const s = gateSeed[airportKey][gateUpper];
-    return res.json({ lat: s.lat, lon: s.lon, ref: gateUpper, source: "cda" });
+    return res.json({ lat: s.lat, lon: s.lon, ref: gateUpper, source: "seed" });
   }
 
   // 3) Learned from observations

@@ -1,0 +1,89 @@
+{
+  "_comment": "Authoritative gate-layer sources used by scripts/fetch-gate-seeds.js to build gates-seed.json. Each entry is a publicly queryable (anonymous) ArcGIS REST layer published by the airport operator or a government GIS. geometry: 'point' reads geometry.x/y, 'polygon-centroid' queries with returnCentroid=true. strip_prefix is removed from the start of gate codes (case-insensitive). researched_not_found records airports checked for a public layer with no usable result, so the gate-seed-scout routine doesn't re-research them more than ~6 months.",
+  "sources": [
+    {
+      "iata": "ORD",
+      "icao": "KORD",
+      "publisher": "Chicago Department of Aviation (Chicago_Ohare_Gates feature service)",
+      "static": true,
+      "note": "Shipped with the original seed; no refetch — the source service was an Esri aviation-community mirror and the baked data is verified good."
+    },
+    {
+      "iata": "DFW",
+      "icao": "KDFW",
+      "publisher": "DFW Airport ArcGIS Online org (gis@dfwairport.com)",
+      "url": "https://services8.arcgis.com/0J6dOvmb0GFDZ7sY/arcgis/rest/services/Airport_Gates/FeatureServer/0",
+      "gate_field": "gate",
+      "geometry": "point",
+      "center": { "lat": 32.8998, "lon": -97.0403 }
+    },
+    {
+      "iata": "CLT",
+      "icao": "KCLT",
+      "publisher": "HNTB Corp AGO org (CLT program management; backs CLT's public gate-closure dashboard)",
+      "url": "https://services.arcgis.com/rD2ylXRs80UroD90/arcgis/rest/services/CLT_Gates__update_BCview_459e2838f8a64377b9510db51e14d3d8/FeatureServer/0",
+      "gate_field": "GateNumber",
+      "geometry": "polygon-centroid",
+      "center": { "lat": 35.214, "lon": -80.9431 },
+      "note": "Gates duplicated across construction phases; fetcher medians duplicates per gate code. View-hash URL may churn."
+    },
+    {
+      "iata": "ATL",
+      "icao": "KATL",
+      "publisher": "City of College Park, GA GIS (only government-published ATL gate layer)",
+      "url": "https://services7.arcgis.com/snkPZPJHBqHjJ0On/arcgis/rest/services/Airport_Gates/FeatureServer/0",
+      "gate_field": "Gate",
+      "geometry": "point",
+      "center": { "lat": 33.6407, "lon": -84.4277 }
+    },
+    {
+      "iata": "DEN",
+      "icao": "KDEN",
+      "publisher": "Denver International Airport Open GIS Data hub",
+      "url": "https://services7.arcgis.com/chFtbDhOWTyv6vVj/arcgis/rest/services/Aircraft_Gate_Area/FeatureServer/0",
+      "gate_field": "GateId",
+      "geometry": "polygon-centroid",
+      "center": { "lat": 39.8561, "lon": -104.6737 }
+    },
+    {
+      "iata": "IAH",
+      "icao": "KIAH",
+      "publisher": "Houston Airport System AGO org (IAH_Points_of_Interest)",
+      "url": "https://services2.arcgis.com/6abozLJF4LTuHUD6/arcgis/rest/services/IAH_Points_of_Interest/FeatureServer/0",
+      "gate_field": "Name",
+      "geometry": "point",
+      "where": "Category='Gate'",
+      "strip_prefix": "Gate ",
+      "center": { "lat": 29.9902, "lon": -95.3368 }
+    },
+    {
+      "iata": "TPA",
+      "icao": "KTPA",
+      "publisher": "Hillsborough County Aviation Authority (flytpa AGO org, Aircraft Parking layer)",
+      "url": "https://services5.arcgis.com/YTApDBs0YanBdxkq/arcgis/rest/services/Gate_Map_Tool_Layer_Public/FeatureServer/0",
+      "gate_field": "Gate",
+      "geometry": "polygon-centroid",
+      "center": { "lat": 27.9755, "lon": -82.5332 }
+    }
+  ],
+  "researched_not_found": [
+    { "iata": "DCA", "date": "2026-06-12", "note": "MWAA ArcGIS is token-gated; public map is Pointr (proprietary)" },
+    { "iata": "PHL", "date": "2026-06-12", "note": "Gate data in internal ArcGIS Enterprise (GAMA); city org has buildings only" },
+    { "iata": "LGA", "date": "2026-06-12", "note": "PANYNJ LGA_Floorplan_POI_View exists but token-gated" },
+    { "iata": "JFK", "date": "2026-06-12", "note": "PANYNJ JFK_Floorplan_POI_View exists but token-gated" },
+    { "iata": "PHX", "date": "2026-06-12", "note": "No GIS gate layer; public map is LocusLabs/Atrius" },
+    { "iata": "MIA", "date": "2026-06-12", "note": "Miami-Dade publishes aviation boundary/runway layers only; Indoors internal" },
+    { "iata": "PIT", "date": "2026-06-12", "note": "ACAA digital twin internal; public map is Pointr/AOC DMS" },
+    { "iata": "BOS", "date": "2026-06-12", "note": "Massport hub 401s; no public gate services; map is Pointr" },
+    { "iata": "MSY", "date": "2026-06-12", "note": "No NOAB GIS org; city GIS has no airport layers; map is Atrius/LocusLabs" },
+    { "iata": "STL", "date": "2026-06-12", "note": "City GIS servers unreachable publicly; flystl map is LocusLabs" },
+    { "iata": "JAX", "date": "2026-06-12", "note": "JAA map backend uses pixel coords on indoor images — no geo coords" },
+    { "iata": "MSP", "date": "2026-06-12", "note": "MAC Gates FeatureServer exists but token-gated" },
+    { "iata": "ANC", "date": "2026-06-12", "note": "AKDOT org has boundaries/aprons for rural airports; no ANC gates" },
+    { "iata": "LAX", "date": "2026-06-12", "note": "LAWA org has only gate-label annotation glyphs (no IDs) and a non-spatial lounge table" },
+    { "iata": "SFO", "date": "2026-06-12", "note": "SFO Geo Center items point at internal host (sfo-dcgis02.flysfo.com, no public DNS); DataSF gate dataset has no coords" },
+    { "iata": "SAN", "date": "2026-06-12", "note": "SDCRAA publishes ALUCP land-use layers only" },
+    { "iata": "AUS", "date": "2026-06-12", "note": "City of Austin has 2001 planimetric polylines only, no gate attributes" },
+    { "iata": "LAS", "date": "2026-06-12", "note": "Clark County GIS/DOA shapefile bundle has airfield/noise layers, no gates" }
+  ]
+}
