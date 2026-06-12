@@ -19,6 +19,12 @@ const CREW_FILE = path.join(CACHE_DIR, "crew.json");
 const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
 const FRIENDS_PASSWORD = process.env.FRIENDS_PASSWORD || "3238th";
 
+// Home Assistant arrival fix (optional). All three must point at a reachable
+// HA instance for the phone-position gate signal to activate.
+const HA_URL = (process.env.HA_URL || "").replace(/\/+$/, "");
+const HA_TOKEN = process.env.HA_TOKEN || "";
+const HA_ENTITY = process.env.HA_ENTITY || "person.mike_goebel";
+
 const apa = require("./apa-sabre-client");
 const apaLogbook = require("./apa-logbook-client");
 const crewCache = require("./crew-cache");
@@ -548,6 +554,17 @@ app.get("/api/track/:flightNum", async (req, res) => {
       }
     }
 
+    // Third gate signal: the user's phone via Home Assistant (optional —
+    // needs HA_URL + HA_TOKEN). Most useful when FA loses the aircraft on
+    // taxi-in at a never-visited airport. Fire-and-forget.
+    if (target.actual_in && target.gate_destination) {
+      const dk2 = target.destination && (target.destination.code_iata || target.destination.code);
+      const lp2 = position && position.last_position;
+      const faAnchor = lp2 && lp2.latitude != null &&
+        (typeof lp2.groundspeed !== "number" || lp2.groundspeed < 8) ? lp2 : null;
+      if (dk2) sampleHaArrivalFix(dk2, target.gate_destination, faAnchor, target.actual_in).catch(() => {});
+    }
+
     res.json({
       flight: target,
       position,
@@ -999,6 +1016,83 @@ function findOsmGate(airportData, gateUpper) {
     if (numMatch.length) return numMatch.find(g => g.kind === "parking_position") || numMatch[0];
   }
   return airportData.gates.find(g => g.ref.toUpperCase().includes(gateUpper)) || null;
+}
+
+// --- Home Assistant arrival fix ---
+// Optional third gate-position signal: the user's phone, via the HA person
+// entity. Polled (throttled) while the frontend does its post-arrival
+// /api/track cycle. The phone often gets its first good fix right when
+// airplane mode comes off at the gate — but it can also be stale or coarse,
+// so a sample must clear ALL of these before it reaches learnGatePosition:
+//   - gps_accuracy <= 50 m (kills cell/wifi-tower locks)
+//   - fix timestamp AFTER block-in (kills the stale pre-flight position)
+//   - within 15 min of block-in (after that it's the terminal walk)
+//   - within 300 m of an anchor: FA's parked position, or an already-known
+//     coordinate for that gate (override/seed/learned; 500 m for OSM).
+//     No anchor → no sample. We never seed a gate from the phone alone.
+// learnGatePosition's median + outlier rejection is the final backstop.
+function distMeters(lat1, lon1, lat2, lon2) {
+  const dLat = (lat1 - lat2) * 111000;
+  const dLon = (lon1 - lon2) * 111000 * Math.cos((lat1 * Math.PI) / 180);
+  return Math.sqrt(dLat * dLat + dLon * dLon);
+}
+
+function knownGateCoord(airportKey, gateCode) {
+  if (gateOverrides[airportKey] && gateOverrides[airportKey][gateCode]) {
+    return { ...gateOverrides[airportKey][gateCode], radius: 300 };
+  }
+  if (gateSeed[airportKey] && gateSeed[airportKey][gateCode]) {
+    return { ...gateSeed[airportKey][gateCode], radius: 300 };
+  }
+  const learned = gateLearned[airportKey] && gateLearned[airportKey][gateCode];
+  if (learned && learned.samples && learned.samples.length) {
+    return { ...medianPos(learned.samples), radius: 300 };
+  }
+  const osm = gateCache[airportKey] && findOsmGate(gateCache[airportKey], gateCode);
+  if (osm) return { lat: osm.lat, lon: osm.lon, radius: 500 };
+  return null;
+}
+
+const haSampleTimes = {}; // "APT-GATE" → last attempt ms (throttle)
+async function sampleHaArrivalFix(airportKey, gateCode, faAnchor, actualInIso) {
+  if (!HA_URL || !HA_TOKEN || !airportKey || !gateCode) return;
+  const ak = String(airportKey).toUpperCase();
+  const gk = String(gateCode).toUpperCase().trim();
+  const inMs = new Date(actualInIso).getTime();
+  if (isNaN(inMs) || Date.now() - inMs > 15 * 60 * 1000) return;
+  const tk = ak + "-" + gk;
+  if (haSampleTimes[tk] && Date.now() - haSampleTimes[tk] < 55 * 1000) return;
+  haSampleTimes[tk] = Date.now();
+  try {
+    const resp = await fetch(`${HA_URL}/api/states/${HA_ENTITY}`, {
+      headers: { Authorization: `Bearer ${HA_TOKEN}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) { console.log(`[ha-fix] HA returned ${resp.status}`); return; }
+    const st = await resp.json();
+    const a = st.attributes || {};
+    if (a.latitude == null || a.longitude == null) return;
+    if (typeof a.gps_accuracy !== "number" || a.gps_accuracy > 50) {
+      console.log(`[ha-fix] ${tk}: rejected — accuracy ${a.gps_accuracy == null ? "unknown" : Math.round(a.gps_accuracy) + "m"}`);
+      return;
+    }
+    const fixMs = new Date(st.last_updated || 0).getTime();
+    if (!fixMs || fixMs <= inMs) {
+      console.log(`[ha-fix] ${tk}: rejected — fix predates block-in`);
+      return;
+    }
+    let anchor = faAnchor ? { lat: faAnchor.latitude, lon: faAnchor.longitude, radius: 300 } : knownGateCoord(ak, gk);
+    if (!anchor) { console.log(`[ha-fix] ${tk}: no anchor available, skipping`); return; }
+    const d = distMeters(a.latitude, a.longitude, anchor.lat, anchor.lon);
+    if (d > anchor.radius) {
+      console.log(`[ha-fix] ${tk}: rejected — ${Math.round(d)}m from anchor (limit ${anchor.radius}m)`);
+      return;
+    }
+    learnGatePosition(ak, gk, a.latitude, a.longitude);
+    console.log(`[ha-fix] ${tk}: accepted phone fix ±${Math.round(a.gps_accuracy)}m, ${Math.round(d)}m from anchor (src ${a.source || "?"})`);
+  } catch (e) {
+    console.log(`[ha-fix] fetch failed: ${e.message}`);
+  }
 }
 
 app.get("/api/gate", async (req, res) => {

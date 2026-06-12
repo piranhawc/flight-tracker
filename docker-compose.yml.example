@@ -15,5 +15,9 @@ services:
       - CREW_DB_PATH=/data/flight-tracker.db
       - AGENTMAIL_API_KEY=<your_agentmail_api_key>
       - ADMIN_NOTIFY_EMAIL=you@example.com
+      # Optional: phone-position gate signal via Home Assistant
+      - HA_URL=http://192.168.1.x:8123
+      - HA_TOKEN=<long-lived-access-token>
+      - HA_ENTITY=person.your_name
     volumes:
       - ./data:/data
