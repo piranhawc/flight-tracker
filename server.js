@@ -18,6 +18,7 @@ const COMMUTE_WEEK_FILE = path.join(CACHE_DIR, "commute-week.json");
 const CREW_FILE = path.join(CACHE_DIR, "crew.json");
 const LOGBOOK_PASSWORD = process.env.LOGBOOK_PASSWORD || "logbook";
 const FRIENDS_PASSWORD = process.env.FRIENDS_PASSWORD || "3238th";
+const CAREER_PASSWORD = process.env.CAREER_PASSWORD || LOGBOOK_PASSWORD;
 
 // Home Assistant arrival fix (optional). All three must point at a reachable
 // HA instance for the phone-position gate signal to activate.
@@ -37,6 +38,23 @@ try { signupTracker.init(); signupTrackerReady = true; } catch (e) {
 }
 // Daily janitor for expired signup sessions
 if (signupTrackerReady) setInterval(() => signupTracker.janitor(), 24 * 60 * 60 * 1000);
+
+const career = require("./career");
+let careerReady = false;
+try { career.init(); careerReady = true; } catch (e) {
+  console.error("[career] init failed:", e.message);
+}
+// Pull the seniority list on boot (best-effort) and refresh ~monthly.
+if (careerReady) {
+  career.refreshRoster().then(
+    (r) => console.log(`[career] roster ${r.refreshed ? "refreshed" : "cached"}: ${r.count} pilots (${r.updated_label})`),
+    (e) => console.error("[career] initial roster pull failed:", e.message));
+  // Poll every 6h; refreshRoster() only actually refetches when its ~monthly
+  // TTL has lapsed. (Don't use a >24.8-day interval — it overflows Node's
+  // 32-bit timer and fires in a tight loop.)
+  setInterval(() => career.refreshRoster().catch((e) => console.error("[career] roster refresh check failed:", e.message)),
+    6 * 60 * 60 * 1000);
+}
 
 const ADMIN_NOTIFY_EMAIL = process.env.ADMIN_NOTIFY_EMAIL || "goeb26@gmail.com";
 
@@ -1848,6 +1866,121 @@ app.post("/api/friends/auth", express.json(), (req, res) => {
   const token = crypto.randomBytes(24).toString("hex");
   friendsSessions.add(token);
   res.json({ token });
+});
+
+// --- Career page (retirement + upgrade projection) -----------------------
+// Own password (CAREER_PASSWORD, defaults to the logbook password). The
+// logbook owner token also unlocks it.
+const careerSessions = new Set();
+function careerAuth(req, res, next) {
+  const token = (req.headers.authorization || "").replace(/^Bearer /, "");
+  if (token && (careerSessions.has(token) || logbookSessions.has(token))) return next();
+  res.status(401).json({ error: "unauthorized" });
+}
+app.post("/api/career/auth", express.json(), (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password !== CAREER_PASSWORD) return res.status(401).json({ error: "bad password" });
+  const token = crypto.randomBytes(24).toString("hex");
+  careerSessions.add(token);
+  res.json({ token });
+});
+
+function careerGuard(res) {
+  if (!careerReady) { res.status(503).json({ error: "career module not ready" }); return false; }
+  return true;
+}
+
+app.get("/api/career/summary", careerAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  try {
+    res.json({ summary: career.rosterSummary(), config: career.getConfig(), base_fleets: career.BASE_FLEETS });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/career/config", careerAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  res.json(career.getConfig());
+});
+app.post("/api/career/config", careerAuth, express.json(), (req, res) => {
+  if (!careerGuard(res)) return;
+  try { res.json(career.setConfig(req.body || {})); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/career/roster/refresh", careerAuth, async (req, res) => {
+  if (!careerGuard(res)) return;
+  try { res.json(await career.refreshRoster(true)); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+app.get("/api/career/category/:base/:eq/:seat", careerAuth, async (req, res) => {
+  if (!careerGuard(res)) return;
+  const { base, eq, seat } = req.params;
+  try {
+    const cat = await career.getCategory(base.toUpperCase(), eq, seat.toUpperCase(),
+      { force: req.query.force === "true" });
+    res.json(cat);
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// Batch projection for the comparison table. Body: { targets:[{base,eq,seat}],
+// holdType:"line"|"seat", growth:number }. Each result carries the category's
+// hold line + the projected hold date.
+app.post("/api/career/projections", careerAuth, express.json(), async (req, res) => {
+  if (!careerGuard(res)) return;
+  const { targets = [], holdType = "line", growth = 0 } = req.body || {};
+  try {
+    const out = [];
+    for (const t of targets) {
+      const base = String(t.base).toUpperCase(), eq = String(t.eq), seat = String(t.seat).toUpperCase();
+      let cat, proj, err = null;
+      try {
+        cat = await career.getCategory(base, eq, seat, {});
+        const holdLine = holdType === "seat" ? cat.junior_seno : cat.hold_line;
+        proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0 });
+      } catch (e) { err = e.message; }
+      out.push({
+        base, eq, seat,
+        hold_line: cat ? cat.hold_line : null,
+        junior_seno: cat ? cat.junior_seno : null,
+        count: cat ? cat.count : null,
+        hold_now: proj ? !!proj.hold_now : null,
+        gap: proj ? proj.gap : null,
+        hold_date: proj ? proj.hold_date : null,
+        error: err,
+      });
+    }
+    res.json({ holdType, growth: Number(growth) || 0, results: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Full projection (with monthly series for charting) for one target.
+app.get("/api/career/projection", careerAuth, async (req, res) => {
+  if (!careerGuard(res)) return;
+  const { base, eq, seat, holdType = "line", growth = 0 } = req.query;
+  try {
+    const cat = await career.getCategory(String(base).toUpperCase(), String(eq), String(seat).toUpperCase(), {});
+    const holdLine = holdType === "seat" ? cat.junior_seno : cat.hold_line;
+    const proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0 });
+    res.json({ category: { base: cat.base, eq: cat.eq, seat: cat.seat, count: cat.count, hold_line: cat.hold_line, junior_seno: cat.junior_seno }, projection: proj });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// 401k projection. Optional ?upBase=&upEq=&upSeat= to fold in an upgrade at
+// the projected hold date for that category.
+app.get("/api/career/projection401k", careerAuth, async (req, res) => {
+  if (!careerGuard(res)) return;
+  try {
+    let upgrade = null;
+    const { upBase, upEq, upSeat, growth = 0 } = req.query;
+    if (upBase && upEq && upSeat) {
+      const cat = await career.getCategory(String(upBase).toUpperCase(), String(upEq), String(upSeat).toUpperCase(), {});
+      const holdLine = cat.hold_line;
+      const proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0 });
+      upgrade = { base: cat.base, eq: cat.eq, seat: cat.seat, hold_date: proj.hold_date };
+    }
+    res.json(career.project401k({ upgrade }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // --- APA-sourced crew helpers (used by logbook auto-fill) ---

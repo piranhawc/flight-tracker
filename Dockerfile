@@ -11,6 +11,8 @@ COPY fa-tracker.js .
 COPY friends-client.js .
 COPY agentmail-client.js .
 COPY signup-tracker.js .
+COPY career.js .
+COPY pay-scales.json .
 COPY gates-seed.json .
 COPY public/ public/
 RUN mkdir -p /app/data /data

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Career / Retirement</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#080808; color:#ddd; font-family:Menlo,Monaco,monospace; font-size:11px; margin:0; padding:0; }
+  #top { padding:10px 14px; border-bottom:1px solid #1a1a1a; display:flex; align-items:center; justify-content:space-between; }
+  #top .title { font-size:12px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
+  #top .meta { color:#666; font-size:10px; margin-left:10px; }
+  .btn { background:#0e0e0e; border:1px solid #222; color:#ddd; padding:4px 10px; border-radius:2px; font-family:inherit; font-size:10px; cursor:pointer; margin-left:4px; }
+  .btn:hover { border-color:#06d6a0; color:#06d6a0; }
+  .btn.active { background:#0a2018; border-color:#06d6a0; color:#06d6a0; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px; }
+  .panel { background:#0c0c0c; border:1px solid #181818; border-radius:3px; padding:12px; }
+  .panel.wide { grid-column:1 / -1; }
+  .panel h2 { font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:1.5px; margin:0 0 10px 0; }
+  canvas { width:100%; max-width:100%; display:block; }
+  table { width:100%; border-collapse:collapse; font-size:10px; }
+  th, td { padding:4px 6px; text-align:left; border-bottom:1px solid #161616; }
+  th { color:#888; font-weight:600; }
+  td.num, th.num { text-align:right; }
+  td.soon { color:#06d6a0; }
+  td.now { color:#06d6a0; font-weight:700; }
+  .kpi { display:grid; grid-template-columns:repeat(5, 1fr); gap:8px; }
+  .kpi .card { background:#0a0a0a; border:1px solid #161616; border-radius:2px; padding:8px 12px; }
+  .kpi .card .label { color:#666; font-size:9px; letter-spacing:1px; text-transform:uppercase; }
+  .kpi .card .value { color:#ddd; font-size:18px; font-weight:700; margin-top:4px; }
+  .kpi .card .value.good { color:#06d6a0; }
+  .kpi .card .sub { color:#666; font-size:9px; margin-top:2px; }
+  label { color:#888; font-size:9px; letter-spacing:.5px; text-transform:uppercase; display:block; margin-bottom:3px; }
+  select, input[type=number], input[type=date], input[type=password] {
+    background:#0a0a0a; border:1px solid #222; color:#ddd; font-family:inherit; font-size:11px; padding:4px 6px; border-radius:2px; }
+  select:focus, input:focus { outline:none; border-color:#06d6a0; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:10px; }
+  .row > div { display:flex; flex-direction:column; }
+  .hint { color:#555; font-size:9px; margin-top:8px; line-height:1.5; }
+  .del { color:#a33; cursor:pointer; }
+  .del:hover { color:#f44; }
+  #login { position:fixed; inset:0; background:#080808; display:flex; align-items:center; justify-content:center; z-index:50; }
+  #login .box { text-align:center; }
+  #login .title { color:#06d6a0; font-size:12px; letter-spacing:2px; margin-bottom:12px; }
+  #login-err { color:#f44; font-size:10px; height:12px; margin-top:6px; }
+  .slider-val { color:#06d6a0; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="box">
+    <div class="title">CAREER / RETIREMENT</div>
+    <input type="password" id="password" placeholder="password" autofocus autocomplete="current-password">
+    <button class="btn" onclick="doLogin()">enter</button>
+    <div id="login-err"></div>
+  </div>
+</div>
+
+<div id="top">
+  <div style="display:flex;align-items:center">
+    <span class="title">CAREER / RETIREMENT</span>
+    <span class="meta" id="meta"></span>
+  </div>
+  <div>
+    <button class="btn" id="refreshBtn" onclick="refreshRoster()">↻ refresh list</button>
+    <button class="btn" onclick="window.location='/'">← FLIGHTS</button>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel wide">
+    <h2>YOUR STANDING</h2>
+    <div class="kpi" id="kpi"></div>
+  </div>
+
+  <div class="panel wide">
+    <h2>UPGRADE PROJECTION — WHEN CAN I HOLD</h2>
+    <div class="row">
+      <div><label>base</label><select id="selBase"></select></div>
+      <div><label>fleet</label><select id="selEq"></select></div>
+      <div><label>seat</label><select id="selSeat"><option>FO</option><option>CA</option></select></div>
+      <div><button class="btn" onclick="addTarget()">+ add target</button></div>
+      <div><label>hold</label><select id="holdType">
+        <option value="line">a line (block holder)</option>
+        <option value="seat">the seat (incl. reserve)</option>
+      </select></div>
+      <div><label>fleet growth: <span class="slider-val" id="growthVal">0</span>/yr</label>
+        <input type="range" id="growth" min="-40" max="60" step="5" value="0" oninput="onGrowth()"></div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>target</th><th class="num">hold line</th><th class="num">pilots ahead</th>
+        <th class="num">category</th><th>est. hold date</th><th></th>
+      </tr></thead>
+      <tbody id="targetRows"></tbody>
+    </table>
+    <div class="hint" id="projHint"></div>
+  </div>
+
+  <div class="panel">
+    <h2>SENIORITY OVER TIME — <span id="chartTargetLabel" style="color:#06d6a0"></span></h2>
+    <canvas id="chartProj" height="240"></canvas>
+    <div class="hint">Pilots ahead of you in the target seat as senior pilots retire. Click a target row above to chart it.</div>
+  </div>
+
+  <div class="panel">
+    <h2>401(k) PROJECTION</h2>
+    <div class="row">
+      <div><label>retire date</label><input type="date" id="retireDate" onchange="saveAnd401k()"></div>
+      <div><label>balance $</label><input type="number" id="bal" step="1000" style="width:90px" onchange="saveAnd401k()"></div>
+      <div><label>my contrib %</label><input type="number" id="empPct" step="0.5" style="width:60px" onchange="saveAnd401k()"></div>
+      <div><label>return %</label><input type="number" id="retPct" step="0.5" style="width:60px" onchange="saveAnd401k()"></div>
+      <div><label>hrs/yr</label><input type="number" id="hrs" step="50" style="width:70px" onchange="saveAnd401k()"></div>
+      <div><label>pay raise %/yr</label><input type="number" id="raisePct" step="0.5" style="width:70px" onchange="saveAnd401k()"></div>
+    </div>
+    <div class="row">
+      <div><label>now: fleet/seat</label><select id="curEq"></select></div>
+      <div><select id="curSeat"><option>FO</option><option>CA</option></select></div>
+      <div><label>fold in upgrade to</label><select id="upTarget"></select></div>
+    </div>
+    <canvas id="chart401k" height="220"></canvas>
+    <div class="kpi" style="grid-template-columns:repeat(2,1fr);margin-top:10px">
+      <div class="card"><div class="label">balance at retirement</div><div class="value good" id="finalBal">—</div></div>
+      <div class="card"><div class="label">employer adds</div><div class="value" id="emp401">18% + match</div><div class="sub">non-elective + up to 4% match</div></div>
+    </div>
+    <div class="hint">Income derived from editable <code>pay-scales.json</code> ($/hr × hrs/yr). Estimates only.</div>
+  </div>
+</div>
+
+<script>
+var token = localStorage.getItem("career-token") || null;
+function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+var SUMMARY = null, CONFIG = null, BASE_FLEETS = {}, TARGETS = [];
+
+async function doLogin() {
+  var pw = document.getElementById("password").value;
+  var resp = await fetch("/api/career/auth", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ password: pw }) });
+  if (!resp.ok) { document.getElementById("login-err").textContent = "incorrect password"; return; }
+  var d = await resp.json();
+  token = d.token; localStorage.setItem("career-token", token);
+  document.getElementById("login").style.display = "none";
+  boot();
+}
+document.getElementById("password").addEventListener("keydown", function(e){ if (e.key==="Enter") doLogin(); });
+
+function fmtPct(x) { return x==null ? "—" : (x*100).toFixed(1)+"%"; }
+function fmtNum(x) { return x==null ? "—" : Number(x).toLocaleString(); }
+function fmtDollar(x) { return x==null ? "—" : "$" + Math.round(x).toLocaleString(); }
+
+async function boot() {
+  var r = await fetch("/api/career/summary", { headers: authHeaders() });
+  if (r.status === 401) { logout(); return; }
+  var d = await r.json();
+  SUMMARY = d.summary; CONFIG = d.config; BASE_FLEETS = d.base_fleets;
+  renderKpi(); renderMeta(); initSelectors(); loadTargets(); applyConfigToInputs();
+  runProjections(); run401k();
+}
+function logout() { localStorage.removeItem("career-token"); token=null; document.getElementById("login").style.display="flex"; }
+
+function renderMeta() {
+  var m = "list updated " + (SUMMARY.updated_label || "?");
+  if (SUMMARY.total) m += " · " + fmtNum(SUMMARY.total) + " pilots";
+  document.getElementById("meta").textContent = m;
+}
+function renderKpi() {
+  var me = SUMMARY.me || {};
+  var cards = [
+    ["AA seniority #", me.aa_sen ? fmtNum(me.aa_sen) : "—", me.last ? me.last + ", " + (me.initial||"") : ""],
+    ["% senior to you", fmtPct(SUMMARY.percentile), "of " + fmtNum(SUMMARY.active) + " active"],
+    ["pilots ahead", fmtNum(SUMMARY.activeAbove), "active, senior to you"],
+    ["pilots below", me.below ? fmtNum(me.below) : "—", ""],
+    ["retirement", me.retire || "—", "age 65"],
+  ];
+  document.getElementById("kpi").innerHTML = cards.map(function(c){
+    return '<div class="card"><div class="label">'+c[0]+'</div><div class="value'+(c[0]=="AA seniority #"?" good":"")+'">'+c[1]+'</div><div class="sub">'+c[2]+'</div></div>';
+  }).join("");
+}
+
+function initSelectors() {
+  var bases = Object.keys(BASE_FLEETS);
+  fill("selBase", bases); onBaseChange();
+  document.getElementById("selBase").addEventListener("change", onBaseChange);
+  // 401k current fleet/seat selectors
+  var allEq = Array.from(new Set([].concat.apply([], Object.values(BASE_FLEETS)))).sort();
+  fill("curEq", allEq);
+}
+function fill(id, arr) { document.getElementById(id).innerHTML = arr.map(function(x){ return '<option>'+x+'</option>'; }).join(""); }
+function onBaseChange() {
+  var base = document.getElementById("selBase").value;
+  fill("selEq", BASE_FLEETS[base] || []);
+}
+function onGrowth() { document.getElementById("growthVal").textContent = document.getElementById("growth").value; runProjections(); }
+document.getElementById("holdType").addEventListener("change", runProjections);
+
+// --- target list (persisted) ---
+function loadTargets() {
+  try { TARGETS = JSON.parse(localStorage.getItem("career-targets")); } catch(e){ TARGETS = null; }
+  if (!Array.isArray(TARGETS) || !TARGETS.length) {
+    TARGETS = [ {base:"ORD",eq:"787",seat:"FO"}, {base:"DFW",eq:"787",seat:"FO"},
+                {base:"DFW",eq:"777",seat:"FO"}, {base:"CLT",eq:"777",seat:"FO"} ];
+  }
+  saveTargets();
+}
+function saveTargets() { localStorage.setItem("career-targets", JSON.stringify(TARGETS)); refreshUpTargetOptions(); }
+function addTarget() {
+  var t = { base: document.getElementById("selBase").value, eq: document.getElementById("selEq").value, seat: document.getElementById("selSeat").value };
+  if (!TARGETS.some(function(x){ return x.base==t.base && x.eq==t.eq && x.seat==t.seat; })) TARGETS.push(t);
+  saveTargets(); runProjections();
+}
+function removeTarget(i) { TARGETS.splice(i,1); saveTargets(); runProjections(); }
+function tLabel(t) { return t.seat + " " + t.eq + " " + t.base; }
+
+async function runProjections() {
+  var body = { targets: TARGETS, holdType: document.getElementById("holdType").value, growth: Number(document.getElementById("growth").value) };
+  var r = await fetch("/api/career/projections", { method:"POST", headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()), body: JSON.stringify(body) });
+  if (!r.ok) { document.getElementById("projHint").textContent = "projection error"; return; }
+  var d = await r.json();
+  var rows = d.results.map(function(x, i){
+    var dateCell = x.error ? '<span style="color:#a33">'+x.error+'</span>'
+      : x.hold_now ? 'HOLD NOW'
+      : (x.hold_date || ">2056");
+    var cls = x.hold_now ? "now" : (x.hold_date && x.hold_date < "2029" ? "soon" : "");
+    return '<tr style="cursor:pointer" onclick="chartTarget('+i+')">'
+      + '<td>'+tLabel(x)+'</td>'
+      + '<td class="num">'+fmtNum(x.hold_line)+'</td>'
+      + '<td class="num">'+(x.hold_now?"0":fmtNum(x.gap))+'</td>'
+      + '<td class="num">'+fmtNum(x.count)+'</td>'
+      + '<td class="'+cls+'">'+dateCell+'</td>'
+      + '<td class="del" onclick="event.stopPropagation();removeTarget('+i+')">✕</td></tr>';
+  }).join("");
+  document.getElementById("targetRows").innerHTML = rows;
+  document.getElementById("projHint").textContent =
+    "Hold line = most-junior seniority currently in that seat (from PBS-3XP). You hold when retirements of pilots senior to you close the gap. Growth slider models seats added/removed per year.";
+  if (TARGETS.length) chartTarget(window._chartIdx != null && window._chartIdx < TARGETS.length ? window._chartIdx : 0);
+}
+
+async function chartTarget(i) {
+  window._chartIdx = i;
+  var t = TARGETS[i]; if (!t) return;
+  document.getElementById("chartTargetLabel").textContent = tLabel(t);
+  var qs = new URLSearchParams({ base:t.base, eq:t.eq, seat:t.seat, holdType: document.getElementById("holdType").value, growth: document.getElementById("growth").value });
+  var r = await fetch("/api/career/projection?"+qs, { headers: authHeaders() });
+  if (!r.ok) return;
+  var d = await r.json();
+  var s = (d.projection && d.projection.series) || [];
+  lineChart("chartProj", s.map(function(p){return p.date;}), s.map(function(p){return p.pilots_ahead;}), "#06d6a0", "pilots ahead");
+}
+
+// --- 401k ---
+function applyConfigToInputs() {
+  var me = SUMMARY.me || {};
+  document.getElementById("retireDate").value = CONFIG.assumed_retire_date || me.retire || "";
+  document.getElementById("bal").value = CONFIG.k401_balance;
+  document.getElementById("empPct").value = (CONFIG.k401_employee_pct*100).toFixed(1);
+  document.getElementById("retPct").value = (CONFIG.k401_return_pct*100).toFixed(1);
+  document.getElementById("hrs").value = CONFIG.annual_hours;
+  document.getElementById("raisePct").value = ((CONFIG.annual_raise_pct||0)*100).toFixed(1);
+  document.getElementById("curEq").value = CONFIG.current_eq;
+  document.getElementById("curSeat").value = CONFIG.current_seat;
+  refreshUpTargetOptions();
+}
+function refreshUpTargetOptions() {
+  var sel = document.getElementById("upTarget");
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— none —</option>' + TARGETS.map(function(t,i){ return '<option value="'+i+'">'+tLabel(t)+'</option>'; }).join("");
+}
+document.getElementById("curEq").addEventListener("change", saveAnd401k);
+document.getElementById("curSeat").addEventListener("change", saveAnd401k);
+document.getElementById("upTarget").addEventListener("change", run401k);
+
+async function saveAnd401k() {
+  var patch = {
+    assumed_retire_date: document.getElementById("retireDate").value,
+    k401_balance: Number(document.getElementById("bal").value),
+    k401_employee_pct: Number(document.getElementById("empPct").value)/100,
+    k401_return_pct: Number(document.getElementById("retPct").value)/100,
+    annual_hours: Number(document.getElementById("hrs").value),
+    annual_raise_pct: Number(document.getElementById("raisePct").value)/100,
+    current_eq: document.getElementById("curEq").value,
+    current_seat: document.getElementById("curSeat").value,
+  };
+  await fetch("/api/career/config", { method:"POST", headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()), body: JSON.stringify(patch) });
+  CONFIG = Object.assign(CONFIG, patch);
+  run401k();
+}
+async function run401k() {
+  var qs = new URLSearchParams();
+  var ui = document.getElementById("upTarget").value;
+  if (ui !== "") { var t = TARGETS[Number(ui)]; if (t) { qs.set("upBase",t.base); qs.set("upEq",t.eq); qs.set("upSeat",t.seat); qs.set("growth", document.getElementById("growth").value); } }
+  var r = await fetch("/api/career/projection401k?"+qs, { headers: authHeaders() });
+  if (!r.ok) return;
+  var d = await r.json();
+  if (d.error) { document.getElementById("finalBal").textContent = "—"; return; }
+  var s = d.series || [];
+  lineChart("chart401k", s.map(function(p){return p.year;}), s.map(function(p){return p.balance;}), "#06d6a0", "balance", true);
+  document.getElementById("finalBal").textContent = fmtDollar(d.final_balance);
+}
+
+async function refreshRoster() {
+  var b = document.getElementById("refreshBtn"); b.textContent = "↻ refreshing…"; b.disabled = true;
+  try { await fetch("/api/career/roster/refresh", { method:"POST", headers: authHeaders() }); await boot(); }
+  catch(e){} finally { b.textContent = "↻ refresh list"; b.disabled = false; }
+}
+
+// --- minimal canvas line chart ---
+function lineChart(id, labels, values, color, name, dollars) {
+  var canvas = document.getElementById(id); var ctx = canvas.getContext("2d");
+  var dpr = window.devicePixelRatio || 1;
+  var w = canvas.clientWidth, h = canvas.clientHeight || 220;
+  canvas.width = w*dpr; canvas.height = h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  var pad = { l:54, r:10, t:10, b:22 };
+  var cw = w-pad.l-pad.r, ch = h-pad.t-pad.b;
+  if (!values.length) return;
+  var max = Math.max.apply(null, values), min = Math.min.apply(null, values);
+  if (max === min) max = min + 1;
+  // gridlines + y labels
+  ctx.strokeStyle = "#161616"; ctx.fillStyle = "#666"; ctx.font = "9px Menlo";
+  for (var g=0; g<=4; g++) {
+    var yv = min + (max-min)*g/4; var y = pad.t + ch - (yv-min)/(max-min)*ch;
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+cw,y); ctx.stroke();
+    var lbl = dollars ? "$"+Math.round(yv/1000)+"k" : Math.round(yv).toLocaleString();
+    ctx.fillText(lbl, 4, y+3);
+  }
+  // line
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+  values.forEach(function(v,i){
+    var x = pad.l + (values.length===1?0:cw*i/(values.length-1));
+    var y = pad.t + ch - (v-min)/(max-min)*ch;
+    i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+  });
+  ctx.stroke();
+  // x labels (sparse)
+  ctx.fillStyle = "#666";
+  var every = Math.max(1, Math.ceil(labels.length / Math.floor(cw/55)));
+  labels.forEach(function(l,i){ if (i % every === 0) {
+    var x = pad.l + (labels.length===1?0:cw*i/(labels.length-1));
+    ctx.fillText(String(l), x-12, h-6);
+  }});
+}
+
+if (token) { document.getElementById("login").style.display = "none"; boot(); }
+</script>
+</body>
+</html>
