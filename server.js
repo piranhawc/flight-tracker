@@ -1996,6 +1996,13 @@ app.get("/api/career/projection401k", careerAuth, (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Per-month pay schedule (lineholder/reserve wage, total comp, monthly 401k).
+app.get("/api/career/monthly", careerAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  try { res.json(career.monthlyWageSchedule()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Saved scenarios. Each is returned with its computed income/401k projection
 // so the page can list + overlay them. POST {name} snapshots current config;
 // DELETE removes one.

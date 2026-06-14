@@ -161,6 +161,21 @@
   </div>
 
   <div class="panel wide">
+    <h2>MONTHLY PAY SCHEDULE <span id="monthlyHdr" style="color:#666;font-weight:400"></span></h2>
+    <div style="max-height:75vh;overflow:auto;border:1px solid #161616;border-radius:2px">
+      <table id="monthlyTable">
+        <thead><tr style="position:sticky;top:0;background:#0c0c0c;z-index:1">
+          <th>month</th><th>seat</th><th class="num">$/hr</th>
+          <th class="num">lineholder (82h)</th><th class="num">reserve (73h)</th>
+          <th class="num">total comp</th><th class="num">my 401k</th><th class="num">co. 18%</th>
+        </tr></thead>
+        <tbody id="monthlyBody"></tbody>
+      </table>
+    </div>
+    <div class="hint">Per-month gross pay at lineholder (82 hr) and reserve (73 hr) credit. Total comp, your deferral, and company 18% are on the lineholder wage. Seat/fleet — and therefore pay — switch on your upgrade date.</div>
+  </div>
+
+  <div class="panel wide">
     <h2>SCENARIOS — SAVE &amp; COMPARE</h2>
     <div class="row">
       <div><label>save current settings as</label><input type="text" id="scenName" placeholder="e.g. CA 320 ORD Nov26" style="width:200px"></div>
@@ -447,6 +462,30 @@ async function run401k() {
     }
   }
   loadScenarios();
+  loadMonthly();
+}
+
+// --- monthly pay schedule ---
+async function loadMonthly() {
+  var r = await fetch("/api/career/monthly", { headers: authHeaders() });
+  if (!r.ok) return;
+  var d = await r.json();
+  if (d.error) { document.getElementById("monthlyBody").innerHTML = '<tr><td colspan="8" style="color:#a33">'+d.error+'</td></tr>'; return; }
+  document.getElementById("monthlyHdr").textContent = d.upgrade ? ("· upgrade " + d.upgrade.seat + " " + d.upgrade.eq + " " + d.upgrade.base + " on " + d.upgrade.date) : "· no upgrade assumed";
+  var prevSeat = null;
+  document.getElementById("monthlyBody").innerHTML = (d.rows||[]).map(function(m){
+    var hl = (m.seat !== prevSeat); prevSeat = m.seat;
+    var style = hl ? ' style="background:#0a1a14"' : '';
+    return '<tr'+style+'>'
+      + '<td>'+m.ym+'</td>'
+      + '<td'+(hl?' style="color:#06d6a0;font-weight:700"':'')+'>'+m.seat+' '+m.eq+'</td>'
+      + '<td class="num">'+m.rate.toFixed(2)+'</td>'
+      + '<td class="num">'+fmtDollar(m.wage_lineholder)+'</td>'
+      + '<td class="num" style="color:#888">'+fmtDollar(m.wage_reserve)+'</td>'
+      + '<td class="num">'+fmtDollar(m.total_comp)+'</td>'
+      + '<td class="num">'+fmtDollar(m.my_401k)+'</td>'
+      + '<td class="num">'+fmtDollar(m.company_18)+'</td></tr>';
+  }).join("");
 }
 
 // --- scenarios ---

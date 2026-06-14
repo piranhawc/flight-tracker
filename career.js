@@ -129,6 +129,9 @@ const CONFIG_DEFAULTS = {
   other_income_monthly: 0,
   other_income_growth_pct: 0.02,
   life_expectancy_age: 90,
+  // Monthly credit hours for the per-month pay schedule.
+  lineholder_hours: 82,
+  reserve_hours: 73,
 };
 
 function getConfig() {
@@ -540,6 +543,53 @@ function listPublicLogins(limit = 200) {
   return db.prepare("SELECT emp,name,aa_sen,ip,ts FROM career_public_login ORDER BY id DESC LIMIT ?").all(limit);
 }
 
+// Per-month pay schedule (working months only) for the scrollable table:
+// wage at lineholder (82h) and reserve (73h) credit, total comp, and the
+// monthly 401k contributions. Switches seat/fleet at the upgrade date.
+function monthlyWageSchedule(cfgArg) {
+  const cfg = cfgArg || getConfig();
+  const me = getPilot(cfg.emp);
+  const ps = payScales();
+  const necPct = (ps.employer || {}).nec_pct || 0.18;
+  const retireISO = cfg.assumed_retire_date || (me && me.retire) || "";
+  const hireISO = (me && me.hire) || "2023-01-01";
+  if (!retireISO) return { error: "no retirement date" };
+  const today = new Date();
+  const retire = new Date(retireISO);
+  const endMonth = new Date(retire.getFullYear(), retire.getMonth(), 1);
+  const hireYear = new Date(hireISO).getFullYear();
+  const baseYear = ps.base_year || 2026;
+  const raise = cfg.annual_raise_pct || 0;
+  const empPct = cfg.k401_employee_pct || 0;
+  const lhHours = cfg.lineholder_hours || 82;
+  const rsvHours = cfg.reserve_hours || 73;
+  const upOn = (cfg.upgrade_enabled !== false && cfg.upgrade_date)
+    ? new Date(parseInt(cfg.upgrade_date.slice(0, 4), 10), parseInt(cfg.upgrade_date.slice(5, 7), 10) - 1, 1)
+    : null;
+  const rows = [];
+  let d = new Date(today.getFullYear(), today.getMonth(), 1);
+  while (d <= endMonth) {
+    const y = d.getFullYear();
+    let seat = cfg.current_seat, eq = cfg.current_eq;
+    if (upOn && d >= upOn) { seat = cfg.upgrade_seat || seat; eq = cfg.upgrade_eq || eq; }
+    const yos = Math.max(1, y - hireYear + 1);
+    const rate = hourlyRate(eq, seat, yos) * Math.pow(1 + raise, Math.max(0, y - baseYear));
+    const wageLH = rate * lhHours;        // lineholder credit
+    const wageRSV = rate * rsvHours;      // reserve credit
+    const co18 = wageLH * necPct;         // company discretionary: 18% of the month's pay
+    const my401k = wageLH * empPct;       // your deferral
+    rows.push({
+      ym: `${y}-${String(d.getMonth() + 1).padStart(2, "0")}`, seat, eq,
+      rate: Math.round(rate * 100) / 100,
+      wage_lineholder: Math.round(wageLH), wage_reserve: Math.round(wageRSV),
+      total_comp: Math.round(wageLH + co18), my_401k: Math.round(my401k), company_18: Math.round(co18),
+    });
+    d = new Date(y, d.getMonth() + 1, 1);
+  }
+  return { rows, lineholder_hours: lhHours, reserve_hours: rsvHours,
+    upgrade: upOn ? { base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, date: cfg.upgrade_date } : null };
+}
+
 // --- saved scenarios -----------------------------------------------------
 function listScenarios() {
   return db.prepare("SELECT name, config_json, created_at FROM career_scenario ORDER BY created_at")
@@ -560,7 +610,7 @@ function deleteScenario(name) {
 module.exports = {
   init, refreshRoster, rosterCount, rosterSummary, getPilot,
   getConfig, setConfig, getCategory, getAwards, holdLineFor,
-  projectUpgrade, projectSeniority, project401k, listScenarios, saveScenario, deleteScenario,
+  projectUpgrade, projectSeniority, project401k, monthlyWageSchedule, listScenarios, saveScenario, deleteScenario,
   pilotStanding, validatePublicPilot, publicDefaults, logPublicLogin, listPublicLogins,
   BASE_FLEETS, payScales, APA_SABRE_BASE,
 };
