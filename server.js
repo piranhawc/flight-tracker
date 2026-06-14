@@ -2015,6 +2015,7 @@ function scenariosWithProjections() {
       retire_date: proj ? proj.retire_date : null,
       upgrade: proj ? proj.upgrade : null,
       final_balance: proj ? proj.final_balance : null,
+      final_net_worth: proj ? proj.final_net_worth : null,
       series: proj ? proj.series : [],
     };
   });

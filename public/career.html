@@ -72,9 +72,6 @@
   <div class="panel wide">
     <h2>YOUR STANDING</h2>
     <div class="kpi" id="kpi"></div>
-    <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:12px">ACTIVE PILOTS AHEAD OF YOU, BY YEAR — TO RETIREMENT</div>
-    <canvas id="chartSeno" height="170"></canvas>
-    <div class="hint">Your overall system standing as the pilots senior to you retire (new hires land below you). Reaches its low near your retirement.</div>
   </div>
 
   <div class="panel wide">
@@ -127,8 +124,15 @@
       <div><select id="upBase" onchange="onUpBase()"></select></div>
       <div><label>on</label><input type="month" id="upDate" onchange="saveAnd401k()"></div>
     </div>
-    <div class="kpi" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px">
-      <div class="card"><div class="label">balance at retirement</div><div class="value good" id="finalBal">—</div></div>
+    <div class="row">
+      <div><label>real estate $</label><input type="number" id="realEstate" step="10000" style="width:110px" onchange="saveAnd401k()"></div>
+      <div><label>other savings $ (non-401k)</label><input type="number" id="otherSavings" step="5000" style="width:110px" onchange="saveAnd401k()"></div>
+      <div><label>market growth %/yr</label><input type="number" id="mktPct" step="0.5" style="width:80px" onchange="saveAnd401k()"></div>
+      <div class="hint" style="margin:0">Real estate + other savings grown at this rate to retirement for net worth.</div>
+    </div>
+    <div class="kpi" style="grid-template-columns:repeat(4,1fr);margin-bottom:10px">
+      <div class="card"><div class="label">401k at retirement</div><div class="value good" id="finalBal">—</div></div>
+      <div class="card"><div class="label">net worth at retirement</div><div class="value good" id="finalNW">—</div><div class="sub">401k + RE + savings</div></div>
       <div class="card"><div class="label">income now</div><div class="value" id="incNow">—</div><div class="sub" id="incNowSub"></div></div>
       <div class="card"><div class="label">income after upgrade</div><div class="value" id="incUp">—</div><div class="sub" id="incUpSub"></div></div>
     </div>
@@ -138,8 +142,9 @@
     </div>
     <canvas id="chartIncome" height="180"></canvas>
     <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>total comp (flight pay + 18%)</span><span><span class="sw" style="background:#ffd166"></span>total cash comp (pay + employer overflow past the 401k cap)</span></div>
-    <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:8px">401(k) BALANCE</div>
+    <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:8px">401(k) BALANCE &amp; NET WORTH</div>
     <canvas id="chart401k" height="180"></canvas>
+    <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>401k</span><span><span class="sw" style="background:#118ab2"></span>net worth (401k + real estate + savings)</span></div>
     <div class="hint">Income from editable <code>pay-scales.json</code> ($/hr × <span id="hrHint"></span>); employer adds 18% (non-elective, no match) + your 18% deferral, capped at the IRS 401k limit (employer overflow paid as cash), compounded monthly. Estimates only.</div>
   </div>
 
@@ -153,7 +158,7 @@
     <table>
       <thead><tr>
         <th></th><th>scenario</th><th>retire</th><th>upgrade</th>
-        <th class="num">401k at retire</th><th class="num">final income/yr</th><th></th>
+        <th class="num">401k at retire</th><th class="num">net worth</th><th class="num">final income/yr</th><th></th>
       </tr></thead>
       <tbody id="scenRows"></tbody>
     </table>
@@ -162,6 +167,13 @@
       <div><div style="color:#888;font-size:9px;letter-spacing:1px;margin-bottom:4px">INCOME / YR</div><canvas id="chartCmpInc" height="200"></canvas></div>
     </div>
     <div class="legend" id="cmpLegend"></div>
+  </div>
+
+  <div class="panel wide">
+    <h2>OVERALL SENIORITY OVER TIME</h2>
+    <div style="color:#888;font-size:9px;letter-spacing:1px">ACTIVE PILOTS AHEAD OF YOU, BY YEAR — TO RETIREMENT</div>
+    <canvas id="chartSeno" height="150"></canvas>
+    <div class="hint">Your overall system standing as the pilots senior to you retire (new hires land below you). Reaches its low near your retirement.</div>
   </div>
 </div>
 
@@ -310,6 +322,9 @@ function applyConfigToInputs() {
   document.getElementById("hrs").value = CONFIG.annual_hours;
   document.getElementById("raisePct").value = ((CONFIG.annual_raise_pct||0)*100).toFixed(1);
   document.getElementById("irsCap").value = CONFIG.irs_dc_limit || 70000;
+  document.getElementById("realEstate").value = CONFIG.real_estate || 0;
+  document.getElementById("otherSavings").value = CONFIG.other_savings || 0;
+  document.getElementById("mktPct").value = ((CONFIG.market_return_pct||0)*100).toFixed(1);
   document.getElementById("curEq").value = CONFIG.current_eq;
   document.getElementById("curSeat").value = CONFIG.current_seat;
   document.getElementById("hrHint").textContent = (CONFIG.annual_hours||912) + " hr/yr";
@@ -347,6 +362,9 @@ async function saveAnd401k() {
     annual_hours: Number(document.getElementById("hrs").value),
     annual_raise_pct: Number(document.getElementById("raisePct").value)/100,
     irs_dc_limit: Number(document.getElementById("irsCap").value),
+    real_estate: Number(document.getElementById("realEstate").value),
+    other_savings: Number(document.getElementById("otherSavings").value),
+    market_return_pct: Number(document.getElementById("mktPct").value)/100,
     current_eq: document.getElementById("curEq").value,
     current_seat: document.getElementById("curSeat").value,
     upgrade_enabled: document.getElementById("upEnabled").checked,
@@ -376,8 +394,12 @@ async function run401k() {
   window._k401 = d;
   var s = d.series || [];
   renderIncomeChart(d);
-  lineChart("chart401k", s.map(function(p){return p.year;}), s.map(function(p){return p.balance;}), "#06d6a0", "balance", true);
+  multiLineChart("chart401k", [
+    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return p.balance;}), color: "#06d6a0" },
+    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return p.net_worth;}), color: "#118ab2" },
+  ], true);
   document.getElementById("finalBal").textContent = fmtDollar(d.final_balance);
+  document.getElementById("finalNW").textContent = fmtDollar(d.final_net_worth);
   // income KPIs (now vs after upgrade)
   if (s.length) {
     var first = s[0], last = s[s.length-1];
@@ -424,9 +446,10 @@ function renderScenarios() {
       + '<td>'+(s.retire_date||"—")+'</td>'
       + '<td>'+upLabel(s.upgrade)+'</td>'
       + '<td class="num">'+fmtDollar(s.final_balance)+'</td>'
+      + '<td class="num">'+fmtDollar(s.final_net_worth)+'</td>'
       + '<td class="num">'+(last?fmtDollar(last.income):"—")+'</td>'
       + '<td class="del" onclick="deleteScenario(\''+s.name.replace(/'/g,"\\'")+'\')">✕</td></tr>';
-  }).join("") || '<tr><td colspan="7" style="color:#555">no saved scenarios yet</td></tr>';
+  }).join("") || '<tr><td colspan="8" style="color:#555">no saved scenarios yet</td></tr>';
   renderCompare();
 }
 function toggleCmp(name) { CMP[name] = !CMP[name]; renderCompare(); }

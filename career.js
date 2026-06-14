@@ -109,6 +109,10 @@ const CONFIG_DEFAULTS = {
   // fill the 401k up to this; the employer overflow is paid out as cash.
   irs_dc_limit: 70000,
   irs_limit_growth_pct: 0.02,
+  // Other assets, grown at a stock-market rate to retirement for net worth.
+  real_estate: 0,
+  other_savings: 0,
+  market_return_pct: 0.08,
 };
 
 function getConfig() {
@@ -373,7 +377,10 @@ function project401k(cfgArg) {
     ? new Date(parseInt(cfg.upgrade_date.slice(0, 4), 10), parseInt(cfg.upgrade_date.slice(5, 7), 10) - 1, 1)
     : null;
 
+  const mkt = cfg.market_return_pct || 0;
   let balance = cfg.k401_balance || 0;
+  let realEstate = cfg.real_estate || 0;
+  let otherSavings = cfg.other_savings || 0;
   const yearly = new Map();
   let ytd401k = 0, ytdYear = null;
   let d = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -397,12 +404,15 @@ function project401k(cfgArg) {
     const into401k = empInto + erInto;
     const employerCash = employerM - erInto;
     balance = balance * (1 + ret / 12) + into401k;
-    const yr = yearly.get(y) || { year: y, income: 0, into401k: 0, total_comp: 0, cash_comp: 0, seat, eq, balance: 0 };
+    realEstate = realEstate * (1 + mkt / 12);
+    otherSavings = otherSavings * (1 + mkt / 12);
+    const yr = yearly.get(y) || { year: y, income: 0, into401k: 0, total_comp: 0, cash_comp: 0, seat, eq, balance: 0, real_estate: 0, other_savings: 0 };
     yr.income += mIncome;
     yr.into401k += into401k;
     yr.total_comp += mIncome + employerM;       // all-in: flight pay + full 18%
     yr.cash_comp += mIncome + employerCash;      // cash paid: flight pay + employer overflow
     yr.seat = seat; yr.eq = eq; yr.balance = balance;
+    yr.real_estate = realEstate; yr.other_savings = otherSavings;
     yearly.set(y, yr);
     d = new Date(y, d.getMonth() + 1, 1);
   }
@@ -412,9 +422,13 @@ function project401k(cfgArg) {
     total_comp: Math.round(v.total_comp), monthly_total_comp: Math.round(v.total_comp / 12),
     cash_comp: Math.round(v.cash_comp), monthly_cash_comp: Math.round(v.cash_comp / 12),
     into_401k: Math.round(v.into401k), balance: Math.round(v.balance),
+    real_estate: Math.round(v.real_estate), other_savings: Math.round(v.other_savings),
+    net_worth: Math.round(v.balance + v.real_estate + v.other_savings),
   }));
+  const lastY = series.length ? series[series.length - 1] : null;
   return {
-    retire_date: retireISO, final_balance: Math.round(balance), employer,
+    retire_date: retireISO, final_balance: Math.round(balance),
+    final_net_worth: lastY ? lastY.net_worth : Math.round(balance), employer,
     upgrade: upOn ? { base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, date: cfg.upgrade_date } : null,
     series,
   };
