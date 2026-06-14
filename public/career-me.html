@@ -20,6 +20,7 @@
   canvas { width:100%; max-width:100%; display:block; }
   table { width:100%; border-collapse:collapse; font-size:10px; }
   th, td { padding:4px 6px; text-align:left; border-bottom:1px solid #161616; }
+  #monthlyTable th, #monthlyTable td { font-size:12px; padding:5px 8px; }
   th { color:#888; font-weight:600; }
   td.num, th.num { text-align:right; }
   td.soon { color:#06d6a0; }
@@ -477,25 +478,58 @@ async function run401k() {
 async function loadMonthly() {
   var r = await fetch("/api/career/monthly", { headers: authHeaders() });
   if (!r.ok) return;
-  var d = await r.json();
-  if (d.error) { document.getElementById("monthlyBody").innerHTML = '<tr><td colspan="8" style="color:#a33">'+d.error+'</td></tr>'; return; }
+  renderMonthlyTable(await r.json());
+}
+
+// Build the monthly pay table dynamically: optional other-income / real-estate
+// columns, an annual 401k total row at each year boundary.
+function renderMonthlyTable(d) {
+  var tbl = document.getElementById("monthlyTable");
+  if (!d || d.error) { tbl.innerHTML = ""; return; }
   document.getElementById("monthlyHdr").textContent = d.upgrade ? ("· upgrade " + d.upgrade.seat + " " + d.upgrade.eq + " " + d.upgrade.base + " on " + d.upgrade.date) : "· no upgrade assumed";
-  document.getElementById("thLH").textContent = "lineholder (" + d.lineholder_hours + "h)";
-  document.getElementById("thRSV").textContent = "reserve (" + d.reserve_hours + "h)";
-  var prevSeat = null;
-  document.getElementById("monthlyBody").innerHTML = (d.rows||[]).map(function(m){
+  var cols = [
+    { h:"month", get:function(m){return m.ym;} },
+    { h:"seat", get:function(m){return m.seat+" "+m.eq;}, seat:true },
+    { h:"$/hr", num:true, get:function(m){return m.rate.toFixed(2);} },
+    { h:"lineholder ("+d.lineholder_hours+"h)", num:true, key:"wage_lineholder", sum:true, get:function(m){return fmtDollar(m.wage_lineholder);} },
+    { h:"reserve ("+d.reserve_hours+"h)", num:true, dim:true, key:"wage_reserve", sum:true, get:function(m){return fmtDollar(m.wage_reserve);} },
+  ];
+  if (d.has_other_income) cols.push({ h:"other income", num:true, key:"other_income", sum:true, get:function(m){return fmtDollar(m.other_income);} });
+  if (d.has_real_estate) cols.push({ h:"real estate", num:true, dim:true, key:"real_estate", last:true, get:function(m){return fmtDollar(m.real_estate);} });
+  cols.push({ h:"my 401k", num:true, key:"my_401k", sum:true, get:function(m){return fmtDollar(m.my_401k);} });
+  cols.push({ h:"co. 18%", num:true, key:"company_18", sum:true, get:function(m){return fmtDollar(m.company_18);} });
+  cols.push({ h:"total comp", num:true, green:true, key:"total_comp", sum:true, get:function(m){return fmtDollar(m.total_comp);} });
+
+  var thead = "<tr style='position:sticky;top:0;background:#0c0c0c;z-index:1'>" +
+    cols.map(function(c){ return "<th"+(c.num?" class='num'":"")+">"+c.h+"</th>"; }).join("") + "</tr>";
+
+  var html = "", prevSeat = null, agg = null, curYear = null;
+  function flushYear() {
+    if (!agg) return;
+    var cells = cols.map(function(c, i){
+      if (i === 0) return "<td style='color:#888'>"+curYear+" total</td>";
+      if (c.sum) return "<td class='num' style='color:#ffd166'>"+fmtDollar(agg[c.key]||0)+"</td>";
+      if (c.last) return "<td class='num' style='color:#666'>"+fmtDollar(agg["_last"]||0)+"</td>";
+      return "<td></td>";
+    }).join("");
+    html += "<tr style='background:#121212;border-top:1px solid #222;border-bottom:1px solid #222'>"+cells+"</tr>";
+  }
+  (d.rows||[]).forEach(function(m){
+    var y = m.ym.slice(0,4);
+    if (curYear !== null && y !== curYear) { flushYear(); agg = null; }
+    curYear = y;
+    if (!agg) agg = {};
+    cols.forEach(function(c){ if (c.sum) agg[c.key]=(agg[c.key]||0)+(m[c.key]||0); if (c.last) agg["_last"]=m[c.key]; });
     var hl = (m.seat !== prevSeat); prevSeat = m.seat;
-    var style = hl ? ' style="background:#0a1a14"' : '';
-    return '<tr'+style+'>'
-      + '<td>'+m.ym+'</td>'
-      + '<td'+(hl?' style="color:#06d6a0;font-weight:700"':'')+'>'+m.seat+' '+m.eq+'</td>'
-      + '<td class="num">'+m.rate.toFixed(2)+'</td>'
-      + '<td class="num">'+fmtDollar(m.wage_lineholder)+'</td>'
-      + '<td class="num" style="color:#888">'+fmtDollar(m.wage_reserve)+'</td>'
-      + '<td class="num">'+fmtDollar(m.my_401k)+'</td>'
-      + '<td class="num">'+fmtDollar(m.company_18)+'</td>'
-      + '<td class="num" style="color:#06d6a0">'+fmtDollar(m.total_comp)+'</td></tr>';
-  }).join("");
+    var tds = cols.map(function(c){
+      var st = c.dim ? " style='color:#888'" : (c.green ? " style='color:#06d6a0'" : "");
+      if (c.seat && hl) st = " style='color:#06d6a0;font-weight:700'";
+      return "<td"+(c.num?" class='num'":"")+st+">"+c.get(m)+"</td>";
+    }).join("");
+    html += "<tr"+(hl?" style='background:#0a1a14'":"")+">"+tds+"</tr>";
+  });
+  flushYear();
+  tbl.innerHTML = "<thead>"+thead+"</thead><tbody>"+html+"</tbody>";
 }
 
 // --- scenarios ---

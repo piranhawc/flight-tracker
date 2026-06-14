@@ -563,6 +563,13 @@ function monthlyWageSchedule(cfgArg) {
   const empPct = cfg.k401_employee_pct || 0;
   const lhHours = cfg.lineholder_hours || 82;
   const rsvHours = cfg.reserve_hours || 73;
+  const nowYear = today.getFullYear();
+  const otherMonthly = cfg.other_income_monthly || 0;
+  const otherGrow = cfg.other_income_growth_pct || 0;
+  const mkt = cfg.market_return_pct || 0;
+  let realEstate = cfg.real_estate || 0;
+  const hasOther = otherMonthly > 0;
+  const hasRE = (cfg.real_estate || 0) > 0;
   const upOn = (cfg.upgrade_enabled !== false && cfg.upgrade_date)
     ? new Date(parseInt(cfg.upgrade_date.slice(0, 4), 10), parseInt(cfg.upgrade_date.slice(5, 7), 10) - 1, 1)
     : null;
@@ -578,15 +585,19 @@ function monthlyWageSchedule(cfgArg) {
     const wageRSV = rate * rsvHours;      // reserve credit
     const co18 = wageLH * necPct;         // company discretionary: 18% of the month's pay
     const my401k = wageLH * empPct;       // your deferral
+    const otherM = otherMonthly * Math.pow(1 + otherGrow, Math.max(0, y - nowYear));
+    realEstate = realEstate * (1 + mkt / 12);
     rows.push({
       ym: `${y}-${String(d.getMonth() + 1).padStart(2, "0")}`, seat, eq,
       rate: Math.round(rate * 100) / 100,
       wage_lineholder: Math.round(wageLH), wage_reserve: Math.round(wageRSV),
-      total_comp: Math.round(wageLH + co18), my_401k: Math.round(my401k), company_18: Math.round(co18),
+      other_income: Math.round(otherM), real_estate: Math.round(realEstate),
+      total_comp: Math.round(wageLH + co18 + otherM), my_401k: Math.round(my401k), company_18: Math.round(co18),
     });
     d = new Date(y, d.getMonth() + 1, 1);
   }
   return { rows, lineholder_hours: lhHours, reserve_hours: rsvHours,
+    has_other_income: hasOther, has_real_estate: hasRE,
     upgrade: upOn ? { base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, date: cfg.upgrade_date } : null };
 }
 
