@@ -2038,6 +2038,84 @@ app.delete("/api/career/scenarios/:name", careerAuth, (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Login history (Mike-only view).
+app.get("/api/career/logins", careerAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  res.json(career.listPublicLogins());
+});
+
+// --- Public, no-password pilot self-serve --------------------------------
+// Any AA pilot logs in with a code (last-name letters + hire year, e.g.
+// "go2023") + their employee number, both checked against the seniority list.
+// We compute their retirement projection with defaults and no upgrade. Each
+// login is logged; Mike gets an email the first time a new pilot signs in.
+const MIKE_EMP = process.env.LOGBOOK_USER_EMP_NUM || "861307";
+const CAREER_ALERT_EMAIL = process.env.CAREER_ALERT_EMAIL || "mike.goebel@gmail.com";
+const publicSessions = new Map(); // token -> { emp, name, aa_sen }
+function publicAuth(req, res, next) {
+  const token = (req.headers.authorization || "").replace(/^Bearer /, "");
+  const sess = token && publicSessions.get(token);
+  if (!sess) return res.status(401).json({ error: "unauthorized" });
+  req.pilot = sess;
+  next();
+}
+
+// Only let public users set these (everything else uses defaults; no upgrade).
+const PUBLIC_NUM_FIELDS = ["k401_balance", "k401_employee_pct", "k401_return_pct", "annual_hours",
+  "annual_raise_pct", "irs_dc_limit", "real_estate", "other_savings", "market_return_pct",
+  "inflation_pct", "social_security_monthly", "ss_start_age", "other_income_monthly",
+  "other_income_growth_pct", "life_expectancy_age"];
+function sanitizePublicConfig(emp, body) {
+  const cfg = career.publicDefaults(emp);
+  for (const k of PUBLIC_NUM_FIELDS) {
+    if (body && body[k] != null && Number.isFinite(Number(body[k]))) cfg[k] = Number(body[k]);
+  }
+  if (body && typeof body.current_eq === "string") cfg.current_eq = body.current_eq;
+  if (body && typeof body.current_seat === "string") cfg.current_seat = body.current_seat;
+  if (body && typeof body.assumed_retire_date === "string") cfg.assumed_retire_date = body.assumed_retire_date;
+  cfg.upgrade_enabled = false; // public: never assume an upgrade
+  cfg.emp = String(emp);
+  return cfg;
+}
+
+app.post("/api/career/public/login", express.json(), async (req, res) => {
+  if (!careerGuard(res)) return;
+  const { code, emp } = req.body || {};
+  const v = career.validatePublicPilot(code, emp);
+  if (!v.ok) return res.status(401).json({ error: v.error });
+  const token = crypto.randomBytes(24).toString("hex");
+  publicSessions.set(token, { emp: v.pilot.emp, name: v.pilot.name, aa_sen: v.pilot.aa_sen });
+  let firstTime = false;
+  try { firstTime = career.logPublicLogin({ emp: v.pilot.emp, name: v.pilot.name, aa_sen: v.pilot.aa_sen, ip: getClientIp(req) }).first_time; }
+  catch (e) { console.error("[career] login log failed:", e.message); }
+  // Email Mike the first time a pilot other than him signs in.
+  if (firstTime && String(v.pilot.emp) !== String(MIKE_EMP)) {
+    agentmail.sendMail({
+      to: CAREER_ALERT_EMAIL,
+      subject: `Career page: new pilot login — ${v.pilot.name} (#${v.pilot.aa_sen})`,
+      text: `A new pilot used the career/retirement page:\n\n  Name: ${v.pilot.name}\n  AA seniority #: ${v.pilot.aa_sen}\n  Employee #: ${v.pilot.emp}\n  Hired: ${v.pilot.hire}\n  Retirement: ${v.pilot.retire}\n  IP: ${getClientIp(req)}\n  When: ${new Date().toISOString()}`,
+    }).catch((e) => console.error("[career] alert email failed:", e.message));
+  }
+  res.json({ token, pilot: v.pilot });
+});
+
+app.get("/api/career/public/summary", publicAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  try {
+    const standing = career.pilotStanding(req.pilot.emp);
+    if (!standing) return res.status(404).json({ error: "pilot not found" });
+    res.json({ summary: standing, defaults: career.publicDefaults(req.pilot.emp), base_fleets: career.BASE_FLEETS });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/career/public/project", publicAuth, express.json(), (req, res) => {
+  if (!careerGuard(res)) return;
+  try {
+    const cfg = sanitizePublicConfig(req.pilot.emp, req.body || {});
+    res.json({ k401: career.project401k(cfg), seniority: career.projectSeniority(cfg) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // --- APA-sourced crew helpers (used by logbook auto-fill) ---
 // LOGBOOK_USER_EMP_NUM filters the user themselves out of fetched crew lists
 // (no point logging "I flew with myself"). Defaults to Mike's emp number.

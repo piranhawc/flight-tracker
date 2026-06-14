@@ -77,6 +77,11 @@ function init() {
     CREATE TABLE IF NOT EXISTS career_scenario (
       name TEXT PRIMARY KEY, config_json TEXT NOT NULL, created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS career_public_login (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      emp TEXT NOT NULL, name TEXT, aa_sen INTEGER, ip TEXT, ts TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_public_login_emp ON career_public_login(emp);
   `);
   console.log(`[career] DB at ${DB_PATH} ready (${rosterCount()} pilots cached)`);
   return db;
@@ -318,8 +323,8 @@ function projectUpgrade({ holdLine, growthPerYear = 0, horizonYears = 32 }) {
 // Overall system-seniority trajectory: active pilots senior to the user, by
 // year, to the assumed retirement date. Your standing climbs as those above
 // you retire (new hires land below you, so they don't count).
-function projectSeniority() {
-  const cfg = getConfig();
+function projectSeniority(cfgArg) {
+  const cfg = cfgArg || getConfig();
   const me = getPilot(cfg.emp);
   if (!me || me.aa_sen == null) return { error: "user not in roster" };
   const retireISO = cfg.assumed_retire_date || me.retire || "";
@@ -476,6 +481,65 @@ function project401k(cfgArg) {
   };
 }
 
+// --- public pilot self-serve --------------------------------------------
+// Standing for any pilot by emp number (used by both the private and public
+// flows). Mirrors rosterSummary but for an arbitrary emp.
+function pilotStanding(emp) {
+  const me = getPilot(emp);
+  if (!me) return null;
+  const active = db.prepare("SELECT COUNT(*) n FROM career_roster WHERE status IN ('A','Recalled')").get().n;
+  let activeAbove = null, percentile = null;
+  if (me.aa_sen != null) {
+    activeAbove = db.prepare("SELECT COUNT(*) n FROM career_roster WHERE status IN ('A','Recalled') AND aa_sen < ?").get(me.aa_sen).n;
+    percentile = active ? activeAbove / active : null;
+  }
+  return {
+    updated_label: metaGet("roster_updated_label"),
+    total: rosterCount(), active, me, activeAbove, percentile,
+  };
+}
+
+// Validate a public login: code like "go2023" (first letters of last name +
+// hire year) plus the employee number. Both must match the roster record.
+function validatePublicPilot(code, emp) {
+  const m = /^([A-Za-z]+)(\d{4})$/.exec(String(code || "").trim());
+  if (!m) return { ok: false, error: "code should be your last-name letters + hire year, e.g. go2023" };
+  const letters = m[1].toLowerCase(), year = parseInt(m[2], 10);
+  const me = getPilot(String(emp || "").trim());
+  if (!me) return { ok: false, error: "employee number not found in the seniority list" };
+  const last = (me.last || "").toLowerCase();
+  const hireYear = me.hire ? new Date(me.hire).getFullYear() : null;
+  if (!last.startsWith(letters)) return { ok: false, error: "name letters don't match that employee number" };
+  if (hireYear !== year) return { ok: false, error: "hire year doesn't match that employee number" };
+  return { ok: true, pilot: { emp: me.emp, name: `${me.last}, ${me.initial}`, last: me.last, initial: me.initial,
+    aa_sen: me.aa_sen, retire: me.retire, hire: me.hire, status: me.status } };
+}
+
+// Default config for a public pilot: sensible assumptions, their emp, and NO
+// upgrade expectations.
+function publicDefaults(emp) {
+  return Object.assign({}, CONFIG_DEFAULTS, {
+    emp: String(emp),
+    upgrade_enabled: false,
+    assumed_retire_date: "",   // use their roster (age-65) retirement
+    k401_balance: 0,
+    social_security_monthly: 0,
+    other_income_monthly: 0,
+    real_estate: 0,
+    other_savings: 0,
+  });
+}
+
+function logPublicLogin({ emp, name, aa_sen, ip }) {
+  const prior = db.prepare("SELECT COUNT(*) n FROM career_public_login WHERE emp=?").get(String(emp)).n;
+  db.prepare("INSERT INTO career_public_login (emp,name,aa_sen,ip,ts) VALUES (?,?,?,?,?)")
+    .run(String(emp), name || "", aa_sen || null, ip || "", new Date().toISOString());
+  return { first_time: prior === 0 };
+}
+function listPublicLogins(limit = 200) {
+  return db.prepare("SELECT emp,name,aa_sen,ip,ts FROM career_public_login ORDER BY id DESC LIMIT ?").all(limit);
+}
+
 // --- saved scenarios -----------------------------------------------------
 function listScenarios() {
   return db.prepare("SELECT name, config_json, created_at FROM career_scenario ORDER BY created_at")
@@ -497,5 +561,6 @@ module.exports = {
   init, refreshRoster, rosterCount, rosterSummary, getPilot,
   getConfig, setConfig, getCategory, getAwards, holdLineFor,
   projectUpgrade, projectSeniority, project401k, listScenarios, saveScenario, deleteScenario,
+  pilotStanding, validatePublicPilot, publicDefaults, logPublicLogin, listPublicLogins,
   BASE_FLEETS, payScales, APA_SABRE_BASE,
 };
