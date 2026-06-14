@@ -134,6 +134,7 @@
     </div>
     <div class="row">
       <div><label>inflation %/yr</label><input type="number" id="inflPct" step="0.5" style="width:70px" onchange="saveAnd401k()"></div>
+      <div><label>retire withdrawal %/yr</label><input type="number" id="wdRate" step="0.25" style="width:80px" onchange="saveAnd401k()"></div>
       <div><label>Social Security $/mo</label><input type="number" id="ssMo" step="100" style="width:90px" onchange="saveAnd401k()"></div>
       <div><label>SS start age</label><input type="number" id="ssAge" step="1" style="width:60px" onchange="saveAnd401k()"></div>
       <div><label>other income $/mo</label><input type="number" id="otherInc" step="250" style="width:90px" onchange="saveAnd401k()"></div>
@@ -154,7 +155,7 @@
       </span>
     </div>
     <canvas id="chartIncome" height="180"></canvas>
-    <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>total comp (flight pay + 18%)</span><span><span class="sw" style="background:#ffd166"></span>total income (cash comp + Social Security + other)</span></div>
+    <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>total comp (flight pay + 18%)</span><span><span class="sw" style="background:#ffd166"></span>total income (working pay → in retirement: withdrawals + SS + RE + other)</span></div>
     <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:8px">401(k) BALANCE &amp; NET WORTH</div>
     <canvas id="chart401k" height="180"></canvas>
     <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>401k</span><span><span class="sw" style="background:#118ab2"></span>net worth (401k + real estate + savings)</span></div>
@@ -358,6 +359,7 @@ function applyConfigToInputs() {
   document.getElementById("otherSavings").value = CONFIG.other_savings || 0;
   document.getElementById("mktPct").value = ((CONFIG.market_return_pct||0)*100).toFixed(1);
   document.getElementById("inflPct").value = ((CONFIG.inflation_pct||0)*100).toFixed(1);
+  document.getElementById("wdRate").value = ((CONFIG.withdrawal_rate||0)*100).toFixed(2);
   document.getElementById("ssMo").value = CONFIG.social_security_monthly || 0;
   document.getElementById("ssAge").value = CONFIG.ss_start_age || 67;
   document.getElementById("otherInc").value = CONFIG.other_income_monthly || 0;
@@ -413,6 +415,7 @@ async function saveAnd401k() {
     other_savings: Number(document.getElementById("otherSavings").value),
     market_return_pct: Number(document.getElementById("mktPct").value)/100,
     inflation_pct: Number(document.getElementById("inflPct").value)/100,
+    withdrawal_rate: Number(document.getElementById("wdRate").value)/100,
     social_security_monthly: Number(document.getElementById("ssMo").value),
     ss_start_age: Number(document.getElementById("ssAge").value),
     other_income_monthly: Number(document.getElementById("otherInc").value),

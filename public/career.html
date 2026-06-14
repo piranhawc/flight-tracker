@@ -89,6 +89,7 @@
       <div><label>other savings $</label><input type="number" id="otherSavings" step="5000" style="width:110px"></div>
       <div><label>market growth %/yr</label><input type="number" id="mktPct" step="0.5" style="width:80px"></div>
       <div><label>inflation %/yr</label><input type="number" id="inflPct" step="0.5" style="width:70px"></div>
+      <div><label>retire withdrawal %/yr</label><input type="number" id="wdRate" step="0.25" style="width:80px"></div>
       <div><label>Social Security $/mo</label><input type="number" id="ssMo" step="100" style="width:90px"></div>
       <div><label>SS start age</label><input type="number" id="ssAge" step="1" style="width:60px"></div>
       <div><label>other income $/mo</label><input type="number" id="otherInc" step="250" style="width:90px"></div>
@@ -115,7 +116,7 @@
       </span>
     </div>
     <canvas id="chartIncome" height="170"></canvas>
-    <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>total comp (flight pay + 18%)</span><span><span class="sw" style="background:#ffd166"></span>total income (cash comp + Social Security + other)</span></div>
+    <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>total comp (flight pay + 18%)</span><span><span class="sw" style="background:#ffd166"></span>total income (working pay → in retirement: withdrawals + SS + RE + other)</span></div>
     <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:8px">401(k) BALANCE &amp; NET WORTH</div>
     <canvas id="chart401k" height="150"></canvas>
     <div class="hint">Employer adds 18% (non-elective), capped at the IRS 401k limit (overflow paid as cash); your deferral compounds monthly. AA 2026 pay scales. 2026 SS max: $2,969@62 · $4,152@67 · $5,181@70 — set to your SSA estimate. Estimates only.</div>
@@ -176,7 +177,7 @@ async function boot() {
   applyDefaults();
   onUpBase();
   document.getElementById("upBase").addEventListener("change", function(){ onUpBase(); project(); });
-  ["curEq","curSeat","hrs","bal","empPct","retPct","raisePct","irsCap","realEstate","otherSavings","mktPct","inflPct","ssMo","ssAge","otherInc","otherGrow",
+  ["curEq","curSeat","hrs","bal","empPct","retPct","raisePct","irsCap","realEstate","otherSavings","mktPct","inflPct","wdRate","ssMo","ssAge","otherInc","otherGrow",
    "upEnabled","upSeat","upEq","upDate","lhHours","rsvHours"]
     .forEach(function(id){ document.getElementById(id).addEventListener("change", project); });
   project();
@@ -216,6 +217,7 @@ function applyDefaults() {
   document.getElementById("otherSavings").value = c.other_savings;
   document.getElementById("mktPct").value = (c.market_return_pct*100).toFixed(1);
   document.getElementById("inflPct").value = (c.inflation_pct*100).toFixed(1);
+  document.getElementById("wdRate").value = ((c.withdrawal_rate||0.04)*100).toFixed(2);
   document.getElementById("ssMo").value = c.social_security_monthly;
   document.getElementById("ssAge").value = c.ss_start_age;
   document.getElementById("otherInc").value = c.other_income_monthly;
@@ -239,6 +241,7 @@ function gatherConfig() {
     other_savings: Number(document.getElementById("otherSavings").value),
     market_return_pct: Number(document.getElementById("mktPct").value)/100,
     inflation_pct: Number(document.getElementById("inflPct").value)/100,
+    withdrawal_rate: Number(document.getElementById("wdRate").value)/100,
     social_security_monthly: Number(document.getElementById("ssMo").value),
     ss_start_age: Number(document.getElementById("ssAge").value),
     other_income_monthly: Number(document.getElementById("otherInc").value),

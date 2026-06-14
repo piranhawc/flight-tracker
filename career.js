@@ -120,6 +120,9 @@ const CONFIG_DEFAULTS = {
   market_return_pct: 0.08,
   // Inflation (today's-dollars view + Social Security COLA).
   inflation_pct: 0.02,
+  // Retirement drawdown: annual % withdrawn from assets (401k + savings + real
+  // estate) as income once retired.
+  withdrawal_rate: 0.04,
   // Social Security (2026 max: $2,969@62, $4,152@67 FRA, $5,181@70). Edit to
   // your SSA estimate. Continues in retirement from the start age.
   social_security_monthly: 4152,
@@ -397,6 +400,7 @@ function project401k(cfgArg) {
     : null;
 
   const mkt = cfg.market_return_pct || 0;
+  const wr = cfg.withdrawal_rate || 0;               // retirement drawdown rate
   const inflation = cfg.inflation_pct || 0;          // for SS COLA + today's-$ deflation
   const nowYear = today.getFullYear();
   const retireYear = retire.getFullYear();
@@ -446,27 +450,36 @@ function project401k(cfgArg) {
     realEstate = realEstate * (1 + mkt / 12);
     otherSavings = otherSavings * (1 + mkt / 12);
     if (d < endMonth) { balAtRetire = balance; reAtRetire = realEstate; savAtRetire = otherSavings; }
+    // In retirement, draw the withdrawal rate from all assets as income.
+    let withdrawalM = 0;
+    if (retired) {
+      const wB = balance * (wr / 12), wRE = realEstate * (wr / 12), wS = otherSavings * (wr / 12);
+      balance -= wB; realEstate -= wRE; otherSavings -= wS;
+      withdrawalM = wB + wRE + wS;
+    }
     const yr = yearly.get(y) || { year: y, income: 0, into401k: 0, total_comp: 0, cash_comp: 0,
-      other_income: 0, social_security: 0, seat, eq, balance: 0, real_estate: 0, other_savings: 0, retired };
+      other_income: 0, social_security: 0, withdrawal: 0, seat, eq, balance: 0, real_estate: 0, other_savings: 0, retired };
     yr.income += mIncome;
     yr.into401k += into401k;
     yr.total_comp += mIncome + employerM;        // employment comp: flight pay + full 18%
     yr.cash_comp += mIncome + employerCash;       // employment cash: flight pay + employer overflow
     yr.other_income += otherM;
     yr.social_security += ssM;
+    yr.withdrawal += withdrawalM;
     yr.seat = retired ? "retired" : seat; yr.eq = retired ? "" : eq; yr.balance = balance; yr.retired = retired;
     yr.real_estate = realEstate; yr.other_savings = otherSavings;
     yearly.set(y, yr);
     d = new Date(y, d.getMonth() + 1, 1);
   }
   const series = [...yearly.values()].map((v) => {
-    const totalIncome = v.cash_comp + v.other_income + v.social_security;
+    const totalIncome = v.cash_comp + v.other_income + v.social_security + v.withdrawal;
     return {
       year: v.year, seat: v.seat, eq: v.eq, retired: v.retired,
       income: Math.round(v.income), monthly_income: Math.round(v.income / 12),
       total_comp: Math.round(v.total_comp), monthly_total_comp: Math.round(v.total_comp / 12),
       cash_comp: Math.round(v.cash_comp), monthly_cash_comp: Math.round(v.cash_comp / 12),
       other_income: Math.round(v.other_income), social_security: Math.round(v.social_security),
+      withdrawal: Math.round(v.withdrawal),
       total_income: Math.round(totalIncome), monthly_total_income: Math.round(totalIncome / 12),
       into_401k: Math.round(v.into401k), balance: Math.round(v.balance),
       real_estate: Math.round(v.real_estate), other_savings: Math.round(v.other_savings),

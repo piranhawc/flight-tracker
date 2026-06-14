@@ -2071,7 +2071,7 @@ function publicAuth(req, res, next) {
 const PUBLIC_NUM_FIELDS = ["k401_balance", "k401_employee_pct", "k401_return_pct", "annual_hours",
   "annual_raise_pct", "irs_dc_limit", "real_estate", "other_savings", "market_return_pct",
   "inflation_pct", "social_security_monthly", "ss_start_age", "other_income_monthly",
-  "other_income_growth_pct", "life_expectancy_age", "lineholder_hours", "reserve_hours"];
+  "other_income_growth_pct", "life_expectancy_age", "lineholder_hours", "reserve_hours", "withdrawal_rate"];
 const PUBLIC_STR_FIELDS = ["current_eq", "current_seat", "assumed_retire_date",
   "upgrade_base", "upgrade_eq", "upgrade_seat", "upgrade_date"];
 function sanitizePublicConfig(emp, body) {
