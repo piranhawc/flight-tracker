@@ -113,6 +113,17 @@ const CONFIG_DEFAULTS = {
   real_estate: 0,
   other_savings: 0,
   market_return_pct: 0.08,
+  // Inflation (today's-dollars view + Social Security COLA).
+  inflation_pct: 0.02,
+  // Social Security (2026 max: $2,969@62, $4,152@67 FRA, $5,181@70). Edit to
+  // your SSA estimate. Continues in retirement from the start age.
+  social_security_monthly: 4152,
+  ss_start_age: 67,
+  // Other monthly income (e.g. rental), grown at its own rate; runs the whole
+  // timeline (working + retirement).
+  other_income_monthly: 0,
+  other_income_growth_pct: 0.02,
+  life_expectancy_age: 90,
 };
 
 function getConfig() {
@@ -378,57 +389,88 @@ function project401k(cfgArg) {
     : null;
 
   const mkt = cfg.market_return_pct || 0;
+  const inflation = cfg.inflation_pct || 0;          // for SS COLA + today's-$ deflation
+  const nowYear = today.getFullYear();
+  const retireYear = retire.getFullYear();
+  // Birth year from the age-65 retirement on file (for SS age + life expectancy).
+  const birthYear = (me && me.retire ? new Date(me.retire).getFullYear() : retireYear) - 65;
+  const ssMonthly = cfg.social_security_monthly || 0;
+  const ssStartAge = cfg.ss_start_age || 67;
+  const otherMonthly = cfg.other_income_monthly || 0;
+  const otherGrow = cfg.other_income_growth_pct || 0;
+  const lifeAge = cfg.life_expectancy_age || 90;
+  // Income timeline runs to life expectancy so Social Security (which starts
+  // after the age-65 retirement) and other income show in retirement.
+  const incomeEndMonth = new Date(birthYear + lifeAge, retire.getMonth(), 1);
+
   let balance = cfg.k401_balance || 0;
   let realEstate = cfg.real_estate || 0;
   let otherSavings = cfg.other_savings || 0;
+  let balAtRetire = balance, reAtRetire = realEstate, savAtRetire = otherSavings;
   const yearly = new Map();
   let ytd401k = 0, ytdYear = null;
   let d = new Date(today.getFullYear(), today.getMonth(), 1);
-  while (d <= endMonth) {
+  while (d <= incomeEndMonth) {
     const y = d.getFullYear();
+    const age = y - birthYear;
+    const retired = d >= endMonth;
     if (y !== ytdYear) { ytd401k = 0; ytdYear = y; }
     let seat = cfg.current_seat, eq = cfg.current_eq;
     if (upOn && d >= upOn) { seat = cfg.upgrade_seat || seat; eq = cfg.upgrade_eq || eq; }
     const yos = Math.max(1, y - hireYear + 1);
     const raiseMul = Math.pow(1 + raise, Math.max(0, y - baseYear));
-    const mIncome = hourlyRate(eq, seat, yos) * monthlyHours * raiseMul;
+    // Flight pay + employer 18% only while still working.
+    const mIncome = retired ? 0 : hourlyRate(eq, seat, yos) * monthlyHours * raiseMul;
     const employerM = mIncome * necPct;
     const employeeM = mIncome * empPct;
     const annLimit = irsBase * Math.pow(1 + irsGrow, Math.max(0, y - baseYear));
-    // Fill the 401k up to the annual IRS cap: your deferral first, then the
-    // employer 18%; whatever employer money overflows the cap is paid as cash.
     let room = Math.max(0, annLimit - ytd401k);
     const empInto = Math.min(employeeM, room); room -= empInto;
     const erInto = Math.min(employerM, room);
     ytd401k += empInto + erInto;
     const into401k = empInto + erInto;
     const employerCash = employerM - erInto;
+    // Other income (grown from today) + Social Security (COLA from today, once
+    // at start age) — both in nominal dollars.
+    const otherM = otherMonthly * Math.pow(1 + otherGrow, Math.max(0, y - nowYear));
+    const ssM = (ssMonthly > 0 && age >= ssStartAge) ? ssMonthly * Math.pow(1 + inflation, Math.max(0, y - nowYear)) : 0;
     balance = balance * (1 + ret / 12) + into401k;
     realEstate = realEstate * (1 + mkt / 12);
     otherSavings = otherSavings * (1 + mkt / 12);
-    const yr = yearly.get(y) || { year: y, income: 0, into401k: 0, total_comp: 0, cash_comp: 0, seat, eq, balance: 0, real_estate: 0, other_savings: 0 };
+    if (d < endMonth) { balAtRetire = balance; reAtRetire = realEstate; savAtRetire = otherSavings; }
+    const yr = yearly.get(y) || { year: y, income: 0, into401k: 0, total_comp: 0, cash_comp: 0,
+      other_income: 0, social_security: 0, seat, eq, balance: 0, real_estate: 0, other_savings: 0, retired };
     yr.income += mIncome;
     yr.into401k += into401k;
-    yr.total_comp += mIncome + employerM;       // all-in: flight pay + full 18%
-    yr.cash_comp += mIncome + employerCash;      // cash paid: flight pay + employer overflow
-    yr.seat = seat; yr.eq = eq; yr.balance = balance;
+    yr.total_comp += mIncome + employerM;        // employment comp: flight pay + full 18%
+    yr.cash_comp += mIncome + employerCash;       // employment cash: flight pay + employer overflow
+    yr.other_income += otherM;
+    yr.social_security += ssM;
+    yr.seat = retired ? "retired" : seat; yr.eq = retired ? "" : eq; yr.balance = balance; yr.retired = retired;
     yr.real_estate = realEstate; yr.other_savings = otherSavings;
     yearly.set(y, yr);
     d = new Date(y, d.getMonth() + 1, 1);
   }
-  const series = [...yearly.values()].map((v) => ({
-    year: v.year, seat: v.seat, eq: v.eq,
-    income: Math.round(v.income), monthly_income: Math.round(v.income / 12),
-    total_comp: Math.round(v.total_comp), monthly_total_comp: Math.round(v.total_comp / 12),
-    cash_comp: Math.round(v.cash_comp), monthly_cash_comp: Math.round(v.cash_comp / 12),
-    into_401k: Math.round(v.into401k), balance: Math.round(v.balance),
-    real_estate: Math.round(v.real_estate), other_savings: Math.round(v.other_savings),
-    net_worth: Math.round(v.balance + v.real_estate + v.other_savings),
-  }));
-  const lastY = series.length ? series[series.length - 1] : null;
+  const series = [...yearly.values()].map((v) => {
+    const totalIncome = v.cash_comp + v.other_income + v.social_security;
+    return {
+      year: v.year, seat: v.seat, eq: v.eq, retired: v.retired,
+      income: Math.round(v.income), monthly_income: Math.round(v.income / 12),
+      total_comp: Math.round(v.total_comp), monthly_total_comp: Math.round(v.total_comp / 12),
+      cash_comp: Math.round(v.cash_comp), monthly_cash_comp: Math.round(v.cash_comp / 12),
+      other_income: Math.round(v.other_income), social_security: Math.round(v.social_security),
+      total_income: Math.round(totalIncome), monthly_total_income: Math.round(totalIncome / 12),
+      into_401k: Math.round(v.into401k), balance: Math.round(v.balance),
+      real_estate: Math.round(v.real_estate), other_savings: Math.round(v.other_savings),
+      net_worth: Math.round(v.balance + v.real_estate + v.other_savings),
+    };
+  });
   return {
-    retire_date: retireISO, final_balance: Math.round(balance),
-    final_net_worth: lastY ? lastY.net_worth : Math.round(balance), employer,
+    retire_date: retireISO, retire_year: retireYear, now_year: nowYear,
+    inflation_pct: inflation, ss_start_age: ssStartAge, ss_start_year: birthYear + ssStartAge,
+    final_balance: Math.round(balAtRetire),
+    final_net_worth: Math.round(balAtRetire + reAtRetire + savAtRetire),
+    employer,
     upgrade: upOn ? { base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, date: cfg.upgrade_date } : null,
     series,
   };

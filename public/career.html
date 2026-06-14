@@ -130,6 +130,14 @@
       <div><label>market growth %/yr</label><input type="number" id="mktPct" step="0.5" style="width:80px" onchange="saveAnd401k()"></div>
       <div class="hint" style="margin:0">Real estate + other savings grown at this rate to retirement for net worth.</div>
     </div>
+    <div class="row">
+      <div><label>inflation %/yr</label><input type="number" id="inflPct" step="0.5" style="width:70px" onchange="saveAnd401k()"></div>
+      <div><label>Social Security $/mo</label><input type="number" id="ssMo" step="100" style="width:90px" onchange="saveAnd401k()"></div>
+      <div><label>SS start age</label><input type="number" id="ssAge" step="1" style="width:60px" onchange="saveAnd401k()"></div>
+      <div><label>other income $/mo</label><input type="number" id="otherInc" step="250" style="width:90px" onchange="saveAnd401k()"></div>
+      <div><label>other income growth %/yr</label><input type="number" id="otherGrow" step="0.5" style="width:80px" onchange="saveAnd401k()"></div>
+      <div class="hint" style="margin:0">SS continues from start age; income timeline runs to life expectancy (90). 2026 SS max: $2,969@62 · $4,152@67 · $5,181@70 — set to your SSA estimate.</div>
+    </div>
     <div class="kpi" style="grid-template-columns:repeat(4,1fr);margin-bottom:10px">
       <div class="card"><div class="label">401k at retirement</div><div class="value good" id="finalBal">—</div></div>
       <div class="card"><div class="label">net worth at retirement</div><div class="value good" id="finalNW">—</div><div class="sub">401k + RE + savings</div></div>
@@ -137,11 +145,14 @@
       <div class="card"><div class="label">income after upgrade</div><div class="value" id="incUp">—</div><div class="sub" id="incUpSub"></div></div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center">
-      <span style="color:#888;font-size:9px;letter-spacing:1px">COMPENSATION GOING FORWARD</span>
-      <span><button class="btn incmode active" data-mode="year" onclick="setIncMode('year')">$/yr</button><button class="btn incmode" data-mode="month" onclick="setIncMode('month')">$/mo</button></span>
+      <span style="color:#888;font-size:9px;letter-spacing:1px">INCOME GOING FORWARD (TO LIFE EXPECTANCY)</span>
+      <span>
+        <button class="btn incmode active" data-mode="year" onclick="setIncMode('year')">$/yr</button><button class="btn incmode" data-mode="month" onclick="setIncMode('month')">$/mo</button>
+        <button class="btn realmode" data-real="0" onclick="setRealMode(0)">nominal</button><button class="btn realmode active" data-real="1" onclick="setRealMode(1)">today's $</button>
+      </span>
     </div>
     <canvas id="chartIncome" height="180"></canvas>
-    <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>total comp (flight pay + 18%)</span><span><span class="sw" style="background:#ffd166"></span>total cash comp (pay + employer overflow past the 401k cap)</span></div>
+    <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>total comp (flight pay + 18%)</span><span><span class="sw" style="background:#ffd166"></span>total income (cash comp + Social Security + other)</span></div>
     <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:8px">401(k) BALANCE &amp; NET WORTH</div>
     <canvas id="chart401k" height="180"></canvas>
     <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>401k</span><span><span class="sw" style="background:#118ab2"></span>net worth (401k + real estate + savings)</span></div>
@@ -325,6 +336,11 @@ function applyConfigToInputs() {
   document.getElementById("realEstate").value = CONFIG.real_estate || 0;
   document.getElementById("otherSavings").value = CONFIG.other_savings || 0;
   document.getElementById("mktPct").value = ((CONFIG.market_return_pct||0)*100).toFixed(1);
+  document.getElementById("inflPct").value = ((CONFIG.inflation_pct||0)*100).toFixed(1);
+  document.getElementById("ssMo").value = CONFIG.social_security_monthly || 0;
+  document.getElementById("ssAge").value = CONFIG.ss_start_age || 67;
+  document.getElementById("otherInc").value = CONFIG.other_income_monthly || 0;
+  document.getElementById("otherGrow").value = ((CONFIG.other_income_growth_pct||0)*100).toFixed(1);
   document.getElementById("curEq").value = CONFIG.current_eq;
   document.getElementById("curSeat").value = CONFIG.current_seat;
   document.getElementById("hrHint").textContent = (CONFIG.annual_hours||912) + " hr/yr";
@@ -346,11 +362,19 @@ function onUpBase(skipSave) {
 document.getElementById("curEq").addEventListener("change", saveAnd401k);
 document.getElementById("curSeat").addEventListener("change", saveAnd401k);
 
-var INCMODE = "year";
+var INCMODE = "year", REALMODE = 1;
 function setIncMode(m) {
   INCMODE = m;
   Array.prototype.forEach.call(document.querySelectorAll(".incmode"), function(b){ b.classList.toggle("active", b.dataset.mode===m); });
   if (window._k401) renderIncomeChart(window._k401);
+}
+function setRealMode(r) {
+  REALMODE = r;
+  Array.prototype.forEach.call(document.querySelectorAll(".realmode"), function(b){ b.classList.toggle("active", Number(b.dataset.real)===r); });
+  if (window._k401) renderIncomeChart(window._k401);
+}
+function deflate(val, year, d) {
+  return REALMODE ? val / Math.pow(1 + (d.inflation_pct||0), Math.max(0, year - (d.now_year||year))) : val;
 }
 
 async function saveAnd401k() {
@@ -365,6 +389,11 @@ async function saveAnd401k() {
     real_estate: Number(document.getElementById("realEstate").value),
     other_savings: Number(document.getElementById("otherSavings").value),
     market_return_pct: Number(document.getElementById("mktPct").value)/100,
+    inflation_pct: Number(document.getElementById("inflPct").value)/100,
+    social_security_monthly: Number(document.getElementById("ssMo").value),
+    ss_start_age: Number(document.getElementById("ssAge").value),
+    other_income_monthly: Number(document.getElementById("otherInc").value),
+    other_income_growth_pct: Number(document.getElementById("otherGrow").value)/100,
     current_eq: document.getElementById("curEq").value,
     current_seat: document.getElementById("curSeat").value,
     upgrade_enabled: document.getElementById("upEnabled").checked,
@@ -379,11 +408,11 @@ async function saveAnd401k() {
 }
 function renderIncomeChart(d) {
   var s = d.series || [];
-  var tot = INCMODE === "month" ? "monthly_total_comp" : "total_comp";
-  var cash = INCMODE === "month" ? "monthly_cash_comp" : "cash_comp";
+  var compKey = INCMODE === "month" ? "monthly_total_comp" : "total_comp";
+  var incKey = INCMODE === "month" ? "monthly_total_income" : "total_income";
   multiLineChart("chartIncome", [
-    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return p[tot];}), color: "#06d6a0" },
-    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return p[cash];}), color: "#ffd166" },
+    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return deflate(p[compKey], p.year, d);}), color: "#06d6a0" },
+    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return deflate(p[incKey], p.year, d);}), color: "#ffd166" },
   ], true);
 }
 async function run401k() {
@@ -394,9 +423,11 @@ async function run401k() {
   window._k401 = d;
   var s = d.series || [];
   renderIncomeChart(d);
+  // Balance/net-worth only meaningful through retirement (no drawdown modeled).
+  var bs = s.filter(function(p){ return p.year <= d.retire_year; });
   multiLineChart("chart401k", [
-    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return p.balance;}), color: "#06d6a0" },
-    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return p.net_worth;}), color: "#118ab2" },
+    { labels: bs.map(function(p){return p.year;}), values: bs.map(function(p){return p.balance;}), color: "#06d6a0" },
+    { labels: bs.map(function(p){return p.year;}), values: bs.map(function(p){return p.net_worth;}), color: "#118ab2" },
   ], true);
   document.getElementById("finalBal").textContent = fmtDollar(d.final_balance);
   document.getElementById("finalNW").textContent = fmtDollar(d.final_net_worth);
