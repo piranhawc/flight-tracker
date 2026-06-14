@@ -74,6 +74,9 @@ function init() {
 
     CREATE TABLE IF NOT EXISTS career_meta   (k TEXT PRIMARY KEY, v TEXT);
     CREATE TABLE IF NOT EXISTS career_config (k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE IF NOT EXISTS career_scenario (
+      name TEXT PRIMARY KEY, config_json TEXT NOT NULL, created_at TEXT NOT NULL
+    );
   `);
   console.log(`[career] DB at ${DB_PATH} ready (${rosterCount()} pilots cached)`);
   return db;
@@ -90,11 +93,22 @@ const CONFIG_DEFAULTS = {
   current_eq: "320",
   current_seat: "FO",
   k401_balance: 50000,
-  k401_employee_pct: 0.18,       // Mike currently defers 18% (>=4% earns full match)
+  k401_employee_pct: 0.18,       // Mike currently defers 18% himself
   k401_return_pct: 0.07,
   annual_hours: 912,             // 76 pay-hours/month averaged * 12
   annual_raise_pct: 0.02,        // contract pay raise/yr compounded past the table's base year
   growth_per_year: 0,            // category seats added/yr (slider; +grow=sooner)
+  // Manual upgrade assumption that drives income/401k (independent of the
+  // attrition projection). Default: CA 320 ORD in Nov 2026.
+  upgrade_enabled: true,
+  upgrade_base: "ORD",
+  upgrade_eq: "320",
+  upgrade_seat: "CA",
+  upgrade_date: "2026-11",       // YYYY-MM
+  // IRS defined-contribution annual cap (415(c)). Employer 18% + your deferral
+  // fill the 401k up to this; the employer overflow is paid out as cash.
+  irs_dc_limit: 70000,
+  irs_limit_growth_pct: 0.02,
 };
 
 function getConfig() {
@@ -270,17 +284,44 @@ function projectUpgrade({ holdLine, growthPerYear = 0, horizonYears = 32 }) {
     return lo;
   };
   const months = monthsBetween(today, horizonYears * 12);
-  let holdDate = null;
+  let holdDate = null, tail = 0;
   const series = [];
   for (const m of months) {
     const yrs = (m - today) / (365.25 * 24 * 3600 * 1000);
     const grown = Math.round((growthPerYear || 0) * yrs); // extra seats opening
     const closed = cumAt(m) + grown;
     const remaining = Math.max(0, gap - closed);
-    series.push({ date: m.toISOString().slice(0, 7), pilots_ahead: remaining, active_rank: Math.max(1, myActiveAbove - cumAt(m)) });
+    series.push({ date: m.toISOString().slice(0, 7), pilots_ahead: remaining });
     if (!holdDate && closed >= gap) holdDate = m.toISOString().slice(0, 7);
+    // Stop a few months past the hold date so the chart bottoms out there
+    // instead of flat-lining at zero for the rest of the horizon.
+    if (holdDate && ++tail > 3) break;
   }
   return { hold_now: false, gap, my_seno: me.aa_sen, hold_line: holdLine, hold_date: holdDate, series };
+}
+
+// Overall system-seniority trajectory: active pilots senior to the user, by
+// year, to the assumed retirement date. Your standing climbs as those above
+// you retire (new hires land below you, so they don't count).
+function projectSeniority() {
+  const cfg = getConfig();
+  const me = getPilot(cfg.emp);
+  if (!me || me.aa_sen == null) return { error: "user not in roster" };
+  const retireISO = cfg.assumed_retire_date || me.retire || "";
+  if (!retireISO) return { error: "no retirement date" };
+  const endYear = new Date(retireISO).getFullYear();
+  const seniors = db.prepare(
+    "SELECT retire FROM career_roster WHERE status IN ('A','Recalled') AND aa_sen < ?").all(me.aa_sen)
+    .map((r) => r.retire).filter(Boolean);
+  const startActiveAbove = seniors.length;
+  const series = [];
+  const startYear = new Date().getFullYear();
+  for (let y = startYear; y <= endYear; y++) {
+    const cutoff = `${y}-12-31`;
+    const ahead = seniors.reduce((n, r) => n + (r > cutoff ? 1 : 0), 0);
+    series.push({ year: y, pilots_ahead: ahead });
+  }
+  return { my_seno: me.aa_sen, start_active_above: startActiveAbove, retire_year: endYear, series };
 }
 
 // --- 401k projection -----------------------------------------------------
@@ -288,7 +329,7 @@ let PAY_SCALES = null;
 function payScales() {
   if (PAY_SCALES) return PAY_SCALES;
   try { PAY_SCALES = JSON.parse(fs.readFileSync(path.join(__dirname, "pay-scales.json"), "utf8")); }
-  catch (e) { PAY_SCALES = { employer: { nec_pct: 0.18, match_pct: 0.04 }, rates: {} }; }
+  catch (e) { PAY_SCALES = { employer: { nec_pct: 0.18, match_pct: 0.0 }, rates: {} }; }
   return PAY_SCALES;
 }
 
@@ -301,48 +342,104 @@ function hourlyRate(eq, seat, yos) {
   return arr[i];
 }
 
-// Project the 401k year by year to the assumed retirement date. Income is
-// derived from the pay scale for the current seat/fleet, switching to the
-// projected upgrade seat/fleet at the projected hold year (if provided).
-function project401k({ upgrade } = {}) {
-  const cfg = getConfig();
+// Project income + 401k month-by-month to the assumed retirement date.
+// Income comes from the pay scale for the current seat/fleet, switching to the
+// manual upgrade seat/fleet on cfg.upgrade_date (YYYY-MM). Returns a yearly
+// series (income summed over the year, year-end balance) so a mid-year
+// upgrade (e.g. Nov 2026) is captured precisely. Pass a config snapshot to
+// project a saved scenario without touching live config.
+function project401k(cfgArg) {
+  const cfg = cfgArg || getConfig();
   const me = getPilot(cfg.emp);
   const ps = payScales();
-  const employer = ps.employer || { nec_pct: 0.18, match_pct: 0.04 };
+  const employer = ps.employer || { nec_pct: 0.18, match_pct: 0.0 };
   const retireISO = cfg.assumed_retire_date || (me && me.retire) || "";
   const hireISO = (me && me.hire) || "2023-01-01";
   if (!retireISO) return { error: "no retirement date" };
   const today = new Date();
-  const retireDate = new Date(retireISO);
+  const retire = new Date(retireISO);
+  const endMonth = new Date(retire.getFullYear(), retire.getMonth(), 1);
   const hireYear = new Date(hireISO).getFullYear();
-  const annualHours = cfg.annual_hours || 1000;
-  const empPct = cfg.k401_employee_pct || 0;
-  const ret = cfg.k401_return_pct || 0;
-  const matchPct = empPct >= employer.match_pct ? employer.match_pct : empPct;
-
   const baseYear = ps.base_year || 2026;
+  const monthlyHours = (cfg.annual_hours || 912) / 12;
+  const empPct = cfg.k401_employee_pct || 0;
+  const necPct = employer.nec_pct || 0;
+  const ret = cfg.k401_return_pct || 0;
   const raise = cfg.annual_raise_pct || 0;
+  const irsBase = cfg.irs_dc_limit || 70000;
+  const irsGrow = cfg.irs_limit_growth_pct || 0;
+
+  const upOn = (cfg.upgrade_enabled !== false && cfg.upgrade_date)
+    ? new Date(parseInt(cfg.upgrade_date.slice(0, 4), 10), parseInt(cfg.upgrade_date.slice(5, 7), 10) - 1, 1)
+    : null;
+
   let balance = cfg.k401_balance || 0;
-  let seat = cfg.current_seat, eq = cfg.current_eq;
-  const series = [];
-  const upYear = upgrade && upgrade.hold_date ? parseInt(upgrade.hold_date.slice(0, 4), 10) : null;
-  for (let y = today.getFullYear(); y <= retireDate.getFullYear(); y++) {
-    if (upYear && y >= upYear && upgrade) { seat = upgrade.seat || seat; eq = upgrade.eq || eq; }
+  const yearly = new Map();
+  let ytd401k = 0, ytdYear = null;
+  let d = new Date(today.getFullYear(), today.getMonth(), 1);
+  while (d <= endMonth) {
+    const y = d.getFullYear();
+    if (y !== ytdYear) { ytd401k = 0; ytdYear = y; }
+    let seat = cfg.current_seat, eq = cfg.current_eq;
+    if (upOn && d >= upOn) { seat = cfg.upgrade_seat || seat; eq = cfg.upgrade_eq || eq; }
     const yos = Math.max(1, y - hireYear + 1);
     const raiseMul = Math.pow(1 + raise, Math.max(0, y - baseYear));
-    const income = hourlyRate(eq, seat, yos) * annualHours * raiseMul;
-    const employerAdd = income * ((employer.nec_pct || 0) + matchPct);
-    const employeeAdd = income * empPct;
-    // grow existing balance, then add this year's contributions (mid-year-ish)
-    balance = balance * (1 + ret) + (employerAdd + employeeAdd) * (1 + ret / 2);
-    series.push({ year: y, seat, eq, income: Math.round(income),
-      contrib: Math.round(employerAdd + employeeAdd), balance: Math.round(balance) });
+    const mIncome = hourlyRate(eq, seat, yos) * monthlyHours * raiseMul;
+    const employerM = mIncome * necPct;
+    const employeeM = mIncome * empPct;
+    const annLimit = irsBase * Math.pow(1 + irsGrow, Math.max(0, y - baseYear));
+    // Fill the 401k up to the annual IRS cap: your deferral first, then the
+    // employer 18%; whatever employer money overflows the cap is paid as cash.
+    let room = Math.max(0, annLimit - ytd401k);
+    const empInto = Math.min(employeeM, room); room -= empInto;
+    const erInto = Math.min(employerM, room);
+    ytd401k += empInto + erInto;
+    const into401k = empInto + erInto;
+    const employerCash = employerM - erInto;
+    balance = balance * (1 + ret / 12) + into401k;
+    const yr = yearly.get(y) || { year: y, income: 0, into401k: 0, total_comp: 0, cash_comp: 0, seat, eq, balance: 0 };
+    yr.income += mIncome;
+    yr.into401k += into401k;
+    yr.total_comp += mIncome + employerM;       // all-in: flight pay + full 18%
+    yr.cash_comp += mIncome + employerCash;      // cash paid: flight pay + employer overflow
+    yr.seat = seat; yr.eq = eq; yr.balance = balance;
+    yearly.set(y, yr);
+    d = new Date(y, d.getMonth() + 1, 1);
   }
-  return { retire_date: retireISO, final_balance: Math.round(balance), employer, series };
+  const series = [...yearly.values()].map((v) => ({
+    year: v.year, seat: v.seat, eq: v.eq,
+    income: Math.round(v.income), monthly_income: Math.round(v.income / 12),
+    total_comp: Math.round(v.total_comp), monthly_total_comp: Math.round(v.total_comp / 12),
+    cash_comp: Math.round(v.cash_comp), monthly_cash_comp: Math.round(v.cash_comp / 12),
+    into_401k: Math.round(v.into401k), balance: Math.round(v.balance),
+  }));
+  return {
+    retire_date: retireISO, final_balance: Math.round(balance), employer,
+    upgrade: upOn ? { base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, date: cfg.upgrade_date } : null,
+    series,
+  };
+}
+
+// --- saved scenarios -----------------------------------------------------
+function listScenarios() {
+  return db.prepare("SELECT name, config_json, created_at FROM career_scenario ORDER BY created_at")
+    .all().map((r) => ({ name: r.name, config: JSON.parse(r.config_json), created_at: r.created_at }));
+}
+function saveScenario(name, configOverride) {
+  const snapshot = Object.assign({}, getConfig(), configOverride || {});
+  db.prepare(`INSERT INTO career_scenario (name, config_json, created_at) VALUES (?,?,?)
+    ON CONFLICT(name) DO UPDATE SET config_json=excluded.config_json`)
+    .run(String(name), JSON.stringify(snapshot), new Date().toISOString());
+  return listScenarios();
+}
+function deleteScenario(name) {
+  db.prepare("DELETE FROM career_scenario WHERE name=?").run(String(name));
+  return listScenarios();
 }
 
 module.exports = {
   init, refreshRoster, rosterCount, rosterSummary, getPilot,
   getConfig, setConfig, getCategory, getAwards, holdLineFor,
-  projectUpgrade, project401k, BASE_FLEETS, payScales, APA_SABRE_BASE,
+  projectUpgrade, projectSeniority, project401k, listScenarios, saveScenario, deleteScenario,
+  BASE_FLEETS, payScales, APA_SABRE_BASE,
 };

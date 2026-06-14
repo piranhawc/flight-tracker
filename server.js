@@ -1906,6 +1906,13 @@ app.get("/api/career/config", careerAuth, (req, res) => {
   if (!careerGuard(res)) return;
   res.json(career.getConfig());
 });
+
+// Overall seniority trajectory (active pilots ahead of you, by year, to retirement).
+app.get("/api/career/seniority-trajectory", careerAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  try { res.json(career.projectSeniority()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.post("/api/career/config", careerAuth, express.json(), (req, res) => {
   if (!careerGuard(res)) return;
   try { res.json(career.setConfig(req.body || {})); }
@@ -1981,21 +1988,53 @@ app.get("/api/career/projection", careerAuth, async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
-// 401k projection. Optional ?upBase=&upEq=&upSeat= to fold in an upgrade at
-// the projected hold date for that category.
-app.get("/api/career/projection401k", careerAuth, async (req, res) => {
+// 401k + income projection. Uses the manual upgrade assumption in config
+// (upgrade_enabled / upgrade_base / upgrade_eq / upgrade_seat / upgrade_date).
+app.get("/api/career/projection401k", careerAuth, (req, res) => {
   if (!careerGuard(res)) return;
-  try {
-    let upgrade = null;
-    const { upBase, upEq, upSeat, growth = 0 } = req.query;
-    if (upBase && upEq && upSeat) {
-      const B = String(upBase).toUpperCase(), E = String(upEq), S = String(upSeat).toUpperCase();
-      const cat = await career.holdLineFor(B, E, S);
-      const proj = career.projectUpgrade({ holdLine: cat.hold_line, growthPerYear: Number(growth) || 0 });
-      upgrade = { base: B, eq: E, seat: S, hold_date: proj.hold_date };
-    }
-    res.json(career.project401k({ upgrade }));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  try { res.json(career.project401k()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Saved scenarios. Each is returned with its computed income/401k projection
+// so the page can list + overlay them. POST {name} snapshots current config;
+// DELETE removes one.
+function scenariosWithProjections() {
+  return career.listScenarios().map((s) => {
+    let proj = null;
+    try { proj = career.project401k(s.config); } catch (e) { /* skip broken scenario */ }
+    return {
+      name: s.name, created_at: s.created_at,
+      config: {
+        assumed_retire_date: s.config.assumed_retire_date,
+        upgrade_enabled: s.config.upgrade_enabled, upgrade_base: s.config.upgrade_base,
+        upgrade_eq: s.config.upgrade_eq, upgrade_seat: s.config.upgrade_seat, upgrade_date: s.config.upgrade_date,
+        current_eq: s.config.current_eq, current_seat: s.config.current_seat,
+        k401_employee_pct: s.config.k401_employee_pct, k401_return_pct: s.config.k401_return_pct,
+      },
+      retire_date: proj ? proj.retire_date : null,
+      upgrade: proj ? proj.upgrade : null,
+      final_balance: proj ? proj.final_balance : null,
+      series: proj ? proj.series : [],
+    };
+  });
+}
+app.get("/api/career/scenarios", careerAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  try { res.json(scenariosWithProjections()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/career/scenarios", careerAuth, express.json(), (req, res) => {
+  if (!careerGuard(res)) return;
+  const name = (req.body && req.body.name || "").trim();
+  if (!name) return res.status(400).json({ error: "name required" });
+  try { career.saveScenario(name); res.json(scenariosWithProjections()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/api/career/scenarios/:name", careerAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  try { career.deleteScenario(req.params.name); res.json(scenariosWithProjections()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // --- APA-sourced crew helpers (used by logbook auto-fill) ---

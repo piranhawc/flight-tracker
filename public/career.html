@@ -72,6 +72,9 @@
   <div class="panel wide">
     <h2>YOUR STANDING</h2>
     <div class="kpi" id="kpi"></div>
+    <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:12px">ACTIVE PILOTS AHEAD OF YOU, BY YEAR — TO RETIREMENT</div>
+    <canvas id="chartSeno" height="170"></canvas>
+    <div class="hint">Your overall system standing as the pilots senior to you retire (new hires land below you). Reaches its low near your retirement.</div>
   </div>
 
   <div class="panel wide">
@@ -99,9 +102,9 @@
   </div>
 
   <div class="panel">
-    <h2>SENIORITY OVER TIME — <span id="chartTargetLabel" style="color:#06d6a0"></span></h2>
-    <canvas id="chartProj" height="240"></canvas>
-    <div class="hint">Pilots ahead of you in the target seat as senior pilots retire. Click a target row above to chart it.</div>
+    <h2>PILOTS AHEAD OF YOU FOR <span id="chartTargetLabel" style="color:#06d6a0"></span></h2>
+    <canvas id="chartProj" height="130"></canvas>
+    <div class="hint">Count of pilots still ahead of you <em>for that specific seat</em> as senior pilots retire — it reaches 0 at your projected hold date (not your overall seniority). Click a target row above to chart it.</div>
   </div>
 
   <div class="panel">
@@ -113,18 +116,52 @@
       <div><label>return %</label><input type="number" id="retPct" step="0.5" style="width:60px" onchange="saveAnd401k()"></div>
       <div><label>hrs/yr</label><input type="number" id="hrs" step="50" style="width:70px" onchange="saveAnd401k()"></div>
       <div><label>pay raise %/yr</label><input type="number" id="raisePct" step="0.5" style="width:70px" onchange="saveAnd401k()"></div>
+      <div><label>401k IRS cap $</label><input type="number" id="irsCap" step="1000" style="width:90px" onchange="saveAnd401k()"></div>
     </div>
     <div class="row">
       <div><label>now: fleet/seat</label><select id="curEq"></select></div>
       <div><select id="curSeat"><option>FO</option><option>CA</option></select></div>
-      <div><label>fold in upgrade to</label><select id="upTarget"></select></div>
+      <div style="border-left:1px solid #222;padding-left:10px"><label><input type="checkbox" id="upEnabled" onchange="saveAnd401k()"> assume upgrade to</label></div>
+      <div><select id="upSeat" onchange="saveAnd401k()"><option>CA</option><option>FO</option></select></div>
+      <div><select id="upEq" onchange="saveAnd401k()"></select></div>
+      <div><select id="upBase" onchange="onUpBase()"></select></div>
+      <div><label>on</label><input type="month" id="upDate" onchange="saveAnd401k()"></div>
     </div>
-    <canvas id="chart401k" height="220"></canvas>
-    <div class="kpi" style="grid-template-columns:repeat(2,1fr);margin-top:10px">
+    <div class="kpi" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px">
       <div class="card"><div class="label">balance at retirement</div><div class="value good" id="finalBal">—</div></div>
-      <div class="card"><div class="label">employer adds</div><div class="value" id="emp401">18% + 4%</div><div class="sub">18% discretionary + up to 4% match; you defer 18%</div></div>
+      <div class="card"><div class="label">income now</div><div class="value" id="incNow">—</div><div class="sub" id="incNowSub"></div></div>
+      <div class="card"><div class="label">income after upgrade</div><div class="value" id="incUp">—</div><div class="sub" id="incUpSub"></div></div>
     </div>
-    <div class="hint">Income derived from editable <code>pay-scales.json</code> ($/hr × hrs/yr). Estimates only.</div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span style="color:#888;font-size:9px;letter-spacing:1px">COMPENSATION GOING FORWARD</span>
+      <span><button class="btn incmode active" data-mode="year" onclick="setIncMode('year')">$/yr</button><button class="btn incmode" data-mode="month" onclick="setIncMode('month')">$/mo</button></span>
+    </div>
+    <canvas id="chartIncome" height="180"></canvas>
+    <div class="legend"><span><span class="sw" style="background:#06d6a0"></span>total comp (flight pay + 18%)</span><span><span class="sw" style="background:#ffd166"></span>total cash comp (pay + employer overflow past the 401k cap)</span></div>
+    <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:8px">401(k) BALANCE</div>
+    <canvas id="chart401k" height="180"></canvas>
+    <div class="hint">Income from editable <code>pay-scales.json</code> ($/hr × <span id="hrHint"></span>); employer adds 18% (non-elective, no match) + your 18% deferral, capped at the IRS 401k limit (employer overflow paid as cash), compounded monthly. Estimates only.</div>
+  </div>
+
+  <div class="panel wide">
+    <h2>SCENARIOS — SAVE &amp; COMPARE</h2>
+    <div class="row">
+      <div><label>save current settings as</label><input type="text" id="scenName" placeholder="e.g. CA 320 ORD Nov26" style="width:200px"></div>
+      <div><button class="btn" onclick="saveScenario()">💾 save scenario</button></div>
+      <div class="hint" style="margin:0">Captures retire date, upgrade, contribution, return &amp; pay assumptions. Check rows to overlay.</div>
+    </div>
+    <table>
+      <thead><tr>
+        <th></th><th>scenario</th><th>retire</th><th>upgrade</th>
+        <th class="num">401k at retire</th><th class="num">final income/yr</th><th></th>
+      </tr></thead>
+      <tbody id="scenRows"></tbody>
+    </table>
+    <div class="grid" style="padding:10px 0 0 0">
+      <div><div style="color:#888;font-size:9px;letter-spacing:1px;margin-bottom:4px">401(k) BALANCE</div><canvas id="chartCmpBal" height="200"></canvas></div>
+      <div><div style="color:#888;font-size:9px;letter-spacing:1px;margin-bottom:4px">INCOME / YR</div><canvas id="chartCmpInc" height="200"></canvas></div>
+    </div>
+    <div class="legend" id="cmpLegend"></div>
   </div>
 </div>
 
@@ -154,7 +191,16 @@ async function boot() {
   var d = await r.json();
   SUMMARY = d.summary; CONFIG = d.config; BASE_FLEETS = d.base_fleets; AWARDS = d.awards;
   renderKpi(); renderMeta(); initSelectors(); loadTargets(); applyConfigToInputs();
-  runProjections(); run401k();
+  runProjections(); run401k(); loadSeniority();
+}
+
+async function loadSeniority() {
+  var r = await fetch("/api/career/seniority-trajectory", { headers: authHeaders() });
+  if (!r.ok) return;
+  var d = await r.json();
+  if (d.error) return;
+  var s = d.series || [];
+  lineChart("chartSeno", s.map(function(p){return p.year;}), s.map(function(p){return p.pilots_ahead;}), "#118ab2", "ahead");
 }
 function logout() { localStorage.removeItem("career-token"); token=null; document.getElementById("login").style.display="flex"; }
 
@@ -186,9 +232,10 @@ function initSelectors() {
   var bases = Object.keys(BASE_FLEETS);
   fill("selBase", bases); onBaseChange();
   document.getElementById("selBase").addEventListener("change", onBaseChange);
-  // 401k current fleet/seat selectors
+  // 401k current + upgrade selectors
   var allEq = Array.from(new Set([].concat.apply([], Object.values(BASE_FLEETS)))).sort();
   fill("curEq", allEq);
+  fill("upBase", bases);
 }
 function fill(id, arr) { document.getElementById(id).innerHTML = arr.map(function(x){ return '<option>'+x+'</option>'; }).join(""); }
 function onBaseChange() {
@@ -207,7 +254,7 @@ function loadTargets() {
   }
   saveTargets();
 }
-function saveTargets() { localStorage.setItem("career-targets", JSON.stringify(TARGETS)); refreshUpTargetOptions(); }
+function saveTargets() { localStorage.setItem("career-targets", JSON.stringify(TARGETS)); }
 function addTarget() {
   var t = { base: document.getElementById("selBase").value, eq: document.getElementById("selEq").value, seat: document.getElementById("selSeat").value };
   if (!TARGETS.some(function(x){ return x.base==t.base && x.eq==t.eq && x.seat==t.seat; })) TARGETS.push(t);
@@ -262,18 +309,34 @@ function applyConfigToInputs() {
   document.getElementById("retPct").value = (CONFIG.k401_return_pct*100).toFixed(1);
   document.getElementById("hrs").value = CONFIG.annual_hours;
   document.getElementById("raisePct").value = ((CONFIG.annual_raise_pct||0)*100).toFixed(1);
+  document.getElementById("irsCap").value = CONFIG.irs_dc_limit || 70000;
   document.getElementById("curEq").value = CONFIG.current_eq;
   document.getElementById("curSeat").value = CONFIG.current_seat;
-  refreshUpTargetOptions();
+  document.getElementById("hrHint").textContent = (CONFIG.annual_hours||912) + " hr/yr";
+  // upgrade controls
+  document.getElementById("upEnabled").checked = CONFIG.upgrade_enabled !== false;
+  document.getElementById("upSeat").value = CONFIG.upgrade_seat || "CA";
+  document.getElementById("upBase").value = CONFIG.upgrade_base || "ORD";
+  onUpBase(true);
+  document.getElementById("upEq").value = CONFIG.upgrade_eq || "320";
+  document.getElementById("upDate").value = CONFIG.upgrade_date || "2026-11";
 }
-function refreshUpTargetOptions() {
-  var sel = document.getElementById("upTarget");
-  if (!sel) return;
-  sel.innerHTML = '<option value="">— none —</option>' + TARGETS.map(function(t,i){ return '<option value="'+i+'">'+tLabel(t)+'</option>'; }).join("");
+function onUpBase(skipSave) {
+  var base = document.getElementById("upBase").value;
+  var cur = document.getElementById("upEq").value;
+  fill("upEq", BASE_FLEETS[base] || []);
+  if (BASE_FLEETS[base] && BASE_FLEETS[base].indexOf(cur) >= 0) document.getElementById("upEq").value = cur;
+  if (!skipSave) saveAnd401k();
 }
 document.getElementById("curEq").addEventListener("change", saveAnd401k);
 document.getElementById("curSeat").addEventListener("change", saveAnd401k);
-document.getElementById("upTarget").addEventListener("change", run401k);
+
+var INCMODE = "year";
+function setIncMode(m) {
+  INCMODE = m;
+  Array.prototype.forEach.call(document.querySelectorAll(".incmode"), function(b){ b.classList.toggle("active", b.dataset.mode===m); });
+  if (window._k401) renderIncomeChart(window._k401);
+}
 
 async function saveAnd401k() {
   var patch = {
@@ -283,24 +346,97 @@ async function saveAnd401k() {
     k401_return_pct: Number(document.getElementById("retPct").value)/100,
     annual_hours: Number(document.getElementById("hrs").value),
     annual_raise_pct: Number(document.getElementById("raisePct").value)/100,
+    irs_dc_limit: Number(document.getElementById("irsCap").value),
     current_eq: document.getElementById("curEq").value,
     current_seat: document.getElementById("curSeat").value,
+    upgrade_enabled: document.getElementById("upEnabled").checked,
+    upgrade_seat: document.getElementById("upSeat").value,
+    upgrade_eq: document.getElementById("upEq").value,
+    upgrade_base: document.getElementById("upBase").value,
+    upgrade_date: document.getElementById("upDate").value,
   };
   await fetch("/api/career/config", { method:"POST", headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()), body: JSON.stringify(patch) });
   CONFIG = Object.assign(CONFIG, patch);
   run401k();
 }
+function renderIncomeChart(d) {
+  var s = d.series || [];
+  var tot = INCMODE === "month" ? "monthly_total_comp" : "total_comp";
+  var cash = INCMODE === "month" ? "monthly_cash_comp" : "cash_comp";
+  multiLineChart("chartIncome", [
+    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return p[tot];}), color: "#06d6a0" },
+    { labels: s.map(function(p){return p.year;}), values: s.map(function(p){return p[cash];}), color: "#ffd166" },
+  ], true);
+}
 async function run401k() {
-  var qs = new URLSearchParams();
-  var ui = document.getElementById("upTarget").value;
-  if (ui !== "") { var t = TARGETS[Number(ui)]; if (t) { qs.set("upBase",t.base); qs.set("upEq",t.eq); qs.set("upSeat",t.seat); qs.set("growth", document.getElementById("growth").value); } }
-  var r = await fetch("/api/career/projection401k?"+qs, { headers: authHeaders() });
+  var r = await fetch("/api/career/projection401k", { headers: authHeaders() });
   if (!r.ok) return;
   var d = await r.json();
   if (d.error) { document.getElementById("finalBal").textContent = "—"; return; }
+  window._k401 = d;
   var s = d.series || [];
+  renderIncomeChart(d);
   lineChart("chart401k", s.map(function(p){return p.year;}), s.map(function(p){return p.balance;}), "#06d6a0", "balance", true);
   document.getElementById("finalBal").textContent = fmtDollar(d.final_balance);
+  // income KPIs (now vs after upgrade)
+  if (s.length) {
+    var first = s[0], last = s[s.length-1];
+    document.getElementById("incNow").textContent = fmtDollar(first.income) + "/yr";
+    document.getElementById("incNowSub").textContent = fmtDollar(first.monthly_income) + "/mo · " + first.seat + " " + first.eq;
+    var up = d.upgrade ? s.find(function(p){ return p.year >= Number(d.upgrade.date.slice(0,4)); }) : null;
+    if (d.upgrade && up) {
+      document.getElementById("incUp").textContent = fmtDollar(up.income) + "/yr";
+      document.getElementById("incUpSub").textContent = d.upgrade.seat + " " + d.upgrade.eq + " " + d.upgrade.base + " from " + d.upgrade.date;
+    } else {
+      document.getElementById("incUp").textContent = "—";
+      document.getElementById("incUpSub").textContent = "no upgrade assumed";
+    }
+  }
+  loadScenarios();
+}
+
+// --- scenarios ---
+var SCENARIOS = [], CMP = {};
+async function loadScenarios() {
+  var r = await fetch("/api/career/scenarios", { headers: authHeaders() });
+  if (!r.ok) return;
+  SCENARIOS = await r.json();
+  renderScenarios();
+}
+async function saveScenario() {
+  var name = document.getElementById("scenName").value.trim();
+  if (!name) { document.getElementById("scenName").focus(); return; }
+  await saveAnd401k(); // persist current settings first
+  var r = await fetch("/api/career/scenarios", { method:"POST", headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()), body: JSON.stringify({ name: name }) });
+  if (r.ok) { SCENARIOS = await r.json(); CMP[name] = true; document.getElementById("scenName").value=""; renderScenarios(); }
+}
+async function deleteScenario(name) {
+  var r = await fetch("/api/career/scenarios/" + encodeURIComponent(name), { method:"DELETE", headers: authHeaders() });
+  if (r.ok) { SCENARIOS = await r.json(); delete CMP[name]; renderScenarios(); }
+}
+function upLabel(u) { return u ? (u.seat + " " + u.eq + " " + u.base + " " + u.date) : "none"; }
+function renderScenarios() {
+  document.getElementById("scenRows").innerHTML = SCENARIOS.map(function(s){
+    var last = s.series && s.series.length ? s.series[s.series.length-1] : null;
+    return '<tr>'
+      + '<td><input type="checkbox" '+(CMP[s.name]?"checked":"")+' onchange="toggleCmp(\''+s.name.replace(/'/g,"\\'")+'\')"></td>'
+      + '<td>'+s.name+'</td>'
+      + '<td>'+(s.retire_date||"—")+'</td>'
+      + '<td>'+upLabel(s.upgrade)+'</td>'
+      + '<td class="num">'+fmtDollar(s.final_balance)+'</td>'
+      + '<td class="num">'+(last?fmtDollar(last.income):"—")+'</td>'
+      + '<td class="del" onclick="deleteScenario(\''+s.name.replace(/'/g,"\\'")+'\')">✕</td></tr>';
+  }).join("") || '<tr><td colspan="7" style="color:#555">no saved scenarios yet</td></tr>';
+  renderCompare();
+}
+function toggleCmp(name) { CMP[name] = !CMP[name]; renderCompare(); }
+var CMP_COLORS = ["#06d6a0","#ffd166","#ef476f","#118ab2","#c77dff","#f78c6b"];
+function renderCompare() {
+  var sel = SCENARIOS.filter(function(s){ return CMP[s.name]; });
+  var legend = sel.map(function(s,i){ return '<span><span class="sw" style="background:'+CMP_COLORS[i%CMP_COLORS.length]+'"></span>'+s.name+'</span>'; }).join("");
+  document.getElementById("cmpLegend").innerHTML = legend;
+  multiLineChart("chartCmpBal", sel.map(function(s,i){ return { labels:s.series.map(function(p){return p.year;}), values:s.series.map(function(p){return p.balance;}), color:CMP_COLORS[i%CMP_COLORS.length] }; }), true);
+  multiLineChart("chartCmpInc", sel.map(function(s,i){ return { labels:s.series.map(function(p){return p.year;}), values:s.series.map(function(p){return p.income;}), color:CMP_COLORS[i%CMP_COLORS.length] }; }), true);
 }
 
 async function refreshRoster() {
@@ -344,6 +480,44 @@ function lineChart(id, labels, values, color, name, dollars) {
     var x = pad.l + (labels.length===1?0:cw*i/(labels.length-1));
     ctx.fillText(String(l), x-12, h-6);
   }});
+}
+
+// Overlay several {labels, values, color} series on one canvas (scenario compare).
+function multiLineChart(id, sets, dollars) {
+  var canvas = document.getElementById(id); var ctx = canvas.getContext("2d");
+  var dpr = window.devicePixelRatio || 1;
+  var w = canvas.clientWidth, h = canvas.clientHeight || 200;
+  canvas.width = w*dpr; canvas.height = h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  var pad = { l:54, r:10, t:10, b:22 };
+  var cw = w-pad.l-pad.r, ch = h-pad.t-pad.b;
+  var all = [].concat.apply([], sets.map(function(s){ return s.values; }));
+  if (!all.length) { ctx.fillStyle="#555"; ctx.font="10px Menlo"; ctx.fillText("select scenarios to compare", pad.l, h/2); return; }
+  var max = Math.max.apply(null, all), min = Math.min.apply(null, all);
+  if (dollars) min = Math.min(min, 0);
+  if (max === min) max = min + 1;
+  var years = [].concat.apply([], sets.map(function(s){ return s.labels; }));
+  var ymin = Math.min.apply(null, years), ymax = Math.max.apply(null, years);
+  if (ymax === ymin) ymax = ymin + 1;
+  ctx.strokeStyle = "#161616"; ctx.fillStyle = "#666"; ctx.font = "9px Menlo";
+  for (var g=0; g<=4; g++) {
+    var yv = min + (max-min)*g/4; var y = pad.t + ch - (yv-min)/(max-min)*ch;
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+cw,y); ctx.stroke();
+    ctx.fillText(dollars ? "$"+Math.round(yv/1000)+"k" : Math.round(yv).toLocaleString(), 4, y+3);
+  }
+  sets.forEach(function(s){
+    ctx.strokeStyle = s.color; ctx.lineWidth = 1.5; ctx.beginPath();
+    s.values.forEach(function(v,i){
+      var x = pad.l + cw*(s.labels[i]-ymin)/(ymax-ymin);
+      var y = pad.t + ch - (v-min)/(max-min)*ch;
+      i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+    });
+    ctx.stroke();
+  });
+  ctx.fillStyle = "#666";
+  for (var yr=Math.ceil(ymin); yr<=ymax; yr++) { if (yr % 5 === 0) {
+    var x = pad.l + cw*(yr-ymin)/(ymax-ymin); ctx.fillText(String(yr), x-12, h-6);
+  }}
 }
 
 if (token) { document.getElementById("login").style.display = "none"; boot(); }
