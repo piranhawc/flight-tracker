@@ -2071,16 +2071,19 @@ function publicAuth(req, res, next) {
 const PUBLIC_NUM_FIELDS = ["k401_balance", "k401_employee_pct", "k401_return_pct", "annual_hours",
   "annual_raise_pct", "irs_dc_limit", "real_estate", "other_savings", "market_return_pct",
   "inflation_pct", "social_security_monthly", "ss_start_age", "other_income_monthly",
-  "other_income_growth_pct", "life_expectancy_age"];
+  "other_income_growth_pct", "life_expectancy_age", "lineholder_hours", "reserve_hours"];
+const PUBLIC_STR_FIELDS = ["current_eq", "current_seat", "assumed_retire_date",
+  "upgrade_base", "upgrade_eq", "upgrade_seat", "upgrade_date"];
 function sanitizePublicConfig(emp, body) {
   const cfg = career.publicDefaults(emp);
   for (const k of PUBLIC_NUM_FIELDS) {
     if (body && body[k] != null && Number.isFinite(Number(body[k]))) cfg[k] = Number(body[k]);
   }
-  if (body && typeof body.current_eq === "string") cfg.current_eq = body.current_eq;
-  if (body && typeof body.current_seat === "string") cfg.current_seat = body.current_seat;
-  if (body && typeof body.assumed_retire_date === "string") cfg.assumed_retire_date = body.assumed_retire_date;
-  cfg.upgrade_enabled = false; // public: never assume an upgrade
+  for (const k of PUBLIC_STR_FIELDS) {
+    if (body && typeof body[k] === "string") cfg[k] = body[k];
+  }
+  // Public users may opt into their own upgrade assumption.
+  cfg.upgrade_enabled = !!(body && body.upgrade_enabled);
   cfg.emp = String(emp);
   return cfg;
 }
@@ -2119,7 +2122,7 @@ app.post("/api/career/public/project", publicAuth, express.json(), (req, res) =>
   if (!careerGuard(res)) return;
   try {
     const cfg = sanitizePublicConfig(req.pilot.emp, req.body || {});
-    res.json({ k401: career.project401k(cfg), seniority: career.projectSeniority(cfg) });
+    res.json({ k401: career.project401k(cfg), seniority: career.projectSeniority(cfg), monthly: career.monthlyWageSchedule(cfg) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

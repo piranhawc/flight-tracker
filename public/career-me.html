@@ -162,17 +162,21 @@
 
   <div class="panel wide">
     <h2>MONTHLY PAY SCHEDULE <span id="monthlyHdr" style="color:#666;font-weight:400"></span></h2>
+    <div class="row">
+      <div><label>lineholder hrs/mo</label><input type="number" id="lhHours" step="1" style="width:70px" onchange="saveAnd401k()"></div>
+      <div><label>reserve hrs/mo</label><input type="number" id="rsvHours" step="1" style="width:70px" onchange="saveAnd401k()"></div>
+      <div class="hint" style="margin:0">Total comp, your deferral, and company 18% are computed on the lineholder wage. Pay switches on your upgrade date.</div>
+    </div>
     <div style="max-height:75vh;overflow:auto;border:1px solid #161616;border-radius:2px">
       <table id="monthlyTable">
         <thead><tr style="position:sticky;top:0;background:#0c0c0c;z-index:1">
           <th>month</th><th>seat</th><th class="num">$/hr</th>
-          <th class="num">lineholder (82h)</th><th class="num">reserve (73h)</th>
-          <th class="num">total comp</th><th class="num">my 401k</th><th class="num">co. 18%</th>
+          <th class="num" id="thLH">lineholder</th><th class="num" id="thRSV">reserve</th>
+          <th class="num">my 401k</th><th class="num">co. 18%</th><th class="num">total comp</th>
         </tr></thead>
         <tbody id="monthlyBody"></tbody>
       </table>
     </div>
-    <div class="hint">Per-month gross pay at lineholder (82 hr) and reserve (73 hr) credit. Total comp, your deferral, and company 18% are on the lineholder wage. Seat/fleet — and therefore pay — switch on your upgrade date.</div>
   </div>
 
   <div class="panel wide">
@@ -357,6 +361,8 @@ function applyConfigToInputs() {
   document.getElementById("ssAge").value = CONFIG.ss_start_age || 67;
   document.getElementById("otherInc").value = CONFIG.other_income_monthly || 0;
   document.getElementById("otherGrow").value = ((CONFIG.other_income_growth_pct||0)*100).toFixed(1);
+  document.getElementById("lhHours").value = CONFIG.lineholder_hours || 82;
+  document.getElementById("rsvHours").value = CONFIG.reserve_hours || 73;
   document.getElementById("curEq").value = CONFIG.current_eq;
   document.getElementById("curSeat").value = CONFIG.current_seat;
   document.getElementById("hrHint").textContent = (CONFIG.annual_hours||912) + " hr/yr";
@@ -410,6 +416,8 @@ async function saveAnd401k() {
     ss_start_age: Number(document.getElementById("ssAge").value),
     other_income_monthly: Number(document.getElementById("otherInc").value),
     other_income_growth_pct: Number(document.getElementById("otherGrow").value)/100,
+    lineholder_hours: Number(document.getElementById("lhHours").value),
+    reserve_hours: Number(document.getElementById("rsvHours").value),
     current_eq: document.getElementById("curEq").value,
     current_seat: document.getElementById("curSeat").value,
     upgrade_enabled: document.getElementById("upEnabled").checked,
@@ -472,6 +480,8 @@ async function loadMonthly() {
   var d = await r.json();
   if (d.error) { document.getElementById("monthlyBody").innerHTML = '<tr><td colspan="8" style="color:#a33">'+d.error+'</td></tr>'; return; }
   document.getElementById("monthlyHdr").textContent = d.upgrade ? ("· upgrade " + d.upgrade.seat + " " + d.upgrade.eq + " " + d.upgrade.base + " on " + d.upgrade.date) : "· no upgrade assumed";
+  document.getElementById("thLH").textContent = "lineholder (" + d.lineholder_hours + "h)";
+  document.getElementById("thRSV").textContent = "reserve (" + d.reserve_hours + "h)";
   var prevSeat = null;
   document.getElementById("monthlyBody").innerHTML = (d.rows||[]).map(function(m){
     var hl = (m.seat !== prevSeat); prevSeat = m.seat;
@@ -482,9 +492,9 @@ async function loadMonthly() {
       + '<td class="num">'+m.rate.toFixed(2)+'</td>'
       + '<td class="num">'+fmtDollar(m.wage_lineholder)+'</td>'
       + '<td class="num" style="color:#888">'+fmtDollar(m.wage_reserve)+'</td>'
-      + '<td class="num">'+fmtDollar(m.total_comp)+'</td>'
       + '<td class="num">'+fmtDollar(m.my_401k)+'</td>'
-      + '<td class="num">'+fmtDollar(m.company_18)+'</td></tr>';
+      + '<td class="num">'+fmtDollar(m.company_18)+'</td>'
+      + '<td class="num" style="color:#06d6a0">'+fmtDollar(m.total_comp)+'</td></tr>';
   }).join("");
 }
 

@@ -90,6 +90,15 @@
       <div><label>other income $/mo</label><input type="number" id="otherInc" step="250" style="width:90px"></div>
       <div><label>other income growth %</label><input type="number" id="otherGrow" step="0.5" style="width:80px"></div>
     </div>
+    <div class="row" style="border-top:1px solid #1a1a1a;padding-top:10px">
+      <div><label><input type="checkbox" id="upEnabled"> assume an upgrade to</label></div>
+      <div><select id="upSeat"><option>CA</option><option>FO</option></select></div>
+      <div><select id="upEq"></select></div>
+      <div><select id="upBase"></select></div>
+      <div><label>on</label><input type="month" id="upDate" value="2027-01"></div>
+      <div><label>lineholder hrs/mo</label><input type="number" id="lhHours" step="1" style="width:70px"></div>
+      <div><label>reserve hrs/mo</label><input type="number" id="rsvHours" step="1" style="width:70px"></div>
+    </div>
     <div class="kpi" style="grid-template-columns:repeat(2,1fr);margin-bottom:10px">
       <div class="card"><div class="label">401k at retirement</div><div class="value good" id="finalBal">—</div></div>
       <div class="card"><div class="label">net worth at retirement</div><div class="value good" id="finalNW">—</div><div class="sub">401k + RE + savings</div></div>
@@ -106,6 +115,21 @@
     <div style="color:#888;font-size:9px;letter-spacing:1px;margin-top:8px">401(k) BALANCE &amp; NET WORTH</div>
     <canvas id="chart401k" height="150"></canvas>
     <div class="hint">Employer adds 18% (non-elective), capped at the IRS 401k limit (overflow paid as cash); your deferral compounds monthly. AA 2026 pay scales. 2026 SS max: $2,969@62 · $4,152@67 · $5,181@70 — set to your SSA estimate. Estimates only.</div>
+  </div>
+
+  <div class="panel wide">
+    <h2>MONTHLY PAY SCHEDULE <span id="monthlyHdr" style="color:#666;font-weight:400"></span></h2>
+    <div style="max-height:75vh;overflow:auto;border:1px solid #161616;border-radius:2px">
+      <table id="monthlyTable">
+        <thead><tr style="position:sticky;top:0;background:#0c0c0c;z-index:1">
+          <th>month</th><th>seat</th><th class="num">$/hr</th>
+          <th class="num" id="thLH">lineholder</th><th class="num" id="thRSV">reserve</th>
+          <th class="num">my 401k</th><th class="num">co. 18%</th><th class="num">total comp</th>
+        </tr></thead>
+        <tbody id="monthlyBody"></tbody>
+      </table>
+    </div>
+    <div class="hint">Per-month gross pay at lineholder and reserve credit. Total comp, your deferral, and company 18% are on the lineholder wage. Check "assume an upgrade" above to see pay change at your upgrade date.</div>
   </div>
 
   <div class="panel wide">
@@ -143,13 +167,23 @@ async function boot() {
   DEFAULTS = d.defaults; BASE_FLEETS = d.base_fleets;
   var allEq = Array.from(new Set([].concat.apply([], Object.values(BASE_FLEETS)))).sort();
   fill("curEq", allEq);
+  fill("upBase", Object.keys(BASE_FLEETS));
   renderStanding(d.summary);
   applyDefaults();
-  ["curEq","curSeat","hrs","bal","empPct","retPct","raisePct","irsCap","realEstate","otherSavings","mktPct","inflPct","ssMo","ssAge","otherInc","otherGrow"]
+  onUpBase();
+  document.getElementById("upBase").addEventListener("change", function(){ onUpBase(); project(); });
+  ["curEq","curSeat","hrs","bal","empPct","retPct","raisePct","irsCap","realEstate","otherSavings","mktPct","inflPct","ssMo","ssAge","otherInc","otherGrow",
+   "upEnabled","upSeat","upEq","upDate","lhHours","rsvHours"]
     .forEach(function(id){ document.getElementById(id).addEventListener("change", project); });
   project();
 }
 function fill(id, arr){ document.getElementById(id).innerHTML = arr.map(function(x){return '<option>'+x+'</option>';}).join(""); }
+function onUpBase() {
+  var base = document.getElementById("upBase").value;
+  var cur = document.getElementById("upEq").value;
+  fill("upEq", BASE_FLEETS[base] || []);
+  if ((BASE_FLEETS[base]||[]).indexOf(cur) >= 0) document.getElementById("upEq").value = cur;
+}
 
 function renderStanding(s) {
   var me = s.me || {};
@@ -182,6 +216,10 @@ function applyDefaults() {
   document.getElementById("ssAge").value = c.ss_start_age;
   document.getElementById("otherInc").value = c.other_income_monthly;
   document.getElementById("otherGrow").value = (c.other_income_growth_pct*100).toFixed(1);
+  document.getElementById("lhHours").value = c.lineholder_hours || 82;
+  document.getElementById("rsvHours").value = c.reserve_hours || 73;
+  document.getElementById("upSeat").value = "CA";
+  document.getElementById("upBase").value = c.current_base || "ORD";
 }
 function gatherConfig() {
   return {
@@ -201,6 +239,13 @@ function gatherConfig() {
     ss_start_age: Number(document.getElementById("ssAge").value),
     other_income_monthly: Number(document.getElementById("otherInc").value),
     other_income_growth_pct: Number(document.getElementById("otherGrow").value)/100,
+    lineholder_hours: Number(document.getElementById("lhHours").value),
+    reserve_hours: Number(document.getElementById("rsvHours").value),
+    upgrade_enabled: document.getElementById("upEnabled").checked,
+    upgrade_seat: document.getElementById("upSeat").value,
+    upgrade_eq: document.getElementById("upEq").value,
+    upgrade_base: document.getElementById("upBase").value,
+    upgrade_date: document.getElementById("upDate").value,
   };
 }
 async function project() {
@@ -230,6 +275,26 @@ function render() {
   document.getElementById("finalNW").textContent = fmtDollar(k.final_net_worth);
   var ss = (sen && sen.series) || [];
   lineChart("chartSeno", ss.map(function(p){return p.year;}), ss.map(function(p){return p.pilots_ahead;}), "#118ab2");
+  renderMonthly(LAST.monthly);
+}
+function renderMonthly(d) {
+  if (!d || d.error) { document.getElementById("monthlyBody").innerHTML = ""; return; }
+  document.getElementById("monthlyHdr").textContent = d.upgrade ? ("· upgrade " + d.upgrade.seat + " " + d.upgrade.eq + " " + d.upgrade.base + " on " + d.upgrade.date) : "· no upgrade assumed";
+  document.getElementById("thLH").textContent = "lineholder (" + d.lineholder_hours + "h)";
+  document.getElementById("thRSV").textContent = "reserve (" + d.reserve_hours + "h)";
+  var prevSeat = null;
+  document.getElementById("monthlyBody").innerHTML = (d.rows||[]).map(function(m){
+    var hl = (m.seat !== prevSeat); prevSeat = m.seat;
+    return '<tr'+(hl?' style="background:#0a1a14"':'')+'>'
+      + '<td>'+m.ym+'</td>'
+      + '<td'+(hl?' style="color:#06d6a0;font-weight:700"':'')+'>'+m.seat+' '+m.eq+'</td>'
+      + '<td class="num">'+m.rate.toFixed(2)+'</td>'
+      + '<td class="num">'+fmtDollar(m.wage_lineholder)+'</td>'
+      + '<td class="num" style="color:#888">'+fmtDollar(m.wage_reserve)+'</td>'
+      + '<td class="num">'+fmtDollar(m.my_401k)+'</td>'
+      + '<td class="num">'+fmtDollar(m.company_18)+'</td>'
+      + '<td class="num" style="color:#06d6a0">'+fmtDollar(m.total_comp)+'</td></tr>';
+  }).join("");
 }
 
 // --- charts ---
