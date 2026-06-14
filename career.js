@@ -90,9 +90,9 @@ const CONFIG_DEFAULTS = {
   current_eq: "320",
   current_seat: "FO",
   k401_balance: 50000,
-  k401_employee_pct: 0.04,       // elective deferral (>=4% earns full match)
+  k401_employee_pct: 0.18,       // Mike currently defers 18% (>=4% earns full match)
   k401_return_pct: 0.07,
-  annual_hours: 1000,            // pay-hours/yr used to turn $/hr scales into income
+  annual_hours: 912,             // 76 pay-hours/month averaged * 12
   annual_raise_pct: 0.02,        // contract pay raise/yr compounded past the table's base year
   growth_per_year: 0,            // category seats added/yr (slider; +grow=sooner)
 };
@@ -189,6 +189,36 @@ async function getCategory(base, eq, seat, { force = false, period } = {}) {
     key, data.period, base, eq, seat, data.hold_line, data.junior_seno, data.count,
     JSON.stringify(data.holders || []), new Date().toISOString());
   return Object.assign({}, data, { cached: false });
+}
+
+// --- Expanded 3XP awards (one pull → all-category hold lines) -------------
+// Authoritative published award roster. Cached (small: per-category
+// aggregates + the user's published rank) in career_meta.
+async function getAwards(force = false) {
+  const cached = metaGet("awards_json");
+  const at = Number(metaGet("awards_fetched_ms") || 0);
+  if (!force && cached && Date.now() - at < CATEGORY_TTL_MS) {
+    try { return JSON.parse(cached); } catch (e) {}
+  }
+  const r = await fetch(`${APA_SABRE_BASE}/career/awards${force ? "?force=true" : ""}`,
+    { signal: AbortSignal.timeout(180000) });
+  if (!r.ok) throw new Error(`awards fetch failed: ${r.status}`);
+  const data = await r.json();
+  metaSet("awards_json", JSON.stringify(data));
+  metaSet("awards_fetched_ms", Date.now());
+  return data;
+}
+
+// Hold line for a category, preferring Expanded 3XP awards (one authoritative
+// pull) and falling back to a per-category PBS-3XP query.
+async function holdLineFor(base, eq, seat) {
+  try {
+    const a = await getAwards();
+    const c = (a.categories || {})[`${base}|${eq}|${seat}`];
+    if (c) return { hold_line: c.hold_line, junior_seno: c.junior_seno, count: c.count, source: "expanded-3xp", period: a.period };
+  } catch (e) { /* fall through to PBS-3XP */ }
+  const cat = await getCategory(base, eq, seat, {});
+  return { hold_line: cat.hold_line, junior_seno: cat.junior_seno, count: cat.count, source: "pbs-3xp", period: cat.period };
 }
 
 // --- projection math -----------------------------------------------------
@@ -313,6 +343,6 @@ function project401k({ upgrade } = {}) {
 
 module.exports = {
   init, refreshRoster, rosterCount, rosterSummary, getPilot,
-  getConfig, setConfig, getCategory, projectUpgrade, project401k,
-  BASE_FLEETS, payScales, APA_SABRE_BASE,
+  getConfig, setConfig, getCategory, getAwards, holdLineFor,
+  projectUpgrade, project401k, BASE_FLEETS, payScales, APA_SABRE_BASE,
 };

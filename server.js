@@ -1890,10 +1890,15 @@ function careerGuard(res) {
   return true;
 }
 
-app.get("/api/career/summary", careerAuth, (req, res) => {
+app.get("/api/career/summary", careerAuth, async (req, res) => {
   if (!careerGuard(res)) return;
   try {
-    res.json({ summary: career.rosterSummary(), config: career.getConfig(), base_fleets: career.BASE_FLEETS });
+    let awards = null;
+    try {
+      const a = await career.getAwards();
+      awards = { period: a.period, user: a.user, categories: a.categories };
+    } catch (e) { /* awards optional; projection falls back to PBS-3XP */ }
+    res.json({ summary: career.rosterSummary(), config: career.getConfig(), base_fleets: career.BASE_FLEETS, awards });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1923,6 +1928,14 @@ app.get("/api/career/category/:base/:eq/:seat", careerAuth, async (req, res) => 
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
+// Expanded 3XP published award roster: per-category hold lines + the user's
+// published rank for an effective period.
+app.get("/api/career/awards", careerAuth, async (req, res) => {
+  if (!careerGuard(res)) return;
+  try { res.json(await career.getAwards(req.query.force === "true")); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 // Batch projection for the comparison table. Body: { targets:[{base,eq,seat}],
 // holdType:"line"|"seat", growth:number }. Each result carries the category's
 // hold line + the projected hold date.
@@ -1935,7 +1948,7 @@ app.post("/api/career/projections", careerAuth, express.json(), async (req, res)
       const base = String(t.base).toUpperCase(), eq = String(t.eq), seat = String(t.seat).toUpperCase();
       let cat, proj, err = null;
       try {
-        cat = await career.getCategory(base, eq, seat, {});
+        cat = await career.holdLineFor(base, eq, seat);
         const holdLine = holdType === "seat" ? cat.junior_seno : cat.hold_line;
         proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0 });
       } catch (e) { err = e.message; }
@@ -1944,6 +1957,7 @@ app.post("/api/career/projections", careerAuth, express.json(), async (req, res)
         hold_line: cat ? cat.hold_line : null,
         junior_seno: cat ? cat.junior_seno : null,
         count: cat ? cat.count : null,
+        source: cat ? cat.source : null,
         hold_now: proj ? !!proj.hold_now : null,
         gap: proj ? proj.gap : null,
         hold_date: proj ? proj.hold_date : null,
@@ -1959,10 +1973,11 @@ app.get("/api/career/projection", careerAuth, async (req, res) => {
   if (!careerGuard(res)) return;
   const { base, eq, seat, holdType = "line", growth = 0 } = req.query;
   try {
-    const cat = await career.getCategory(String(base).toUpperCase(), String(eq), String(seat).toUpperCase(), {});
+    const B = String(base).toUpperCase(), E = String(eq), S = String(seat).toUpperCase();
+    const cat = await career.holdLineFor(B, E, S);
     const holdLine = holdType === "seat" ? cat.junior_seno : cat.hold_line;
     const proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0 });
-    res.json({ category: { base: cat.base, eq: cat.eq, seat: cat.seat, count: cat.count, hold_line: cat.hold_line, junior_seno: cat.junior_seno }, projection: proj });
+    res.json({ category: { base: B, eq: E, seat: S, count: cat.count, hold_line: cat.hold_line, junior_seno: cat.junior_seno, source: cat.source }, projection: proj });
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
@@ -1974,10 +1989,10 @@ app.get("/api/career/projection401k", careerAuth, async (req, res) => {
     let upgrade = null;
     const { upBase, upEq, upSeat, growth = 0 } = req.query;
     if (upBase && upEq && upSeat) {
-      const cat = await career.getCategory(String(upBase).toUpperCase(), String(upEq), String(upSeat).toUpperCase(), {});
-      const holdLine = cat.hold_line;
-      const proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0 });
-      upgrade = { base: cat.base, eq: cat.eq, seat: cat.seat, hold_date: proj.hold_date };
+      const B = String(upBase).toUpperCase(), E = String(upEq), S = String(upSeat).toUpperCase();
+      const cat = await career.holdLineFor(B, E, S);
+      const proj = career.projectUpgrade({ holdLine: cat.hold_line, growthPerYear: Number(growth) || 0 });
+      upgrade = { base: B, eq: E, seat: S, hold_date: proj.hold_date };
     }
     res.json(career.project401k({ upgrade }));
   } catch (e) { res.status(500).json({ error: e.message }); }

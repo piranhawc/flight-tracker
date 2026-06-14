@@ -122,7 +122,7 @@
     <canvas id="chart401k" height="220"></canvas>
     <div class="kpi" style="grid-template-columns:repeat(2,1fr);margin-top:10px">
       <div class="card"><div class="label">balance at retirement</div><div class="value good" id="finalBal">—</div></div>
-      <div class="card"><div class="label">employer adds</div><div class="value" id="emp401">18% + match</div><div class="sub">non-elective + up to 4% match</div></div>
+      <div class="card"><div class="label">employer adds</div><div class="value" id="emp401">18% + 4%</div><div class="sub">18% discretionary + up to 4% match; you defer 18%</div></div>
     </div>
     <div class="hint">Income derived from editable <code>pay-scales.json</code> ($/hr × hrs/yr). Estimates only.</div>
   </div>
@@ -131,7 +131,7 @@
 <script>
 var token = localStorage.getItem("career-token") || null;
 function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
-var SUMMARY = null, CONFIG = null, BASE_FLEETS = {}, TARGETS = [];
+var SUMMARY = null, CONFIG = null, BASE_FLEETS = {}, TARGETS = [], AWARDS = null;
 
 async function doLogin() {
   var pw = document.getElementById("password").value;
@@ -152,15 +152,20 @@ async function boot() {
   var r = await fetch("/api/career/summary", { headers: authHeaders() });
   if (r.status === 401) { logout(); return; }
   var d = await r.json();
-  SUMMARY = d.summary; CONFIG = d.config; BASE_FLEETS = d.base_fleets;
+  SUMMARY = d.summary; CONFIG = d.config; BASE_FLEETS = d.base_fleets; AWARDS = d.awards;
   renderKpi(); renderMeta(); initSelectors(); loadTargets(); applyConfigToInputs();
   runProjections(); run401k();
 }
 function logout() { localStorage.removeItem("career-token"); token=null; document.getElementById("login").style.display="flex"; }
 
+function fmtPeriod(p) { if (!p) return "?"; p = String(p); return p.slice(0,4) + "-" + p.slice(4,6); }
 function renderMeta() {
   var m = "list updated " + (SUMMARY.updated_label || "?");
   if (SUMMARY.total) m += " · " + fmtNum(SUMMARY.total) + " pilots";
+  if (AWARDS && AWARDS.period) {
+    m += " · 3XP award " + fmtPeriod(AWARDS.period);
+    if (AWARDS.user && AWARDS.user.rank) m += " · published rank #" + fmtNum(AWARDS.user.rank);
+  }
   document.getElementById("meta").textContent = m;
 }
 function renderKpi() {
@@ -230,8 +235,9 @@ async function runProjections() {
       + '<td class="del" onclick="event.stopPropagation();removeTarget('+i+')">✕</td></tr>';
   }).join("");
   document.getElementById("targetRows").innerHTML = rows;
+  var src = (d.results[0] && d.results[0].source === "expanded-3xp") ? "Expanded 3XP award " + fmtPeriod(AWARDS && AWARDS.period) : "PBS-3XP";
   document.getElementById("projHint").textContent =
-    "Hold line = most-junior seniority currently in that seat (from PBS-3XP). You hold when retirements of pilots senior to you close the gap. Growth slider models seats added/removed per year.";
+    "Hold line = most-junior seniority currently in that seat (" + src + "). You hold when retirements of pilots senior to you close the gap. AA's published award only projects ~3 months out (new award every quarter) — dates beyond that are this model's estimate. Growth slider models seats added/removed per year.";
   if (TARGETS.length) chartTarget(window._chartIdx != null && window._chartIdx < TARGETS.length ? window._chartIdx : 0);
 }
 
