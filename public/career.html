@@ -89,8 +89,8 @@
       <div><label>seat</label><select id="selSeat"><option>FO</option><option>CA</option></select></div>
       <div><button class="btn" onclick="addTarget()">+ add target</button></div>
       <div><label>hold</label><select id="holdType">
+        <option value="seat" selected>the seat (incl. reserve)</option>
         <option value="line">a line (block holder)</option>
-        <option value="seat">the seat (incl. reserve)</option>
       </select></div>
       <div><label>fleet growth: <span class="slider-val" id="growthVal">0</span>/yr</label>
         <input type="range" id="growth" min="-40" max="60" step="5" value="0" oninput="onGrowth()"></div>
