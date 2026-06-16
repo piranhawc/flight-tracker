@@ -2062,7 +2062,11 @@ const publicSessions = new Map(); // token -> { emp, name, aa_sen }
 function publicAuth(req, res, next) {
   const token = (req.headers.authorization || "").replace(/^Bearer /, "");
   const sess = token && publicSessions.get(token);
-  if (!sess) return res.status(401).json({ error: "unauthorized" });
+  // 422 (not 401) on purpose: the SWAG fail2ban "nginx-unauthorized" jail bans
+  // any IP that emits 5x 401 in 10 min. Friends fumbling the self-serve login,
+  // or hitting a stale in-memory session after a redeploy, would otherwise get
+  // their IP network-dropped. Keep real 401s (and that protection) elsewhere.
+  if (!sess) return res.status(422).json({ error: "unauthorized" });
   req.pilot = sess;
   next();
 }
@@ -2092,7 +2096,10 @@ app.post("/api/career/public/login", express.json(), async (req, res) => {
   if (!careerGuard(res)) return;
   const { code, emp } = req.body || {};
   const v = career.validatePublicPilot(code, emp);
-  if (!v.ok) return res.status(401).json({ error: v.error });
+  // 422 (not 401) so a friend mistyping their code/emp doesn't trip the SWAG
+  // fail2ban "nginx-unauthorized" jail (bans on 5x 401/10min) and get their IP
+  // network-dropped — which presents as "Safari cannot connect to the server".
+  if (!v.ok) return res.status(422).json({ error: v.error });
   const token = crypto.randomBytes(24).toString("hex");
   publicSessions.set(token, { emp: v.pilot.emp, name: v.pilot.name, aa_sen: v.pilot.aa_sen });
   let firstTime = false;
