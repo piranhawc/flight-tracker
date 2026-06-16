@@ -82,6 +82,11 @@ function init() {
       emp TEXT NOT NULL, name TEXT, aa_sen INTEGER, ip TEXT, ts TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_public_login_emp ON career_public_login(emp);
+    -- Public self-serve sessions persisted so a redeploy/restart doesn't log
+    -- every friend out (publicSessions Map is just a hot cache over this).
+    CREATE TABLE IF NOT EXISTS career_public_session (
+      token TEXT PRIMARY KEY, emp TEXT NOT NULL, name TEXT, aa_sen INTEGER, created_at TEXT NOT NULL
+    );
   `);
   console.log(`[career] DB at ${DB_PATH} ready (${rosterCount()} pilots cached)`);
   return db;
@@ -556,6 +561,16 @@ function listPublicLogins(limit = 200) {
   return db.prepare("SELECT emp,name,aa_sen,ip,ts FROM career_public_login ORDER BY id DESC LIMIT ?").all(limit);
 }
 
+// Persisted public sessions (survive restarts; server keeps an in-memory cache).
+function savePublicSession(token, sess) {
+  db.prepare("INSERT OR REPLACE INTO career_public_session (token,emp,name,aa_sen,created_at) VALUES (?,?,?,?,?)")
+    .run(String(token), String(sess.emp), sess.name || "", sess.aa_sen || null, new Date().toISOString());
+}
+function getPublicSession(token) {
+  const r = db.prepare("SELECT emp,name,aa_sen FROM career_public_session WHERE token=?").get(String(token));
+  return r || null;
+}
+
 // Per-month pay schedule (working months only) for the scrollable table:
 // wage at lineholder (82h) and reserve (73h) credit, total comp, and the
 // monthly 401k contributions. Switches seat/fleet at the upgrade date.
@@ -636,5 +651,6 @@ module.exports = {
   getConfig, setConfig, getCategory, getAwards, holdLineFor,
   projectUpgrade, projectSeniority, project401k, monthlyWageSchedule, listScenarios, saveScenario, deleteScenario,
   pilotStanding, validatePublicPilot, publicDefaults, logPublicLogin, listPublicLogins,
+  savePublicSession, getPublicSession,
   BASE_FLEETS, payScales, APA_SABRE_BASE,
 };

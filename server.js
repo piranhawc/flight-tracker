@@ -2061,11 +2061,17 @@ const CAREER_ALERT_EMAIL = process.env.CAREER_ALERT_EMAIL || "mike.goebel@gmail.
 const publicSessions = new Map(); // token -> { emp, name, aa_sen }
 function publicAuth(req, res, next) {
   const token = (req.headers.authorization || "").replace(/^Bearer /, "");
-  const sess = token && publicSessions.get(token);
+  let sess = token && publicSessions.get(token);
+  // Cache miss (e.g. after a restart wiped the in-memory Map) → rehydrate from
+  // the persisted session table so a redeploy doesn't log every friend out.
+  if (!sess && token) {
+    try { const p = career.getPublicSession(token); if (p) { sess = p; publicSessions.set(token, p); } }
+    catch (e) { /* career not ready / db error → treat as no session */ }
+  }
   // 422 (not 401) on purpose: the SWAG fail2ban "nginx-unauthorized" jail bans
   // any IP that emits 5x 401 in 10 min. Friends fumbling the self-serve login,
-  // or hitting a stale in-memory session after a redeploy, would otherwise get
-  // their IP network-dropped. Keep real 401s (and that protection) elsewhere.
+  // or hitting a stale session, would otherwise get their IP network-dropped.
+  // Keep real 401s (and that protection) elsewhere.
   if (!sess) return res.status(422).json({ error: "unauthorized" });
   req.pilot = sess;
   next();
@@ -2101,7 +2107,9 @@ app.post("/api/career/public/login", express.json(), async (req, res) => {
   // network-dropped — which presents as "Safari cannot connect to the server".
   if (!v.ok) return res.status(422).json({ error: v.error });
   const token = crypto.randomBytes(24).toString("hex");
-  publicSessions.set(token, { emp: v.pilot.emp, name: v.pilot.name, aa_sen: v.pilot.aa_sen });
+  const sess = { emp: v.pilot.emp, name: v.pilot.name, aa_sen: v.pilot.aa_sen };
+  publicSessions.set(token, sess);
+  try { career.savePublicSession(token, sess); } catch (e) { /* persistence best-effort */ }
   let firstTime = false;
   try { firstTime = career.logPublicLogin({ emp: v.pilot.emp, name: v.pilot.name, aa_sen: v.pilot.aa_sen, ip: getClientIp(req) }).first_time; }
   catch (e) { console.error("[career] login log failed:", e.message); }
