@@ -287,8 +287,8 @@ function monthsBetween(from, count) {
 // seniority in the seat) is `holdLine`. holdType: "line" (block holder) uses
 // hold_line; "seat" (incl. reserve) uses junior_seno — caller picks which
 // number to pass. growthPerYear>0 = category grows (hold sooner).
-function projectUpgrade({ holdLine, growthPerYear = 0, horizonYears = 32 }) {
-  const cfg = getConfig();
+function projectUpgrade({ holdLine, growthPerYear = 0, horizonYears = 32, cfg: cfgArg } = {}) {
+  const cfg = cfgArg || getConfig();
   const me = getPilot(cfg.emp);
   if (!me || me.aa_sen == null) return { error: "user not found in roster" };
   if (holdLine == null) return { error: "no hold line for this category" };

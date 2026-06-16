@@ -2126,6 +2126,53 @@ app.post("/api/career/public/project", publicAuth, express.json(), (req, res) =>
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Public upgrade-projection table (mirrors /api/career/projections), scoped to
+// the logged-in pilot's own seniority. Body: { targets:[{base,eq,seat}],
+// holdType:"line"|"seat", growth:number }.
+app.post("/api/career/public/projections", publicAuth, express.json(), async (req, res) => {
+  if (!careerGuard(res)) return;
+  const { targets = [], holdType = "line", growth = 0 } = req.body || {};
+  const pilotCfg = { emp: req.pilot.emp };
+  try {
+    const out = [];
+    for (const t of targets) {
+      const base = String(t.base).toUpperCase(), eq = String(t.eq), seat = String(t.seat).toUpperCase();
+      let cat, proj, err = null;
+      try {
+        cat = await career.holdLineFor(base, eq, seat);
+        const holdLine = holdType === "seat" ? cat.junior_seno : cat.hold_line;
+        proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0, cfg: pilotCfg });
+      } catch (e) { err = e.message; }
+      out.push({
+        base, eq, seat,
+        hold_line: cat ? cat.hold_line : null,
+        junior_seno: cat ? cat.junior_seno : null,
+        count: cat ? cat.count : null,
+        source: cat ? cat.source : null,
+        hold_now: proj ? !!proj.hold_now : null,
+        gap: proj ? proj.gap : null,
+        hold_date: proj ? proj.hold_date : null,
+        error: err,
+      });
+    }
+    res.json({ holdType, growth: Number(growth) || 0, results: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Public single-target projection with monthly series for charting (mirrors
+// /api/career/projection), scoped to the logged-in pilot.
+app.get("/api/career/public/projection", publicAuth, async (req, res) => {
+  if (!careerGuard(res)) return;
+  const { base, eq, seat, holdType = "line", growth = 0 } = req.query;
+  try {
+    const B = String(base).toUpperCase(), E = String(eq), S = String(seat).toUpperCase();
+    const cat = await career.holdLineFor(B, E, S);
+    const holdLine = holdType === "seat" ? cat.junior_seno : cat.hold_line;
+    const proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0, cfg: { emp: req.pilot.emp } });
+    res.json({ category: { base: B, eq: E, seat: S, count: cat.count, hold_line: cat.hold_line, junior_seno: cat.junior_seno, source: cat.source }, projection: proj });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 // --- APA-sourced crew helpers (used by logbook auto-fill) ---
 // LOGBOOK_USER_EMP_NUM filters the user themselves out of fetched crew lists
 // (no point logging "I flew with myself"). Defaults to Mike's emp number.

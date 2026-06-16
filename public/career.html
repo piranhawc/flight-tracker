@@ -36,6 +36,15 @@
   #monthlyTable th, #monthlyTable td { font-size:12px; padding:5px 8px; text-align:left; border-bottom:1px solid #161616; }
   #monthlyTable th.num, #monthlyTable td.num { text-align:right; }
   #monthlyTable th { color:#888; }
+  #targetTable { width:100%; border-collapse:collapse; font-size:10px; }
+  #targetTable th, #targetTable td { padding:4px 6px; text-align:left; border-bottom:1px solid #161616; }
+  #targetTable th { color:#888; font-weight:600; }
+  #targetTable td.num, #targetTable th.num { text-align:right; }
+  #targetTable td.soon { color:#06d6a0; }
+  #targetTable td.now { color:#06d6a0; font-weight:700; }
+  .del { color:#a33; cursor:pointer; }
+  .del:hover { color:#f44; }
+  .slider-val { color:#06d6a0; }
   #login { position:fixed; inset:0; background:#080808; display:flex; align-items:center; justify-content:center; z-index:50; }
   #login .box { text-align:center; max-width:340px; }
   #login .title { color:#06d6a0; font-size:13px; letter-spacing:2px; margin-bottom:6px; }
@@ -70,6 +79,36 @@
   <div class="panel wide">
     <h2>YOUR STANDING</h2>
     <div class="kpi" id="kpi"></div>
+  </div>
+
+  <div class="panel wide">
+    <h2>UPGRADE PROJECTION — WHEN CAN I HOLD</h2>
+    <div class="row">
+      <div><label>base</label><select id="selBase"></select></div>
+      <div><label>fleet</label><select id="selEq"></select></div>
+      <div><label>seat</label><select id="selSeat"><option>FO</option><option>CA</option></select></div>
+      <div><button class="btn" onclick="addTarget()">+ add target</button></div>
+      <div><label>hold</label><select id="holdType">
+        <option value="line">a line (block holder)</option>
+        <option value="seat">the seat (incl. reserve)</option>
+      </select></div>
+      <div><label>fleet growth: <span class="slider-val" id="growthVal">0</span>/yr</label>
+        <input type="range" id="growth" min="-40" max="60" step="5" value="0" oninput="onGrowth()"></div>
+    </div>
+    <table id="targetTable">
+      <thead><tr>
+        <th>target</th><th class="num">hold line</th><th class="num">pilots ahead</th>
+        <th class="num">category</th><th>est. hold date</th><th></th>
+      </tr></thead>
+      <tbody id="targetRows"></tbody>
+    </table>
+    <div class="hint" id="projHint"></div>
+  </div>
+
+  <div class="panel wide">
+    <h2>PILOTS AHEAD OF YOU FOR <span id="chartTargetLabel" style="color:#06d6a0"></span></h2>
+    <canvas id="chartProj" height="130"></canvas>
+    <div class="hint">Count of pilots still ahead of you <em>for that specific seat</em> as senior pilots retire — it reaches 0 at your projected hold date (not your overall seniority). Click a target row above to chart it.</div>
   </div>
 
   <div class="panel wide">
@@ -175,6 +214,13 @@ async function boot() {
   fill("upBase", Object.keys(BASE_FLEETS));
   renderStanding(d.summary);
   applyDefaults();
+  // upgrade projection panel
+  fill("selBase", Object.keys(BASE_FLEETS));
+  onBaseChange();
+  document.getElementById("selBase").addEventListener("change", onBaseChange);
+  document.getElementById("holdType").addEventListener("change", runProjections);
+  loadTargets();
+  runProjections();
   onUpBase();
   document.getElementById("upBase").addEventListener("change", function(){ onUpBase(); project(); });
   ["curEq","curSeat","hrs","bal","empPct","retPct","raisePct","irsCap","realEstate","otherSavings","mktPct","inflPct","wdRate","ssMo","ssAge","otherInc","otherGrow",
@@ -329,6 +375,77 @@ function renderMonthlyTable(d) {
   });
   flushYear();
   tbl.innerHTML = "<thead>"+thead+"</thead><tbody>"+html+"</tbody>";
+}
+
+// --- upgrade projection (when can I hold) ---
+var TARGETS = [];
+function tLabel(t) { return t.seat + " " + t.eq + " " + t.base; }
+function targetsKey() { return "career-pub-targets-" + (PILOT && PILOT.emp ? PILOT.emp : "anon"); }
+function onBaseChange() {
+  var base = document.getElementById("selBase").value;
+  fill("selEq", BASE_FLEETS[base] || []);
+}
+function onGrowth() { document.getElementById("growthVal").textContent = document.getElementById("growth").value; runProjections(); }
+function defaultTargets() {
+  // Seed with a CA upgrade in your current fleet at up to three bases that carry it.
+  var eq = (DEFAULTS && DEFAULTS.current_eq) || "";
+  var out = [];
+  Object.keys(BASE_FLEETS).forEach(function(b){
+    if ((BASE_FLEETS[b] || []).indexOf(eq) >= 0 && out.length < 3) out.push({ base:b, eq:eq, seat:"CA" });
+  });
+  if (!out.length) {
+    var b0 = Object.keys(BASE_FLEETS)[0];
+    if (b0 && (BASE_FLEETS[b0] || []).length) out.push({ base:b0, eq:BASE_FLEETS[b0][0], seat:"CA" });
+  }
+  return out;
+}
+function loadTargets() {
+  try { TARGETS = JSON.parse(localStorage.getItem(targetsKey())); } catch(e) { TARGETS = null; }
+  if (!Array.isArray(TARGETS) || !TARGETS.length) { TARGETS = defaultTargets(); }
+  saveTargets();
+}
+function saveTargets() { localStorage.setItem(targetsKey(), JSON.stringify(TARGETS)); }
+function addTarget() {
+  var t = { base: document.getElementById("selBase").value, eq: document.getElementById("selEq").value, seat: document.getElementById("selSeat").value };
+  if (!TARGETS.some(function(x){ return x.base==t.base && x.eq==t.eq && x.seat==t.seat; })) TARGETS.push(t);
+  saveTargets(); runProjections();
+}
+function removeTarget(i) { TARGETS.splice(i,1); saveTargets(); runProjections(); }
+async function runProjections() {
+  if (!TARGETS.length) { document.getElementById("targetRows").innerHTML = ""; document.getElementById("projHint").textContent = "Add a target (base + fleet + seat) to see when you can hold it."; return; }
+  var body = { targets: TARGETS, holdType: document.getElementById("holdType").value, growth: Number(document.getElementById("growth").value) };
+  var r = await fetch("/api/career/public/projections", { method:"POST", headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()), body: JSON.stringify(body) });
+  if (!r.ok) { document.getElementById("projHint").textContent = "projection error"; return; }
+  var d = await r.json();
+  var rows = d.results.map(function(x, i){
+    var dateCell = x.error ? '<span style="color:#a33">'+x.error+'</span>'
+      : x.hold_now ? 'HOLD NOW'
+      : (x.hold_date || ">2056");
+    var cls = x.hold_now ? "now" : (x.hold_date && x.hold_date < "2029" ? "soon" : "");
+    return '<tr style="cursor:pointer" onclick="chartTarget('+i+')">'
+      + '<td>'+tLabel(x)+'</td>'
+      + '<td class="num">'+fmtNum(x.hold_line)+'</td>'
+      + '<td class="num">'+(x.hold_now?"0":fmtNum(x.gap))+'</td>'
+      + '<td class="num">'+fmtNum(x.count)+'</td>'
+      + '<td class="'+cls+'">'+dateCell+'</td>'
+      + '<td class="del" onclick="event.stopPropagation();removeTarget('+i+')">✕</td></tr>';
+  }).join("");
+  document.getElementById("targetRows").innerHTML = rows;
+  var src = (d.results[0] && d.results[0].source === "expanded-3xp") ? "Expanded 3XP published award" : "PBS-3XP";
+  document.getElementById("projHint").textContent =
+    "Hold line = most-junior seniority currently in that seat (" + src + "). You hold when retirements of pilots senior to you close the gap. AA's published award only projects ~3 months out (new award every quarter) — dates beyond that are this model's estimate. Growth slider models seats added/removed per year.";
+  if (TARGETS.length) chartTarget(window._chartIdx != null && window._chartIdx < TARGETS.length ? window._chartIdx : 0);
+}
+async function chartTarget(i) {
+  window._chartIdx = i;
+  var t = TARGETS[i]; if (!t) return;
+  document.getElementById("chartTargetLabel").textContent = tLabel(t);
+  var qs = new URLSearchParams({ base:t.base, eq:t.eq, seat:t.seat, holdType: document.getElementById("holdType").value, growth: document.getElementById("growth").value });
+  var r = await fetch("/api/career/public/projection?"+qs, { headers: authHeaders() });
+  if (!r.ok) return;
+  var d = await r.json();
+  var s = (d.projection && d.projection.series) || [];
+  lineChart("chartProj", s.map(function(p){return p.date;}), s.map(function(p){return p.pilots_ahead;}), "#06d6a0");
 }
 
 // --- charts ---
