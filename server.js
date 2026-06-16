@@ -2231,8 +2231,12 @@ function buildLoginDigest(windowHours) {
   const pilots = {};
   for (const r of (bySurface["career-public"] || [])) {
     const k = r.emp || r.identity;
-    if (!pilots[k]) pilots[k] = { name: r.identity, emp: r.emp, aa_sen: r.aa_sen, count: 0,
-      last: null, ips: new Set(), firstTime: loginLog.priorCount(r.emp, sinceIso) === 0 };
+    if (!pilots[k]) {
+      let hire = null;
+      try { const pp = career.getPilot(r.emp); if (pp) hire = pp.hire; } catch (e) { /* roster lookup best-effort */ }
+      pilots[k] = { name: r.identity, emp: r.emp, aa_sen: r.aa_sen, hire, count: 0,
+        last: null, ips: new Set(), firstTime: loginLog.priorCount(r.emp, sinceIso) === 0 };
+    }
     const p = pilots[k]; p.count++; p.last = r.ts; if (r.ip) p.ips.add(r.ip);
   }
   const pilotList = Object.values(pilots).sort((a, b) => (b.firstTime - a.firstTime) || (b.count - a.count));
@@ -2258,7 +2262,7 @@ async function sendLoginDigest(windowHours = 24) {
   if (d.pilotList.length) {
     lines.push(`CAREER PAGE — ${d.pilotList.length} pilot(s):`);
     for (const p of d.pilotList) {
-      lines.push(`  ${p.firstTime ? "★ NEW  " : "       "}${p.name} · #${p.aa_sen || "?"} · ${p.count}x · ` +
+      lines.push(`  ${p.firstTime ? "★ NEW  " : "       "}${p.name} · #${p.aa_sen || "?"} · emp ${p.emp || "?"} · hired ${p.hire || "?"} · ${p.count}x · ` +
         `${[...p.ips].join(", ") || "no ip"} · last ${fmtCT(p.last)}`);
     }
     lines.push("");
@@ -2271,6 +2275,8 @@ async function sendLoginDigest(windowHours = 24) {
        <td>${p.firstTime ? "★&nbsp;NEW" : ""}</td>
        <td>${esc(p.name)}</td>
        <td style="text-align:right">#${p.aa_sen || "?"}</td>
+       <td style="text-align:right">${esc(p.emp || "?")}</td>
+       <td>${esc(p.hire || "?")}</td>
        <td style="text-align:right">${p.count}</td>
        <td>${esc([...p.ips].join(", ") || "—")}</td>
        <td>${esc(fmtCT(p.last))}</td>
@@ -2282,7 +2288,7 @@ async function sendLoginDigest(windowHours = 24) {
       ${d.pilotList.length ? `
       <h3 style="margin:16px 0 6px">Career page — ${d.pilotList.length} pilot${d.pilotList.length === 1 ? "" : "s"}${d.newPilots ? ` (${d.newPilots} new)` : ""}</h3>
       <table style="border-collapse:collapse;font-size:13px" cellpadding="6">
-        <tr style="background:#f3f3f3;text-align:left"><th></th><th>Pilot</th><th>Seniority</th><th>Logins</th><th>IP(s)</th><th>Last seen</th></tr>
+        <tr style="background:#f3f3f3;text-align:left"><th></th><th>Pilot</th><th>Seniority</th><th>Emp #</th><th>Hired</th><th>Logins</th><th>IP(s)</th><th>Last seen</th></tr>
         ${rowsHtml}
       </table>` : ""}
       <p style="font-size:13px;color:#444;margin-top:16px">
