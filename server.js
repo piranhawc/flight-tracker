@@ -44,6 +44,12 @@ let careerReady = false;
 try { career.init(); careerReady = true; } catch (e) {
   console.error("[career] init failed:", e.message);
 }
+
+const loginLog = require("./login-log");
+let loginLogReady = false;
+try { loginLog.init(); loginLogReady = true; } catch (e) {
+  console.error("[login-log] init failed:", e.message);
+}
 // Pull the seniority list on boot (best-effort) and refresh ~monthly.
 if (careerReady) {
   career.refreshRoster().then(
@@ -1845,6 +1851,7 @@ app.post("/api/logbook/auth", express.json(), (req, res) => {
   }
   const token = crypto.randomBytes(24).toString("hex");
   logbookSessions.add(token);
+  loginLog.record({ surface: "logbook", identity: "Mike (owner)", ip: getClientIp(req), user_agent: req.headers["user-agent"] });
   res.json({ token });
 });
 
@@ -1865,6 +1872,7 @@ app.post("/api/friends/auth", express.json(), (req, res) => {
   }
   const token = crypto.randomBytes(24).toString("hex");
   friendsSessions.add(token);
+  loginLog.record({ surface: "friends", identity: "friend (shared pw)", ip: getClientIp(req), user_agent: req.headers["user-agent"] });
   res.json({ token });
 });
 
@@ -1882,6 +1890,7 @@ app.post("/api/career/auth", express.json(), (req, res) => {
   if (!password || password !== CAREER_PASSWORD) return res.status(401).json({ error: "bad password" });
   const token = crypto.randomBytes(24).toString("hex");
   careerSessions.add(token);
+  loginLog.record({ surface: "career", identity: "Mike (owner)", ip: getClientIp(req), user_agent: req.headers["user-agent"] });
   res.json({ token });
 });
 
@@ -2110,6 +2119,7 @@ app.post("/api/career/public/login", express.json(), async (req, res) => {
   const sess = { emp: v.pilot.emp, name: v.pilot.name, aa_sen: v.pilot.aa_sen };
   publicSessions.set(token, sess);
   try { career.savePublicSession(token, sess); } catch (e) { /* persistence best-effort */ }
+  loginLog.record({ surface: "career-public", identity: v.pilot.name, emp: v.pilot.emp, aa_sen: v.pilot.aa_sen, ip: getClientIp(req), user_agent: req.headers["user-agent"] });
   let firstTime = false;
   try { firstTime = career.logPublicLogin({ emp: v.pilot.emp, name: v.pilot.name, aa_sen: v.pilot.aa_sen, ip: getClientIp(req) }).first_time; }
   catch (e) { console.error("[career] login log failed:", e.message); }
@@ -2186,6 +2196,121 @@ app.get("/api/career/public/projection", publicAuth, async (req, res) => {
     const proj = career.projectUpgrade({ holdLine, growthPerYear: Number(growth) || 0, cfg: { emp: req.pilot.emp } });
     res.json({ category: { base: B, eq: E, seat: S, count: cat.count, hold_line: cat.hold_line, junior_seno: cat.junior_seno, source: cat.source }, projection: proj });
   } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// --- Daily login synopsis email -----------------------------------------
+// Mike wants a daily digest of who's using the site. Summarizes the trailing
+// 24h of site_login rows across every auth surface and emails it. Self-
+// schedules at 8 AM CT (same DST heuristic as the commute-week refresh).
+const LOGIN_DIGEST_HOUR_CT = 8;
+
+function msUntilNextCT(hourCT) {
+  const now = new Date();
+  const mo = now.getUTCMonth();
+  const inDST = mo >= 2 && mo <= 10;
+  const ctOffsetHours = inDST ? 5 : 6;
+  const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+    hourCT + ctOffsetHours, 0, 0));
+  if (target <= now) target.setUTCDate(target.getUTCDate() + 1);
+  return target.getTime() - now.getTime();
+}
+function fmtCT(iso) {
+  try {
+    return new Date(iso).toLocaleString("en-US", { timeZone: "America/Chicago",
+      month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  } catch (e) { return iso; }
+}
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+function buildLoginDigest(windowHours) {
+  const sinceIso = new Date(Date.now() - windowHours * 3600 * 1000).toISOString();
+  const rows = loginLog.since(sinceIso);
+  const bySurface = {};
+  for (const r of rows) (bySurface[r.surface] = bySurface[r.surface] || []).push(r);
+  // career-public: the real "people using it" — group by pilot.
+  const pilots = {};
+  for (const r of (bySurface["career-public"] || [])) {
+    const k = r.emp || r.identity;
+    if (!pilots[k]) pilots[k] = { name: r.identity, emp: r.emp, aa_sen: r.aa_sen, count: 0,
+      last: null, ips: new Set(), firstTime: loginLog.priorCount(r.emp, sinceIso) === 0 };
+    const p = pilots[k]; p.count++; p.last = r.ts; if (r.ip) p.ips.add(r.ip);
+  }
+  const pilotList = Object.values(pilots).sort((a, b) => (b.firstTime - a.firstTime) || (b.count - a.count));
+  const friendsRows = bySurface["friends"] || [];
+  const ownerRows = [].concat(bySurface["logbook"] || [], bySurface["career"] || []);
+  return {
+    sinceIso, total: rows.length, pilotList,
+    newPilots: pilotList.filter((p) => p.firstTime).length,
+    friendsCount: friendsRows.length, friendIps: new Set(friendsRows.map((r) => r.ip).filter(Boolean)).size,
+    ownerCount: ownerRows.length,
+  };
+}
+
+async function sendLoginDigest(windowHours = 24) {
+  const d = buildLoginDigest(windowHours);
+  const dayLabel = fmtCT(d.sinceIso) + " → " + fmtCT(new Date().toISOString()) + " CT";
+  const subject = `whereis.mikegoebel.net — ${d.total} login${d.total === 1 ? "" : "s"}` +
+    (d.pilotList.length ? ` · ${d.pilotList.length} pilot${d.pilotList.length === 1 ? "" : "s"}` : "") +
+    (d.newPilots ? ` (${d.newPilots} new)` : "");
+
+  const lines = [`Logins in the last ${windowHours}h (${dayLabel})`, ""];
+  if (!d.total) lines.push("No logins.");
+  if (d.pilotList.length) {
+    lines.push(`CAREER PAGE — ${d.pilotList.length} pilot(s):`);
+    for (const p of d.pilotList) {
+      lines.push(`  ${p.firstTime ? "★ NEW  " : "       "}${p.name} · #${p.aa_sen || "?"} · ${p.count}x · ` +
+        `${[...p.ips].join(", ") || "no ip"} · last ${fmtCT(p.last)}`);
+    }
+    lines.push("");
+  }
+  if (d.friendsCount) lines.push(`FRIENDS AREA — ${d.friendsCount} login(s) from ${d.friendIps} IP(s)`);
+  if (d.ownerCount) lines.push(`OWNER (you) — ${d.ownerCount} login(s) to logbook/career`);
+
+  const rowsHtml = d.pilotList.map((p) =>
+    `<tr>
+       <td>${p.firstTime ? "★&nbsp;NEW" : ""}</td>
+       <td>${esc(p.name)}</td>
+       <td style="text-align:right">#${p.aa_sen || "?"}</td>
+       <td style="text-align:right">${p.count}</td>
+       <td>${esc([...p.ips].join(", ") || "—")}</td>
+       <td>${esc(fmtCT(p.last))}</td>
+     </tr>`).join("");
+  const html = `
+    <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#111">
+      <h2 style="margin:0 0 4px">Daily site logins</h2>
+      <div style="color:#666;font-size:13px">${esc(dayLabel)} · ${d.total} total login${d.total === 1 ? "" : "s"}</div>
+      ${d.pilotList.length ? `
+      <h3 style="margin:16px 0 6px">Career page — ${d.pilotList.length} pilot${d.pilotList.length === 1 ? "" : "s"}${d.newPilots ? ` (${d.newPilots} new)` : ""}</h3>
+      <table style="border-collapse:collapse;font-size:13px" cellpadding="6">
+        <tr style="background:#f3f3f3;text-align:left"><th></th><th>Pilot</th><th>Seniority</th><th>Logins</th><th>IP(s)</th><th>Last seen</th></tr>
+        ${rowsHtml}
+      </table>` : ""}
+      <p style="font-size:13px;color:#444;margin-top:16px">
+        ${d.friendsCount ? `Friends area: <b>${d.friendsCount}</b> login(s) from <b>${d.friendIps}</b> IP(s).<br>` : ""}
+        ${d.ownerCount ? `Owner (you): <b>${d.ownerCount}</b> login(s) to logbook/career.<br>` : ""}
+        ${!d.total ? "No logins in this window." : ""}
+      </p>
+    </div>`;
+
+  await agentmail.sendMail({ to: ADMIN_NOTIFY_EMAIL, subject, text: lines.join("\n"), html });
+  console.log(`[login-log] digest sent: ${d.total} logins, ${d.pilotList.length} pilots`);
+  return { total: d.total, pilots: d.pilotList.length, newPilots: d.newPilots };
+}
+
+function scheduleNextLoginDigest() {
+  const wait = msUntilNextCT(LOGIN_DIGEST_HOUR_CT);
+  console.log(`[login-log] next daily digest in ${Math.round(wait / 60000)} min`);
+  setTimeout(async () => {
+    try { await sendLoginDigest(24); } catch (e) { console.error("[login-log] digest send failed:", e.message); }
+    scheduleNextLoginDigest();
+  }, wait);
+}
+if (loginLogReady) scheduleNextLoginDigest();
+
+// Manual trigger (owner only) — sends the digest now over an arbitrary window.
+app.post("/api/admin/login-digest", careerAuth, express.json(), async (req, res) => {
+  try { res.json(await sendLoginDigest(Number(req.body && req.body.hours) || 24)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // --- APA-sourced crew helpers (used by logbook auto-fill) ---
