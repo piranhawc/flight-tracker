@@ -177,8 +177,23 @@ Four collapse points, all fixed to use **(ep, seq, date)** identity:
 | `apa_trips_to_ics.py` HI/HSS merge (.115) | keyed `(Ep, Seq)` | keyed `(Ep, Seq, SeqDate)` |
 | `apa_trips_to_ics.py` `HssId`/`make_uid` (.115) | no date → UID collision | date folded into id **only for multiply-flown pairings** (singletons keep their stable UID, so no mass calendar churn) |
 
-**Verified:** running the fixed `parse_hi_report` against the cached HI2 now
-returns 6 trips including **July 20 and July 23** (was 4).
+**Second root cause (found via Mike): dropped trips were never excluded.** HI2
+lists trips the pilot dropped/gave away with an **`SD`** code in the **ST column**
+(every day of the pairing: ` 07T14 SD`, ` 08W14 SD`, …). The parser captured that
+code in a throwaway group and ignored it, so dropped trips kept showing. Fix:
+capture the ST code and skip `DROP_CODES = {"SD"}` in both parsers (`hi.py`
+`parse_hi_report` and `apa_trips_to_ics.py` `_parse_hi`). Codebase previously only
+knew the **RMV**-column removal codes (`hi_day_rows.py`), not this ST-column `SD`.
+
+**Verified end-to-end (live):** `/schedule/current` → **July 2, 3, 20, 23** (dropped
+7‑9 and 12‑14 excluded, re-flown 20/23 kept). Generator run emitted cancellations
+for the dropped UIDs; production feed + `/api/flights` confirmed: 2/3/20/23 present,
+7/12 gone. UID ledger was rebuilt from the live feed to clear test-run phantoms and
+prime the dropped trips for cancellation.
+
+> **Operational note:** the apa-sabre service is a root LaunchDaemon — code changes
+> need `sudo bash ~/restart-apa-sabre.sh` on the mini (Mike) to go live. The 15-min
+> cron (`apa_trips_to_ics.py --scp`) then regenerates + pushes automatically.
 
 **Commits / files:**
 - Generator `apa_trips_to_ics.py` — committed in the **scripts repo on .115**
