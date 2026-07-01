@@ -297,6 +297,10 @@ function parseEvent(ev) {
   return {
     num: m[1], dep: m[2], arr: m[3], depT: m[4], arrT: m[5],
     isDH: s.includes("(DH)"), seq: seq?.[1]||null,
+    // Trip-instance id = the UID minus its "-legNN@..." suffix (i.e. the HssId).
+    // Uniquely identifies each pairing occurrence, so a Seq flown more than once
+    // in a month (e.g. ORD-ANC seq 9452 on Jul 20 AND Jul 23) stays two trips.
+    tripId: (ev.uid||"").replace(/-leg\d+@.*$/, "") || null,
     start: ev.start?.dateTime||ev.start, end: ev.end?.dateTime||ev.end, summary: s,
   };
 }
@@ -304,11 +308,16 @@ function parseEvent(ev) {
 function groupTrips(legs) {
   const t = {};
   legs.forEach(l => {
-    const k = l.seq||("s-"+l.start);
+    // Group by trip INSTANCE, not Seq alone — deduping on Seq merged two
+    // same-Seq trips flown on different dates into one block.
+    const k = l.tripId || l.seq || ("s-"+l.start);
     if (!t[k]) t[k] = {seq:l.seq, legs:[], first:l.start};
     t[k].legs.push(l);
+    if (new Date(l.start) < new Date(t[k].first)) t[k].first = l.start;
   });
-  return Object.values(t).sort((a,b) => new Date(a.first)-new Date(b.first));
+  const trips = Object.values(t);
+  trips.forEach(tr => tr.legs.sort((a,b) => new Date(a.start) - new Date(b.start)));
+  return trips.sort((a,b) => new Date(a.first) - new Date(b.first));
 }
 
 let allTrips = [], filteredTrips = [], selectedIdx = null, selectedDay = null, filter = "upcoming";
