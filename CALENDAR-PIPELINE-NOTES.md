@@ -11,6 +11,49 @@ flight-tracker app), and the investigation into "next month's trips aren't showi
 
 ---
 
+## The three repos + resuming on a new machine
+
+The system spans **three separate GitHub repos** (all under `piranhawc`). Cloning
+`flight-tracker` alone gets you the app + these notes, but NOT the mini-side code
+that generates the calendar.
+
+| Repo | What it is | Where it runs | On the mini at |
+|---|---|---|---|
+| `piranhawc/flight-tracker` | The app: calendar UI, logbook, crew, career page, ICS consumer | Docker on Unraid **.175** | `~/projects/flight-tracker` (clone) |
+| `piranhawc/openclaw-scripts` | Generator `apa_trips_to_ics.py` + other automation. Default branch is **`master`** | cron on mini **.115** | `~/.openclaw/scripts` |
+| `piranhawc/apa-sabre-service` (**private**) | Sabre/APA API + HI1/HI2/HI3 parsing (`apa_sabre/hi.py`, `api.py`) | LaunchDaemon on mini **.115**, port 8765 | `~/apa-sabre-service` |
+
+**Clone everything:**
+```bash
+git clone https://github.com/piranhawc/flight-tracker.git
+git clone https://github.com/piranhawc/openclaw-scripts.git       # branch: master
+git clone https://github.com/piranhawc/apa-sabre-service.git      # private — needs GitHub auth
+```
+
+**Secrets are intentionally NOT in git** (gitignored). To actually *run* the
+services you must copy these from the mini separately — they are not recoverable
+from GitHub:
+- `~/.openclaw/secrets/sabre.json` — Sabre username/password
+- `~/.openclaw/secrets/apa.json` — APA credentials
+- `~/.openclaw/secrets/apa-state.json` — APA session cookies (`STATE_PATH`)
+- `~/.openclaw/cache/*` — HI caches + `published-uids.json` (the ICS UID ledger).
+  Not secret, but the ledger is stateful; a fresh clone rebuilds it from the live
+  feed on first run (or rebuild manually — see the RESOLUTION section).
+
+**Pushing from the mini:** a headless SSH session can't reach the macOS keychain
+(`git push` → error `-25308 / errSecInteractionNotAllowed`). Push from the mini's
+own **GUI Terminal**, or fetch the commit to a machine with working GitHub auth and
+push from there (that's how these repos were seeded):
+```bash
+# from a machine with working GitHub auth:
+git fetch mikeg@192.168.128.115:apa-sabre-service HEAD && git push ...
+```
+`apa-sabre-service` is **not** version-controlled via a service restart — after
+editing on the mini, restart the LaunchDaemon (`sudo bash ~/restart-apa-sabre.sh`)
+for changes to take effect.
+
+---
+
 ## TL;DR of the issue
 
 - **Symptom:** Mike's later-July trips don't show on his calendar, even though they're
