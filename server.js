@@ -2880,6 +2880,22 @@ async function reconcileExistingLogbook() {
   }
   reconcileRunning = true;
   try {
+    // UIDs currently live in the calendar feed. A future auto-imported leg
+    // whose UID is no longer in the feed was traded/dropped after import —
+    // the ICS generator cancels the event (tombstone outside our ±90d
+    // window), so it just vanishes from the feed while the logbook entry
+    // lives on. Reconciliation can't catch this: a traded trip has no
+    // FTG/OX marker, its legs still report "future". null = feed
+    // unavailable this pass → skip the vanished-trip check, never remove
+    // on missing data.
+    let feedUids = null;
+    try {
+      const events = await getCachedCalendarEvents();
+      if (events && events.length > 0) feedUids = new Set(events.map(e => e.uid).filter(Boolean));
+    } catch (e) {
+      console.log("[reconcile-cleanup] calendar feed unavailable, skipping vanished-trip check:", e.message);
+    }
+    const todayIso = new Date().toISOString().slice(0, 10);
     const cutoffMs = Date.now() - 60 * 24 * 60 * 60 * 1000;
     const entriesByTrip = new Map(); // "ep/seq" → [leg, leg, ...]
     for (const leg of Object.values(logbook.legs)) {
@@ -2897,6 +2913,24 @@ async function reconcileExistingLogbook() {
       const recon = await apa.getPairingReconciliation(ep, seq);
       if (!recon || recon.size === 0) { kept += legs.length; continue; }
       for (const leg of legs) {
+        // Vanished-trip check — must run BEFORE the reconciliation branch,
+        // which would otherwise see "future" → operated and restore the leg
+        // on every pass. Future + auto-imported + UID gone from feed =
+        // traded/dropped after import. Manual removals/entries untouched.
+        const isFutureLeg = leg.date && String(leg.date) >= todayIso;
+        if (feedUids && isFutureLeg && leg._auto_filled && !leg._removed_manual &&
+            typeof leg.id === "string" && leg.id.includes("@apa.alliedpilots.org") &&
+            !feedUids.has(leg.id)) {
+          if (!leg._removed_at) {
+            leg._removed_at = new Date().toISOString();
+            leg._removed_reason = "traded/dropped: no longer in calendar schedule";
+            leg._reconciliation_status = "dropped";
+            console.log(`[reconcile-cleanup] removed ${leg.flight} ${leg.date} (traded/dropped — gone from calendar feed)`);
+            changedAny = true;
+          }
+          removed++;
+          continue;
+        }
         const flightNum = leg.flight_number || String(leg.flight || "").replace(/^AA/i, "").replace(/^0+/, "");
         const depCode = String(leg.dep || "").toUpperCase();
         // Key by (flight, dep_apt) only — date excluded because calendar
