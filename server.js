@@ -2974,14 +2974,18 @@ async function reconcileExistingLogbook() {
   }
 }
 
-// Legs that haven't happened yet but start soon — pulled into the logbook
-// so the user can see their pairing partners the day before showtime.
-// Window: any time before scheduled departure, up to 48 hr ahead.
+// Legs that haven't happened yet — pulled into the logbook so the user can
+// see who they're flying with. Window: the calendar feed's full +90d
+// horizon (was 48h, but Mike wants his whole upcoming schedule visible).
+// Crew for these pairings is prefetched into the cache in the same import
+// pass; legs whose crew isn't known yet are skipped and retried by the
+// 30-min poller. If a trip is later traded away, the vanished-trip check in
+// reconcileExistingLogbook soft-deletes its legs.
 function isUpcomingSoon(parsed) {
   if (!parsed || !parsed.start) return false;
   const startMs = new Date(parsed.start).getTime();
   const now = Date.now();
-  return startMs > now && startMs < now + 48 * 60 * 60 * 1000;
+  return startMs > now && startMs < now + 90 * 864e5;
 }
 
 async function importCompletedFlights({ force = false, withActuals = true } = {}) {
