@@ -3448,17 +3448,19 @@ if (crewCacheReady) {
   setTimeout(() => { autoSyncLogbookCrewFromApa(); }, 1000);
   setTimeout(() => { refreshCrewCache().catch(() => {}); }, 5000);
   setInterval(() => { refreshCrewCache().catch(() => {}); }, 12 * 60 * 60 * 1000);
-  // Eager-snapshot any NEW trips ~10s after boot, then every 30 min. Cheap
+  // Eager-snapshot any NEW trips ~10s after boot, then hourly. Cheap
   // (skips trips already in cache) and critical for FA capture: Sabre only
   // exposes ~14 days of NS history so we have to grab pairings before they
   // age out — apa-logbook doesn't carry FA names at all.
+  // (All periodic pollers run hourly, not 15/30 min — Mike doesn't need
+  // faster and doesn't want to hammer APA/Sabre.)
   setTimeout(() => { eagerSnapshotNewTrips().catch(() => {}); }, 10000);
-  setInterval(() => { eagerSnapshotNewTrips().catch(() => {}); }, 30 * 60 * 1000);
-  // Pre-departure FA refresh: every 15 min, force-fetch crew for pairings
-  // with legs on today or tomorrow. Catches reserve FAs assigned in the
-  // final hour before showtime that the 30-min eager-snapshot would miss.
+  setInterval(() => { eagerSnapshotNewTrips().catch(() => {}); }, 60 * 60 * 1000);
+  // Pre-departure FA refresh: hourly, force-fetch crew for pairings with
+  // legs on today or tomorrow. Catches reserve FAs assigned close to
+  // showtime (may now be seen up to ~1h late — accepted tradeoff).
   setTimeout(() => { refreshImminentLegCrew().catch(() => {}); }, 20 * 1000);
-  setInterval(() => { refreshImminentLegCrew().catch(() => {}); }, 15 * 60 * 1000);
+  setInterval(() => { refreshImminentLegCrew().catch(() => {}); }, 60 * 60 * 1000);
   // One-shot pilot fix-up: prior accumulator keyed by emp_num kept both the
   // user's regular FO and any one-leg relief FO that appeared. Detect legs
   // with duplicate pilot seats (CA twice, FO twice) and rebuild from the
@@ -3521,11 +3523,11 @@ if (crewCacheReady) {
       }
     } catch (e) {}
   }, 30000);
-  // Auto-log poller: scan the calendar every 30 min for completed flights
+  // Auto-log poller: scan the calendar hourly for completed flights
   // and create logbook entries (with crew). 60 sec after boot for the first
   // pass so the crew cache has a chance to settle.
   setTimeout(() => { importCompletedFlights().catch(() => {}); }, 60 * 1000);
-  setInterval(() => { importCompletedFlights().catch(() => {}); }, 30 * 60 * 1000);
+  setInterval(() => { importCompletedFlights().catch(() => {}); }, 60 * 60 * 1000);
   // Reconciliation sweep: re-check trips from the last 60 days for FTGs /
   // drops that happened after auto-log already created the leg. 90 sec
   // after boot, then every 6 hours.
