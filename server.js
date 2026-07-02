@@ -3105,11 +3105,23 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
       continue;
     }
     if (status === "unknown") {
-      // No crew data yet — can't confirm the user is at a pilot seat, so
-      // don't log. The 30-min poller retries once the cache fills in, and
-      // the APA backfill catches anything that ages out of Sabre's window.
-      no_crew++;
-      continue;
+      if (completed) {
+        // No crew data for a COMPLETED leg — can't confirm the user was at
+        // a pilot seat, so don't log. The 30-min poller retries once the
+        // cache fills in, and the APA backfill catches anything that ages
+        // out of Sabre's window.
+        no_crew++;
+        continue;
+      }
+      // FUTURE leg with no crew snapshot yet: import it anyway with empty
+      // crew so the upcoming schedule shows in the logbook. Marked (DH)
+      // legs were already filtered above, and the leg came off Mike's own
+      // HI schedule, so "operating" is a safe assumption. The poller
+      // re-processes _upcoming legs and fills crew in once the cache has
+      // it. (Multiply-flown pairings: the crew cache can currently hold
+      // only ONE instance per (ep,seq), so later occurrences may keep an
+      // empty crew list until service-side per-instance support exists —
+      // better than hiding the trip entirely.)
     }
 
     const legRecord = {
