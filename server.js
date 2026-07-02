@@ -3456,11 +3456,13 @@ if (crewCacheReady) {
   // faster and doesn't want to hammer APA/Sabre.)
   setTimeout(() => { eagerSnapshotNewTrips().catch(() => {}); }, 10000);
   setInterval(() => { eagerSnapshotNewTrips().catch(() => {}); }, 60 * 60 * 1000);
-  // Pre-departure FA refresh: hourly, force-fetch crew for pairings with
-  // legs on today or tomorrow. Catches reserve FAs assigned close to
-  // showtime (may now be seen up to ~1h late — accepted tradeoff).
+  // Pre-departure FA refresh: every 15 min, force-fetch crew for pairings
+  // with legs on today or tomorrow. Catches reserve FAs assigned in the
+  // final hour before showtime. Only fires on trip days (no imminent legs
+  // → no API calls), so 15 min here is fine per Mike even though the other
+  // periodic pollers are capped at hourly.
   setTimeout(() => { refreshImminentLegCrew().catch(() => {}); }, 20 * 1000);
-  setInterval(() => { refreshImminentLegCrew().catch(() => {}); }, 60 * 60 * 1000);
+  setInterval(() => { refreshImminentLegCrew().catch(() => {}); }, 15 * 60 * 1000);
   // One-shot pilot fix-up: prior accumulator keyed by emp_num kept both the
   // user's regular FO and any one-leg relief FO that appeared. Detect legs
   // with duplicate pilot seats (CA twice, FO twice) and rebuild from the
