@@ -2765,14 +2765,18 @@ function purgeDeadheadsFromLogbook() {
 
 const SUMMARY_RE = /^AA\s+(\d{1,4})\s+(?:\(DH\)\s+)?([A-Z]{3})-([A-Z]{3})/;
 
-// APA Calendar Sync emits UIDs in (at least) two shapes:
-//   HI-YYYYMM-SEQ-EMP-legNN@apa.alliedpilots.org   (spec example)
-//   YYMMDD<SEQ><SEAT>-legNN@apa.alliedpilots.org   (what we actually see in
-//                                                   the real feed)
-// Both encode the same fields. Return {ep, seq, leg_idx} or all nulls.
+// APA Calendar Sync emits UIDs in (at least) three shapes:
+//   HI-YYYYMM-SEQ-EMP-legNN@apa.alliedpilots.org            (singleton trips)
+//   HI-YYYYMM-SEQ-YYYYMMDD-EMP-legNN@apa.alliedpilots.org   (pairing flown
+//     more than once a month — start date folded in to keep UIDs unique,
+//     e.g. recurring ORD-ANC seq 9452 on Jul 20/23/28)
+//   YYMMDD<SEQ><SEAT>-legNN@apa.alliedpilots.org            (legacy feed)
+// All encode the same fields. Return {ep, seq, leg_idx} or all nulls.
 function extractEpSeqFromUid(uid) {
   if (!uid) return { ep: null, seq: null, leg_idx: null };
-  let m = uid.match(/^HI-(\d{6})-(\d{4,5})-(\d+)-leg(\d{2})@/);
+  let m = uid.match(/^HI-(\d{6})-(\d{4,5})-(\d{8})-(\d+)-leg(\d{2})@/);
+  if (m) return { ep: +m[1], seq: +m[2], leg_idx: +m[5] - 1 };
+  m = uid.match(/^HI-(\d{6})-(\d{4,5})-(\d+)-leg(\d{2})@/);
   if (m) return { ep: +m[1], seq: +m[2], leg_idx: +m[4] - 1 };
   m = uid.match(/^(\d{2})(\d{2})\d{2}(\d{4,5})[A-Z]+-leg(\d{2})@/);
   if (m) return { ep: +("20" + m[1] + m[2]), seq: +m[3], leg_idx: +m[4] - 1 };
