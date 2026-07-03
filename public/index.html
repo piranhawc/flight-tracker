@@ -8,65 +8,93 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
+  :root {
+    --bg:#070708; --panel:#0e0e10; --panel-2:#121215; --card:#101013;
+    --line:#1a1a1f; --line-2:#242429;
+    --txt:#e2e2e6; --txt-dim:#8b8b94; --txt-faint:#55555e; --txt-ghost:#3a3a42;
+    --red:#e63946; --red-soft:rgba(230,57,70,.12);
+    --green:#06d6a0; --green-soft:rgba(6,214,160,.10);
+    --amber:#ffd166; --amber-soft:rgba(255,209,102,.10);
+    --blue:#4dabf7; --blue-soft:rgba(77,171,247,.12);
+    --purple:#c0a0ff;
+    --r:6px; --r-sm:4px;
+  }
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:#0a0a0a; color:#ddd; font-family:'JetBrains Mono',monospace; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
-  #header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; border-bottom:1px solid #141414; flex-shrink:0; }
-  #header .left { display:flex; align-items:center; gap:8px; }
-  #header .title { font-size:14px; font-weight:800; color:#e63946; letter-spacing:2px; }
-  #header .meta { font-size:9px; color:#444; }
-  #header .right { display:flex; gap:4px; }
-  .btn { background:transparent; border:1px solid #1a1a1a; color:#555; padding:3px 8px; border-radius:2px; cursor:pointer; font-size:10px; font-family:inherit; }
-  .btn:hover { border-color:#333; color:#888; }
-  .btn.active { background:#1a1208; border-color:#2a1a08; color:#e63946; }
-  #error { margin:6px 12px; padding:6px 8px; background:#180808; border:1px solid #2a0808; border-radius:2px; color:#f44; font-size:10px; display:none; }
+  body { background:var(--bg); color:var(--txt); font-family:'JetBrains Mono',monospace; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:#222228; border-radius:4px; }
+  ::-webkit-scrollbar-thumb:hover { background:#2e2e36; }
+  #header { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; border-bottom:1px solid var(--line); flex-shrink:0; background:linear-gradient(180deg,#0d0d10,#070708); }
+  #header .left { display:flex; align-items:center; gap:9px; }
+  #header .title { font-size:14px; font-weight:800; color:var(--txt); letter-spacing:3px; }
+  #header .title::after { content:""; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--red); margin-left:8px; vertical-align:2px; box-shadow:0 0 6px rgba(230,57,70,.8); }
+  #header .meta { font-size:9px; color:var(--txt-ghost); }
+  #header .right { display:flex; gap:5px; }
+  .btn { background:var(--panel); border:1px solid var(--line); color:var(--txt-dim); padding:4px 9px; border-radius:var(--r-sm); cursor:pointer; font-size:10px; font-family:inherit; transition:all .15s; }
+  .btn:hover { border-color:var(--line-2); color:var(--txt); background:var(--panel-2); }
+  .btn.active { background:var(--red-soft); border-color:rgba(230,57,70,.35); color:var(--red); }
+  #error { margin:6px 12px; padding:6px 8px; background:#180808; border:1px solid #2a0808; border-radius:var(--r-sm); color:#f44; font-size:10px; display:none; }
   #main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
   #map-wrap { flex:0 0 45%; min-height:180px; position:relative; transition:flex .3s; }
   #map-wrap.tracking { flex:0 0 65%; }
   #map { width:100%; height:100%; }
-  #live-info { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.9); border:1px solid #222; border-radius:4px; padding:8px 12px; z-index:1000; font-size:10px; display:none; max-width:220px; }
-  #live-info .flight-id { color:#e63946; font-weight:700; font-size:12px; }
-  #live-info .detail { color:#888; margin-top:2px; line-height:1.5; }
-  #live-info .tracking-badge { display:inline-block; background:#e63946; color:#000; font-size:8px; font-weight:700; padding:1px 5px; border-radius:2px; letter-spacing:1px; margin-left:6px; animation:pulse 2s infinite; }
+  #live-info { position:absolute; top:10px; left:10px; background:rgba(9,9,11,.82); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border:1px solid var(--line-2); border-radius:var(--r); padding:10px 12px; z-index:1000; font-size:10px; display:none; max-width:240px; box-shadow:0 6px 24px rgba(0,0,0,.55); }
+  #live-info .flight-id { color:var(--txt); font-weight:800; font-size:13px; letter-spacing:.5px; }
+  #live-info .detail { color:var(--txt-dim); margin-top:4px; line-height:1.55; }
+  #live-info .tracking-badge { display:inline-block; background:var(--red); color:#000; font-size:9px; font-weight:800; padding:2px 7px; border-radius:3px; letter-spacing:1.5px; margin-left:7px; vertical-align:1px; animation:pulse 2s infinite; }
+  /* Pre-departure banner: full-width pulsing strip. Distinct blue — red is
+     reserved for airborne LIVE, amber for taxi, green for arrived. */
+  .predep-banner { display:block; margin:7px -12px -10px; padding:6px 12px; background:linear-gradient(90deg,rgba(77,171,247,.22),rgba(77,171,247,.08)); border-top:1px solid rgba(77,171,247,.4); color:var(--blue); font-size:10px; font-weight:800; letter-spacing:2px; text-align:center; border-radius:0 0 var(--r) var(--r); animation:bannerGlow 1.6s ease-in-out infinite; }
+  @keyframes bannerGlow { 0%,100%{opacity:1; box-shadow:inset 0 0 18px rgba(77,171,247,.25)} 50%{opacity:.55; box-shadow:inset 0 0 4px rgba(77,171,247,.05)} }
+  /* Flight-phase strip: GATE→TAXI→CLB→CRZ→DES→TAXI→GATE, current lit */
+  .phase-strip { display:flex; gap:2px; margin-top:7px; }
+  .phase-strip .ph { flex:1; text-align:center; font-size:7.5px; font-weight:700; letter-spacing:.5px; color:var(--txt-ghost); padding:3px 0 2px; border-top:2px solid #222228; user-select:none; }
+  .phase-strip .ph.done { color:var(--txt-faint); border-top-color:#3a3a42; }
+  .phase-strip .ph.now { color:var(--phase-c,#e63946); border-top-color:var(--phase-c,#e63946); animation:pulse 1.6s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
   #test-bar { position:absolute; top:8px; right:8px; z-index:1000; display:flex; gap:4px; }
   #test-bar input { background:#111; border:1px solid #222; color:#ddd; padding:4px 8px; border-radius:2px; font-size:11px; font-family:inherit; width:120px; }
   #test-bar input::placeholder { color:#444; }
   #test-bar button { background:#e63946; color:#000; border:none; padding:4px 10px; border-radius:2px; font-size:10px; font-weight:700; cursor:pointer; font-family:inherit; }
-  #bottom { flex:1; display:flex; flex-direction:column; border-top:1px solid #141414; overflow:hidden; }
-  #filters { display:flex; gap:2px; padding:6px 12px; border-bottom:1px solid #141414; }
-  #trips { flex:1; overflow-y:auto; padding:4px 0 8px; }
-  .day-header { padding:6px 14px 2px; font-size:10px; font-weight:700; color:#e63946; letter-spacing:1px; text-transform:uppercase; }
-  .trip { margin:0 12px 5px; padding:10px 12px; background:#0f0f0f; border-radius:4px; border-left:3px solid #282828; cursor:pointer; transition:all .12s; }
-  .trip.past { opacity:.45; }
-  .trip.selected { background:#1a1208; border-left-color:#e63946; }
+  #bottom { flex:1; display:flex; flex-direction:column; border-top:1px solid var(--line); overflow:hidden; }
+  #filters { display:flex; gap:4px; padding:8px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+  #trips { flex:1; overflow-y:auto; padding:6px 0 10px; }
+  .day-header { padding:10px 16px 4px; font-size:9px; font-weight:800; color:var(--txt-faint); letter-spacing:2px; text-transform:uppercase; display:flex; align-items:center; gap:8px; }
+  .day-header::after { content:""; flex:1; height:1px; background:var(--line); }
+  .trip { margin:0 12px 6px; padding:11px 13px; background:var(--card); border-radius:var(--r); border:1px solid var(--line); border-left:3px solid #2a2a30; cursor:pointer; transition:all .15s; }
+  .trip:hover { border-color:var(--line-2); background:#131317; transform:translateX(1px); }
+  .trip.past { opacity:.4; }
+  .trip.selected { background:linear-gradient(180deg,#191014,#120e10); border-color:rgba(230,57,70,.25); border-left-color:var(--red); box-shadow:0 2px 12px rgba(230,57,70,.07); }
   .trip.selected.past { opacity:1; }
-  .trip .route { font-size:12px; font-weight:700; color:#bbb; letter-spacing:.3px; }
-  .trip.selected .route { color:#e63946; }
-  .trip .delta { font-size:10px; color:#e63946; font-weight:600; }
-  .trip .info { font-size:10px; color:#555; margin-top:4px; }
-  .trip .legs { margin-top:8px; border-top:1px solid #1a1a1a; padding-top:6px; display:none; }
+  .trip .route { font-size:12px; font-weight:700; color:var(--txt); letter-spacing:.4px; }
+  .trip.selected .route { color:var(--red); }
+  .trip .delta { font-size:10px; color:var(--red); font-weight:700; }
+  .trip .info { font-size:9.5px; color:var(--txt-faint); margin-top:4px; letter-spacing:.3px; }
+  .trip .legs { margin-top:9px; border-top:1px solid var(--line); padding-top:7px; display:none; }
   .trip.selected .legs { display:block; }
-  .leg { padding:5px 0; border-bottom:1px solid #141414; }
+  .leg { padding:6px 0; border-bottom:1px solid var(--line); }
   .leg:last-child { border-bottom:none; }
   .leg.dh { opacity:.5; }
-  .leg .fnum { font-size:11px; font-weight:700; color:#ccc; }
-  .leg .rte { font-size:10px; color:#777; }
-  .leg a { font-size:9px; padding:2px 4px; border-radius:2px; text-decoration:none; white-space:nowrap; }
-  .leg .fa-link { color:#06d6a0; background:#081a10; border:1px solid #0d2a18; }
-  .leg .fr-link { color:#ffd166; background:#1a1406; border:1px solid #2a1e0a; }
-  .leg .an-link { color:#c0a0ff; background:#140e1a; border:1px solid #201630; }
-  .leg.active-leg { background:#1a1208; border-radius:3px; margin:0 -4px; padding:5px 4px; }
-  .leg.active-leg .fnum { color:#e63946; }
+  .leg .fnum { font-size:11px; font-weight:700; color:var(--txt); }
+  .leg .rte { font-size:10px; color:var(--txt-dim); }
+  .leg a { font-size:9px; padding:2px 5px; border-radius:3px; text-decoration:none; white-space:nowrap; transition:filter .15s; }
+  .leg a:hover { filter:brightness(1.4); }
+  .leg .fa-link { color:var(--green); background:var(--green-soft); border:1px solid rgba(6,214,160,.25); }
+  .leg .fr-link { color:var(--amber); background:var(--amber-soft); border:1px solid rgba(255,209,102,.25); }
+  .leg .an-link { color:var(--purple); background:rgba(192,160,255,.08); border:1px solid rgba(192,160,255,.22); }
+  .leg.active-leg { background:var(--red-soft); border-radius:var(--r-sm); margin:0 -5px; padding:6px 5px; }
+  .leg.active-leg .fnum { color:var(--red); }
   .leg-row1 { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-  .leg-times { font-size:10px; color:#444; margin-left:auto; }
-  .leg-links { display:flex; gap:3px; flex-shrink:0; }
-  .leg-reg { font-size:9px; color:#999; }
-  .leg-details { font-size:9px; color:#555; margin-top:2px; }
-  .empty { text-align:center; padding:28px; color:#333; font-size:11px; }
-  #commute-panel { background:#0c0c0c; border-top:1px solid #141414; flex-shrink:0; }
-  #commute-header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; cursor:pointer; user-select:none; }
-  #commute-header:hover { background:#111; }
-  #commute-title { font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
+  .leg-times { font-size:10px; color:var(--txt-faint); margin-left:auto; }
+  .leg-links { display:flex; gap:4px; flex-shrink:0; }
+  .leg-reg { font-size:9px; color:var(--txt-dim); }
+  .leg-details { font-size:9px; color:var(--txt-faint); margin-top:2px; }
+  .empty { text-align:center; padding:32px; color:var(--txt-ghost); font-size:11px; letter-spacing:1px; }
+  #commute-panel { background:var(--panel); border-top:1px solid var(--line); flex-shrink:0; }
+  #commute-header { display:flex; align-items:center; justify-content:space-between; padding:9px 16px; cursor:pointer; user-select:none; transition:background .15s; }
+  #commute-header:hover { background:var(--panel-2); }
+  #commute-title { font-size:10px; font-weight:800; color:var(--green); letter-spacing:2.5px; }
   #commute-toggle { font-size:10px; color:#555; transition:transform .15s; }
   #commute-refresh { font-size:12px; color:#555; cursor:pointer; padding:0 8px; margin-right:4px; user-select:none; }
   #commute-refresh:hover { color:#06d6a0; }
@@ -109,10 +137,10 @@
   .commute-week .cw-range { font-size:7px; color:#777; line-height:1.1; }
   .commute-week .cw-empty { font-size:7px; color:#333; margin-top:1px; }
   .commute-week-expanded { background:#070707; border-top:1px solid #141414; padding:0; }
-  #cal-panel { background:#0c0c0c; border-top:1px solid #141414; flex-shrink:0; }
-  #cal-header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; cursor:pointer; user-select:none; }
-  #cal-header:hover { background:#111; }
-  #cal-title { font-size:10px; font-weight:700; color:#06d6a0; letter-spacing:2px; }
+  #cal-panel { background:var(--panel); border-top:1px solid var(--line); flex-shrink:0; }
+  #cal-header { display:flex; align-items:center; justify-content:space-between; padding:9px 16px; cursor:pointer; user-select:none; transition:background .15s; }
+  #cal-header:hover { background:var(--panel-2); }
+  #cal-title { font-size:10px; font-weight:800; color:var(--green); letter-spacing:2.5px; }
   #cal-summary { flex:1; text-align:center; font-size:9px; color:#666; }
   #cal-toggle { font-size:10px; color:#555; transition:transform .15s; }
   #cal-panel.open #cal-toggle { transform:rotate(90deg); }
@@ -163,7 +191,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-06-14.11</span>
+    <span class="meta" title="Build version — bumped on each deploy">v2026-07-03.1</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
     <a class="btn" href="/friends.html" title="Friends" style="text-decoration:none">👥 FRIENDS</a>
     <a class="btn" href="/fa-usage.html" title="FlightAware API usage" style="text-decoration:none">📊 FA</a>
@@ -714,6 +742,35 @@ function drawTestFlight() {
 
   var lp = position ? position.last_position : null;
   var isArrived = !!flight && (flight.progress_percent >= 100 || !!flight.actual_in);
+
+  // Flight phase from OOOI times + live position. Latest-stage evidence wins.
+  // altitude in the FA position payload is in hundreds of feet.
+  function derivePhase(f, pos) {
+    var prog = (f && typeof f.progress_percent === "number") ? f.progress_percent : null;
+    if (f.actual_in || (prog !== null && prog >= 100)) return { key:"arrived", label:"ARRIVED", color:"#06d6a0", idx:6 };
+    if (f.actual_on) return { key:"taxi-in", label:"TAXI IN", color:"#ffd166", idx:5 };
+    var altFt = (pos && typeof pos.altitude === "number") ? pos.altitude * 100 : null;
+    var airborne = !!f.actual_off || (altFt !== null && altFt > 1500);
+    if (airborne) {
+      if (altFt !== null && altFt < 18000) {
+        if (prog !== null && prog >= 50) return { key:"descent", label:"DESCENT", color:"#e63946", idx:4 };
+        return { key:"climb", label:"CLIMB", color:"#e63946", idx:2 };
+      }
+      if (prog !== null && prog >= 85) return { key:"descent", label:"DESCENT", color:"#e63946", idx:4 };
+      return { key:"cruise", label:"CRUISE", color:"#e63946", idx:3 };
+    }
+    if (f.actual_out || String(f.status||"").indexOf("Taxi") >= 0) return { key:"taxi-out", label:"TAXI OUT", color:"#ffd166", idx:1 };
+    return { key:"predep", label:"PRE-DEP", color:"#4dabf7", idx:0 };
+  }
+  function phaseStripHtml(ph) {
+    var segs = ["GATE","TAXI","CLB","CRZ","DES","TAXI","GATE"];
+    var html = '<div class="phase-strip" style="--phase-c:' + ph.color + '">';
+    for (var pi = 0; pi < segs.length; pi++) {
+      var cls = pi < ph.idx ? "ph done" : (pi === ph.idx ? "ph now" : "ph");
+      html += '<span class="' + cls + '">' + segs[pi] + '</span>';
+    }
+    return html + '</div>';
+  }
   if (lp && lp.latitude) {
     // Plane marker at the last known position. For an arrived flight this
     // is where it blocked in — keep showing it parked at the gate.
@@ -730,25 +787,31 @@ function drawTestFlight() {
   if (lp && lp.latitude && !isArrived) {
     var li = document.getElementById("live-info");
     li.style.display = "block";
-    document.getElementById("live-ident").innerHTML = ((testMode && testMode._displayIdent) || flight.ident_iata || flight.ident) + '<span class="tracking-badge">LIVE</span>';
-    document.getElementById("live-detail").innerHTML =
-      (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>" +
-      "Alt: " + (lp.altitude*100).toLocaleString() + "ft<br>" +
-      "GS: " + lp.groundspeed + "kts · Hdg: " + lp.heading + "°<br>" +
-      "Progress: " + flight.progress_percent + "%";
+    var phL = derivePhase(flight, lp);
+    document.getElementById("live-ident").innerHTML = ((testMode && testMode._displayIdent) || flight.ident_iata || flight.ident) +
+      '<span class="tracking-badge" style="background:' + phL.color + '">' + phL.label + '</span>';
+    var liveHtml = (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>";
+    if (phL.key === "taxi-out" || phL.key === "taxi-in") {
+      liveHtml += "GS: " + lp.groundspeed + "kts · taxiing<br>" +
+        (flight.gate_origin && phL.key === "taxi-out" ? "Gate: " + flight.gate_origin + "<br>" : "") +
+        (flight.gate_destination && phL.key === "taxi-in" ? "Gate: " + flight.gate_destination + "<br>" : "") +
+        "Progress: " + flight.progress_percent + "%";
+    } else {
+      liveHtml += "Alt: " + (lp.altitude*100).toLocaleString() + "ft<br>" +
+        "GS: " + lp.groundspeed + "kts · Hdg: " + lp.heading + "°<br>" +
+        "Progress: " + flight.progress_percent + "%";
+    }
+    liveHtml += phaseStripHtml(phL);
+    document.getElementById("live-detail").innerHTML = liveHtml;
   } else if (flight) {
     // Pre-departure OR arrived: show flight info (arrived may still have a
     // parked position drawn above)
     var li = document.getElementById("live-info");
     li.style.display = "block";
     var statusText = flight.status || "Scheduled";
-    var badgeColor = "#666";
-    var badgeLabel = "PRE-DEP";
-    if (isArrived) { badgeLabel = "ARRIVED"; badgeColor = "#06d6a0"; }
-    else if (statusText.indexOf("Taxi") >= 0 || flight.actual_out) { badgeLabel = "TAXI"; badgeColor = "#ffd166"; }
-    if (flight.progress_percent > 0 && flight.progress_percent < 100) { badgeLabel = "LIVE"; badgeColor = "#e63946"; }
+    var ph = derivePhase(flight, lp);
     document.getElementById("live-ident").innerHTML = ((testMode && testMode._displayIdent) || flight.ident_iata || flight.ident) +
-      '<span class="tracking-badge" style="background:' + badgeColor + '">' + badgeLabel + '</span>';
+      '<span class="tracking-badge" style="background:' + ph.color + '">' + ph.label + '</span>';
     var detailHtml = (flight.origin?flight.origin.code_iata:"?") + " → " + (flight.destination?flight.destination.code_iata:"?") + "<br>";
     if (isArrived) {
       var arrTime = flight.actual_in || flight.estimated_in || flight.scheduled_in;
@@ -781,6 +844,14 @@ function drawTestFlight() {
         }
         detailHtml += "</span>";
       }
+    }
+    detailHtml += phaseStripHtml(ph);
+    // Pre-departure: prominent pulsing banner (blue — distinct from the red
+    // LIVE / amber TAXI / green ARRIVED badges). Must be last in the panel:
+    // its negative margins bleed it to the panel edges.
+    if (ph.key === "predep") {
+      detailHtml += '<div class="predep-banner">PRE-DEPARTURE · ' +
+        (typeof depStr !== "undefined" && depStr !== "?" ? depStr : "SCHEDULED") + '</div>';
     }
     document.getElementById("live-detail").innerHTML = detailHtml;
 
