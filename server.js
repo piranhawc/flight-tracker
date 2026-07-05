@@ -130,6 +130,14 @@ function saveCache(file, data) {
   }
 }
 
+// App settings persisted across restarts. commute_enabled gates every
+// FlightAware fetch the commute feature makes (on-demand day view + the
+// daily commute-week schedule refresh) — Mike toggles it from the logbook
+// page when he isn't commuting, since those calls cost real FA money.
+const SETTINGS_FILE = path.join(CACHE_DIR, "settings.json");
+let appSettings = Object.assign({ commute_enabled: true }, loadCache(SETTINGS_FILE) || {});
+function saveSettings() { saveCache(SETTINGS_FILE, appSettings); }
+
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
 
@@ -1367,6 +1375,7 @@ async function fetchAirportFlights(airport, endpoint, startStr, endStr) {
 }
 
 app.get("/api/commute/:from/:to/:date", async (req, res) => {
+  if (!appSettings.commute_enabled) return res.json({ disabled: true, flights: [] });
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   const { from, to, date } = req.params;
   try {
@@ -1709,6 +1718,10 @@ const COMMUTE_PASSENGER_CARRIERS = new Set(["AA", "UA", "DL", "WN", "AS", "B6"])
 
 let commuteWeekRefreshing = false;
 async function refreshCommuteWeekCache() {
+  if (!appSettings.commute_enabled) {
+    console.log("[commute-week] commute data disabled — skipping refresh (no FA calls)");
+    return;
+  }
   if (commuteWeekRefreshing) {
     console.log("[commute-week] refresh already in progress, skipping");
     return;
@@ -1822,8 +1835,18 @@ app.get("/api/commute-week/:from/:to", (req, res) => {
 });
 
 app.post("/api/commute-week/refresh", (req, res) => {
+  if (!appSettings.commute_enabled) return res.status(409).json({ error: "commute data is disabled — enable it on the logbook page" });
   refreshCommuteWeekCache().catch(e => console.error(e));
   res.json({ ok: true, message: "refresh started" });
+});
+
+// Commute data kill switch (FA spend control). Lives behind logbook auth.
+app.get("/api/settings", logbookAuth, (req, res) => res.json(appSettings));
+app.post("/api/settings/commute", logbookAuth, express.json(), (req, res) => {
+  appSettings.commute_enabled = !!(req.body && req.body.enabled);
+  saveSettings();
+  console.log(`[settings] commute data ${appSettings.commute_enabled ? "ENABLED" : "DISABLED"} via logbook page`);
+  res.json({ ok: true, commute_enabled: appSettings.commute_enabled });
 });
 
 // --- Pilot logbook ---

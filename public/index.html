@@ -1786,6 +1786,11 @@ async function loadCommuteRoute(route, dateStr) {
       return null;
     }
     var data = await resp.json();
+    if (data.disabled) {
+      el.innerHTML = '<div class="commute-loading" style="padding:8px">COMMUTE DATA OFF · enable on the Logbook page</div>';
+      setCommuteStatus("OFF");
+      return null;
+    }
     var ageHtml = "";
     if (data.cacheAge !== null && data.cacheAge !== undefined) {
       var ageMin = Math.floor(data.cacheAge / 60);
