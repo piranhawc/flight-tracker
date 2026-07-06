@@ -7,7 +7,11 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 
-const DB_PATH = process.env.CREW_DB_PATH || "/data/flight-tracker.db";
+// /app/data is the bind-mounted (persistent) volume. The old default,
+// /data/flight-tracker.db, lived in the container's ephemeral layer — every
+// deploy silently wiped the crew cache, and Sabre's ~14-day NS window meant
+// older crew was unrecoverable. Discovered 2026-07-06.
+const DB_PATH = process.env.CREW_DB_PATH || "/app/data/flight-tracker.db";
 
 let db = null;
 
