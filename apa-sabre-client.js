@@ -10,8 +10,12 @@ async function getCurrentSchedule() {
   return r.json();
 }
 
-async function getPairingCrew(ep, seq) {
-  const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}/crew`, { signal: AbortSignal.timeout(20000) });
+// `start` (YYYY-MM-DD) pins the pairing INSTANCE — required for pairings
+// flown more than once in a bid month, where the service would otherwise
+// anchor leg dates (and thus crew lookups) to the wrong occurrence.
+async function getPairingCrew(ep, seq, start) {
+  const qs = start ? `?start=${encodeURIComponent(start)}` : "";
+  const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}/crew${qs}`, { signal: AbortSignal.timeout(20000) });
   if (!r.ok) throw new Error(`crew fetch failed: ${r.status}`);
   return r.json();
 }
@@ -24,9 +28,10 @@ async function getPairingCrew(ep, seq) {
 // identifying — the AA2348 CLT-PWM/PWM-CLT turn case works because the
 // dep airports differ. Returns an empty Map on any failure so the
 // caller can fall back to trusting calendar/pairing data.
-async function getPairingReconciliation(ep, seq) {
+async function getPairingReconciliation(ep, seq, start) {
   try {
-    const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}`, { signal: AbortSignal.timeout(15000) });
+    const qs = start ? `?start=${encodeURIComponent(start)}` : "";
+    const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}${qs}`, { signal: AbortSignal.timeout(15000) });
     if (!r.ok) {
       console.log(`[reconciliation] ${ep}/${seq} returned ${r.status}`);
       return new Map();

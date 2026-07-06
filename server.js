@@ -2416,9 +2416,9 @@ function normalizeLogbookLegKey(leg) {
 // pairings), so we deliberately only flag SUBSTITUTE based on seq_day
 // for pilot seats. Numeric FA seats fall through this path and are
 // handled per-leg by getApaCrewForLogbookLeg anyway.
-function getAccumulatedCrewForLeg(ep, seq, targetLegIdx) {
+function getAccumulatedCrewForLeg(ep, seq, targetLegIdx, startDate) {
   if (!crewCacheReady) return [];
-  const pairing = crewCache.getPairing(ep, seq);
+  const pairing = crewCache.getPairing(ep, seq, startDate);
   if (!pairing || !pairing.legs.length) return [];
   const PILOT_SET = new Set(["CA", "FO", "RC"]);
   const regularBySeat = new Map();     // seat → latest non-substitute pilot
@@ -2461,7 +2461,7 @@ function getApaPilotsForLeg(leg) {
   const rows = crewCache.getLegByFlight(key.flightNum, key.date, key.dep, key.arr);
   if (!rows.length) return [];
   const row = rows[0];
-  const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
+  const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx, row.start_date);
   return crewRows
     .filter(c => c && PILOT_SEATS.has(String(c.seat).toUpperCase()) && c.name && c.name !== "OPEN")
     .filter(c => String(c.emp_num || "") !== LOGBOOK_USER_EMP_NUM)
@@ -2486,7 +2486,7 @@ function getApaCrewForLogbookLeg(leg) {
   // Pilots (CA/FO/RC) are typically only listed on their boarding leg in
   // Sabre NS — subsequent legs imply they continue. So we walk legs 0..N
   // and accumulate to know who's flying THIS leg.
-  const accumulated = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
+  const accumulated = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx, row.start_date);
   const pilots = accumulated
     .filter(c => c && PILOT_SEATS.has(String(c.seat).toUpperCase()))
     .filter(c => c.name && c.name !== "OPEN")
@@ -2796,14 +2796,19 @@ const SUMMARY_RE = /^AA\s+(\d{1,4})\s+(?:\(DH\)\s+)?([A-Z]{3})-([A-Z]{3})/;
 //   YYMMDD<SEQ><SEAT>-legNN@apa.alliedpilots.org            (legacy feed)
 // All encode the same fields. Return {ep, seq, leg_idx} or all nulls.
 function extractEpSeqFromUid(uid) {
-  if (!uid) return { ep: null, seq: null, leg_idx: null };
+  if (!uid) return { ep: null, seq: null, leg_idx: null, seq_start: null };
+  // Dated shape also yields seq_start — the trip INSTANCE's start date. Pass
+  // it to apa-sabre so a multiply-flown pairing resolves to the right
+  // occurrence's dates and crew. Undated shapes = single instance; the
+  // service's own date anchor is correct there, so seq_start stays null.
   let m = uid.match(/^HI-(\d{6})-(\d{4,5})-(\d{8})-(\d+)-leg(\d{2})@/);
-  if (m) return { ep: +m[1], seq: +m[2], leg_idx: +m[5] - 1 };
+  if (m) return { ep: +m[1], seq: +m[2], leg_idx: +m[5] - 1,
+                  seq_start: m[3].slice(0,4) + "-" + m[3].slice(4,6) + "-" + m[3].slice(6,8) };
   m = uid.match(/^HI-(\d{6})-(\d{4,5})-(\d+)-leg(\d{2})@/);
-  if (m) return { ep: +m[1], seq: +m[2], leg_idx: +m[4] - 1 };
+  if (m) return { ep: +m[1], seq: +m[2], leg_idx: +m[4] - 1, seq_start: null };
   m = uid.match(/^(\d{2})(\d{2})\d{2}(\d{4,5})[A-Z]+-leg(\d{2})@/);
-  if (m) return { ep: +("20" + m[1] + m[2]), seq: +m[3], leg_idx: +m[4] - 1 };
-  return { ep: null, seq: null, leg_idx: null };
+  if (m) return { ep: +("20" + m[1] + m[2]), seq: +m[3], leg_idx: +m[4] - 1, seq_start: null };
+  return { ep: null, seq: null, leg_idx: null, seq_start: null };
 }
 
 // The apa-sabre crew cache uses the LOCAL departure date — what the airline
@@ -2836,7 +2841,7 @@ function parseCalendarEvent(event) {
   // Derive (ep, seq, leg_idx) from the calendar UID — supports both UID
   // shapes the APA Calendar Sync produces. ep/seq are what we need to fetch
   // crew for pairings that aren't yet in the cache.
-  const { ep, seq, leg_idx } = extractEpSeqFromUid(event.uid);
+  const { ep, seq, leg_idx, seq_start } = extractEpSeqFromUid(event.uid);
 
   const startDate = new Date(event.start);
   const endDate = new Date(event.end || event.start);
@@ -2844,7 +2849,7 @@ function parseCalendarEvent(event) {
 
   return {
     leg_id: event.uid, // stable across runs — UID is what /api/flights returns
-    ep, seq, leg_idx,
+    ep, seq, leg_idx, seq_start,
     flight: flightNum,
     dep_apt: depApt,
     arr_apt: arrApt,
@@ -2869,7 +2874,7 @@ function getCrewForCalendarLeg(parsed) {
   if (cacheRows.length === 0) return { crew: [], status: "unknown" };
   const row = cacheRows[0];
   // Accumulate crew through the pairing up to this leg.
-  const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx);
+  const crewRows = getAccumulatedCrewForLeg(row.ep, row.seq, row.leg_idx, row.start_date);
   if (!crewRows.length) return { crew: [], status: "unknown" };
 
   // Operating check: the user must hold a pilot seat (CA/FO/RC) on THIS
@@ -2924,20 +2929,28 @@ async function reconcileExistingLogbook() {
     }
     const todayIso = new Date().toISOString().slice(0, 10);
     const cutoffMs = Date.now() - 60 * 24 * 60 * 60 * 1000;
-    const entriesByTrip = new Map(); // "ep/seq" → [leg, leg, ...]
+    // Grouped by trip INSTANCE — a multiply-flown pairing's occurrences
+    // reconcile independently. Instance start comes from the leg's UID
+    // (date-carrying shape); '' for singletons, where the service's default
+    // date anchor is correct.
+    const entriesByTrip = new Map(); // "ep/seq/start" → [leg, leg, ...]
     for (const leg of Object.values(logbook.legs)) {
       if (!leg || !leg.ep || !leg.seq) continue;
       const legDateMs = leg.date ? new Date(leg.date + "T00:00:00Z").getTime() : 0;
       if (legDateMs && legDateMs < cutoffMs) continue;
-      const key = `${leg.ep}/${leg.seq}`;
+      const uidInfo = extractEpSeqFromUid(typeof leg.id === "string" ? leg.id : "");
+      const start = uidInfo.seq_start || "";
+      const key = `${leg.ep}/${leg.seq}/${start}`;
       if (!entriesByTrip.has(key)) entriesByTrip.set(key, []);
       entriesByTrip.get(key).push(leg);
     }
 
     let removed = 0, kept = 0, restored = 0, changedAny = false;
     for (const [tripKey, legs] of entriesByTrip) {
-      const [ep, seq] = tripKey.split("/").map(Number);
-      const recon = await apa.getPairingReconciliation(ep, seq);
+      const parts = tripKey.split("/");
+      const ep = Number(parts[0]), seq = Number(parts[1]);
+      const startKey = parts[2] || null;
+      const recon = await apa.getPairingReconciliation(ep, seq, startKey);
       if (!recon || recon.size === 0) { kept += legs.length; continue; }
       for (const leg of legs) {
         // Vanished-trip check — must run BEFORE the reconciliation branch,
@@ -3032,23 +3045,27 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
   // yet in the SQLite cache. /schedule/current only returns the current bid
   // month, so historical trips would otherwise never have crew. We pull each
   // missing pairing once and cache the result.
-  const wantedPairings = new Map(); // "ep/seq" → {ep, seq}
+  // Keyed by instance: ep/seq/seq_start. seq_start comes from date-carrying
+  // UIDs (multiply-flown pairings) — null/'' for singletons, where the
+  // service's own date anchor is already correct.
+  const wantedPairings = new Map(); // "ep/seq/start" → {ep, seq, start}
   for (const ev of events) {
     const parsed = parseCalendarEvent(ev);
     if (!parsed || !parsed.ep || !parsed.seq) continue;
     if (!isCompleted(parsed) && !isUpcomingSoon(parsed)) continue;
-    const k = parsed.ep + "/" + parsed.seq;
-    if (!wantedPairings.has(k)) wantedPairings.set(k, { ep: parsed.ep, seq: parsed.seq });
+    const k = parsed.ep + "/" + parsed.seq + "/" + (parsed.seq_start || "");
+    if (!wantedPairings.has(k)) wantedPairings.set(k, { ep: parsed.ep, seq: parsed.seq, start: parsed.seq_start || null });
   }
   let prefetched = 0, prefetchMissing = 0;
-  for (const { ep, seq } of wantedPairings.values()) {
-    if (crewCache.getPairing(ep, seq)) continue;
+  for (const { ep, seq, start } of wantedPairings.values()) {
+    if (crewCache.getPairing(ep, seq, start === null ? undefined : start)) continue;
     try {
-      const pairing = await apa.getPairingCrew(ep, seq);
+      const pairing = await apa.getPairingCrew(ep, seq, start);
       if (pairing && pairing.legs) {
+        if (start) pairing.start_date = start;
         crewCache.upsertPairing(pairing);
         prefetched++;
-        console.log(`[auto-log] prefetched ${ep}/${seq} (${pairing.legs.length} legs)`);
+        console.log(`[auto-log] prefetched ${ep}/${seq}${start ? "@"+start : ""} (${pairing.legs.length} legs)`);
       } else {
         prefetchMissing++;
       }
@@ -3061,12 +3078,12 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     console.log(`[auto-log] prefetch: ${prefetched} pulled, ${prefetchMissing} unavailable, ${wantedPairings.size} total wanted`);
   }
 
-  // Pull reconciliation once per pairing. Lets us skip FTG'd/dropped legs
-  // at write time rather than discovering them later in the cleanup pass.
+  // Pull reconciliation once per pairing instance. Lets us skip FTG'd/dropped
+  // legs at write time rather than discovering them later in the cleanup pass.
   // Failure mode: empty map → fall back to trusting the calendar.
-  const reconByTrip = new Map(); // "ep/seq" → Map(flight-date → reconInfo)
-  for (const { ep, seq } of wantedPairings.values()) {
-    reconByTrip.set(`${ep}/${seq}`, await apa.getPairingReconciliation(ep, seq));
+  const reconByTrip = new Map(); // "ep/seq/start" → Map(flight-dep → reconInfo)
+  for (const { ep, seq, start } of wantedPairings.values()) {
+    reconByTrip.set(`${ep}/${seq}/${start || ""}`, await apa.getPairingReconciliation(ep, seq, start));
   }
 
   let created = 0, updated = 0, skipped = 0, deadhead = 0, no_crew = 0, scanned = 0, upcoming = 0, notOperated = 0;
@@ -3104,7 +3121,7 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     // operated (FTG, dropped, replaced, admin), skip the write entirely.
     // If the leg already existed in the logbook, mark it removed so it
     // disappears from the default view.
-    const recon = reconByTrip.get(`${parsed.ep}/${parsed.seq}`);
+    const recon = reconByTrip.get(`${parsed.ep}/${parsed.seq}/${parsed.seq_start || ""}`);
     const parsedDep = String(parsed.dep_apt || "").toUpperCase();
     // (flight, dep_apt) — date excluded so calendar/Sabre date drift
     // doesn't break the lookup. See notes in apa-sabre-client.js.
@@ -3249,19 +3266,22 @@ async function fetchMissingPairingsForPlaceholders() {
     if (!leg.crew || !leg.crew.length) continue;
     if (!leg.ep || !leg.seq) continue;
     if (!leg.crew.some(n => /emp:\d+$/.test(String(n)))) continue;
-    const key = `${leg.ep}/${leg.seq}`;
+    const uidInfo = extractEpSeqFromUid(typeof leg.id === "string" ? leg.id : "");
+    const start = uidInfo.seq_start || null;
+    const key = `${leg.ep}/${leg.seq}/${start || ""}`;
     if (wanted.has(key)) continue;
-    const existing = crewCache.getPairing(leg.ep, leg.seq);
+    const existing = crewCache.getPairing(leg.ep, leg.seq, start === null ? undefined : start);
     if (existing && existing.legs && existing.legs.length) continue;
-    wanted.set(key, { ep: leg.ep, seq: leg.seq });
+    wanted.set(key, { ep: leg.ep, seq: leg.seq, start });
   }
   if (!wanted.size) return 0;
   console.log(`[heal] fetching ${wanted.size} missing pairing(s) from Sabre to resolve emp:XXX placeholders`);
   let fetched = 0;
-  for (const { ep, seq } of wanted.values()) {
+  for (const { ep, seq, start } of wanted.values()) {
     try {
-      const pairing = await apa.getPairingCrew(ep, seq);
+      const pairing = await apa.getPairingCrew(ep, seq, start);
       if (pairing && pairing.legs) {
+        if (start) pairing.start_date = start;
         crewCache.upsertPairing(pairing);
         fetched++;
         console.log(`[heal]   fetched ${ep}/${seq} (${pairing.legs.length} legs)`);
@@ -3352,10 +3372,11 @@ async function refreshCrewCache() {
     console.log(`[crew-cache] refreshing ${upcoming.length} of ${schedule.length} trips`);
     for (const trip of upcoming) {
       try {
-        const pairing = await apa.getPairingCrew(trip.ep, trip.seq);
+        const pairing = await apa.getPairingCrew(trip.ep, trip.seq, trip.start_date);
         if (pairing && pairing.legs) {
+          pairing.start_date = trip.start_date; // instance key for the cache
           crewCache.upsertPairing(pairing);
-          console.log(`[crew-cache]   ${trip.ep}/${trip.seq} (${pairing.legs.length} legs) ok`);
+          console.log(`[crew-cache]   ${trip.ep}/${trip.seq}@${trip.start_date} (${pairing.legs.length} legs) ok`);
         }
       } catch (err) {
         console.error(`[crew-cache]   ${trip.ep}/${trip.seq} failed: ${err.message}`);
@@ -3391,7 +3412,10 @@ async function eagerSnapshotNewTrips() {
     // window, so don't gate on start_date.
     const newTrips = schedule.filter(t => {
       if (!t || t.ep == null || t.seq == null) return false;
-      const existing = crewCache.getPairing(t.ep, t.seq);
+      // Instance-aware: each occurrence of a multiply-flown pairing is its
+      // own cache entry, so the Jul-23 ANC trip snapshots even when Jul-20
+      // is already cached.
+      const existing = crewCache.getPairing(t.ep, t.seq, t.start_date);
       return !existing || !existing.legs || existing.legs.length === 0;
     });
     if (!newTrips.length) return;
@@ -3399,11 +3423,12 @@ async function eagerSnapshotNewTrips() {
     let snapshotted = 0;
     for (const trip of newTrips) {
       try {
-        const pairing = await apa.getPairingCrew(trip.ep, trip.seq);
+        const pairing = await apa.getPairingCrew(trip.ep, trip.seq, trip.start_date);
         if (pairing && pairing.legs) {
+          pairing.start_date = trip.start_date;
           crewCache.upsertPairing(pairing);
           snapshotted++;
-          console.log(`[eager-snapshot]   ${trip.ep}/${trip.seq} (${pairing.legs.length} legs) ok`);
+          console.log(`[eager-snapshot]   ${trip.ep}/${trip.seq}@${trip.start_date} (${pairing.legs.length} legs) ok`);
         }
       } catch (err) {
         console.error(`[eager-snapshot]   ${trip.ep}/${trip.seq} failed: ${err.message}`);
@@ -3433,10 +3458,11 @@ async function refreshImminentLegCrew() {
     const pairings = crewCache.findPairingsByLegDate([today, tomorrow]);
     if (!pairings.length) return;
     let refreshed = 0, preserved = 0;
-    for (const { ep, seq } of pairings) {
+    for (const { ep, seq, start_date } of pairings) {
       try {
-        const pairing = await apa.getPairingCrew(ep, seq);
+        const pairing = await apa.getPairingCrew(ep, seq, start_date);
         if (pairing && pairing.legs) {
+          pairing.start_date = start_date;
           const result = crewCache.mergePairing(pairing);
           refreshed++;
           preserved += result.preserved;
@@ -3590,7 +3616,7 @@ app.get("/api/crew/:ep/:seq", logbookAuth, (req, res) => {
   const ep = parseInt(req.params.ep, 10);
   const seq = parseInt(req.params.seq, 10);
   if (!ep || !seq) return res.status(400).json({ error: "invalid ep/seq" });
-  const data = crewCache.getPairing(ep, seq);
+  const data = crewCache.getPairing(ep, seq, req.query.start || undefined);
   if (!data) return res.status(404).json({ error: "not in cache" });
   res.json(data);
 });
@@ -3600,9 +3626,11 @@ app.post("/api/crew/:ep/:seq/refresh", logbookAuth, async (req, res) => {
   const ep = parseInt(req.params.ep, 10);
   const seq = parseInt(req.params.seq, 10);
   if (!ep || !seq) return res.status(400).json({ error: "invalid ep/seq" });
+  const start = req.query.start || null; // instance start for multiply-flown pairings
   try {
-    const pairing = await apa.getPairingCrew(ep, seq);
+    const pairing = await apa.getPairingCrew(ep, seq, start);
     if (pairing && pairing.legs) {
+      if (start) pairing.start_date = start;
       crewCache.upsertPairing(pairing);
       autoSyncLogbookCrewFromApa();
       return res.json({ ok: true, legs: pairing.legs.length });
