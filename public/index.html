@@ -87,6 +87,8 @@
   .trip .delta { font-size:9px; color:var(--red); font-weight:800; letter-spacing:1px; padding:3px 8px; border:1px solid rgba(230,57,70,.35); background:var(--red-soft); border-radius:20px; white-space:nowrap; }
   .trip.past .delta { color:var(--txt-faint); border-color:var(--line-2); background:transparent; }
   .trip .info { font-size:9px; color:var(--txt-faint); margin-top:6px; letter-spacing:1.2px; text-transform:uppercase; }
+  .trip .info .lay { color:var(--amber); }
+  .layover-row { text-align:center; font-size:8.5px; font-weight:700; color:var(--amber); letter-spacing:1.5px; padding:5px 0 4px; margin:2px 0; background:var(--amber-soft); border-radius:3px; opacity:.85; }
   .trip .legs { margin-top:9px; border-top:1px solid var(--line); padding-top:7px; display:none; }
   .trip.selected .legs { display:block; }
   .leg { padding:6px 0; border-bottom:1px solid var(--line); }
@@ -224,7 +226,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta ver" title="Build version — bumped on each deploy">v2026-07-05.3</span>
+    <span class="meta ver" title="Build version — bumped on each deploy">v2026-07-06.1</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔<span class="blbl"> LOG</span></a>
     <a class="btn" href="/friends.html" title="Friends" style="text-decoration:none">👥<span class="blbl"> FRIENDS</span></a>
     <a class="btn" href="/fa-usage.html" title="FlightAware API usage" style="text-decoration:none">📊<span class="blbl"> FA</span></a>
@@ -1400,6 +1402,11 @@ function timeDelta(iso) {
   if (diff < 0) return dd > 0 ? dd+"d ago" : hh+"h ago";
   return dd > 0 ? "in "+dd+"d" : "in "+hh+"h";
 }
+function fmtLayover(ms) {
+  var mins = Math.round(ms / 60000);
+  var h = Math.floor(mins / 60), m = mins % 60;
+  return h + "h" + (m < 10 ? "0" : "") + m;
+}
 function tripRoute(legs) {
   var codes = [legs[0].dep];
   legs.forEach(function(l){ codes.push(l.arr); });
@@ -1444,7 +1451,17 @@ function renderTripCard(trip, idx) {
     '</div>';
   }
   var lastLegDay = "";
+  var prevLeg = null;
   visibleLegs.forEach(function(l) {
+    // Layover divider: overnight rest between arriving and re-departing the
+    // same station. ≥6h so normal same-day airport sits don't count.
+    if (prevLeg && prevLeg.arr === l.dep) {
+      var gapMs = new Date(l.start) - new Date(prevLeg.end);
+      if (gapMs >= 6 * 3600e3) {
+        legsHtml += '<div class="layover-row">' + l.dep + ' LAYOVER · ' + fmtLayover(gapMs) + '</div>';
+      }
+    }
+    prevLeg = l;
     var legDate = new Date(l.start);
     var legDayKey = legDate.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" });
     var legDateStr = legDate.toDateString();
@@ -1559,12 +1576,21 @@ function renderTripCard(trip, idx) {
   // day header directly above — repeating it here was pure noise.
   var firstLeg = trip.legs[0], lastLeg = trip.legs[trip.legs.length-1];
   var durDays = Math.max(1, Math.round((new Date(lastLeg.end) - new Date(firstLeg.start)) / 864e5) + 1);
+  // Layover chips for the card face — where the trip sleeps, and how long.
+  var layoverStr = "";
+  for (var li2 = 1; li2 < trip.legs.length; li2++) {
+    var pl = trip.legs[li2-1], nl = trip.legs[li2];
+    if (pl.arr === nl.dep) {
+      var g = new Date(nl.start) - new Date(pl.end);
+      if (g >= 6 * 3600e3) layoverStr += ' · <span class="lay">' + nl.dep + ' ' + fmtLayover(g) + '</span>';
+    }
+  }
   return '<div class="trip '+(past?"past":"")+' '+(sel?"selected":"")+'" onclick="selectTrip('+idx+')">' +
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
       '<span class="route">'+tripRoute(trip.legs)+'</span>' +
       '<span class="delta">'+timeDelta(trip.legs[0].start)+'</span>' +
     '</div>' +
-    '<div class="info">AA'+firstLeg.num+' · DEP '+firstLeg.depT+'L · '+durDays+'-DAY · '+trip.legs.length+' leg'+(trip.legs.length>1?"s":"")+ ' · SEQ '+(trip.seq||"—")+'</div>' +
+    '<div class="info">AA'+firstLeg.num+' · DEP '+firstLeg.depT+'L · '+durDays+'-DAY · '+trip.legs.length+' leg'+(trip.legs.length>1?"s":"")+ ' · SEQ '+(trip.seq||"—")+layoverStr+'</div>' +
     '<div class="legs">'+legsHtml+'</div>' +
   '</div>';
 }
