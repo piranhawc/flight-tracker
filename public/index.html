@@ -46,16 +46,26 @@
      reserved for airborne LIVE, amber for taxi, green for arrived. */
   .predep-banner { display:block; margin:7px -12px -10px; padding:6px 12px; background:linear-gradient(90deg,rgba(77,171,247,.22),rgba(77,171,247,.08)); border-top:1px solid rgba(77,171,247,.4); color:var(--blue); font-size:10px; font-weight:800; letter-spacing:2px; text-align:center; border-radius:0 0 var(--r) var(--r); animation:bannerGlow 1.6s ease-in-out infinite; }
   @keyframes bannerGlow { 0%,100%{opacity:1; box-shadow:inset 0 0 18px rgba(77,171,247,.25)} 50%{opacity:.55; box-shadow:inset 0 0 4px rgba(77,171,247,.05)} }
+  /* Dark leaflet chrome — stock white zoom buttons glare on the dark map */
+  .leaflet-bar { border:1px solid var(--line-2) !important; box-shadow:0 2px 10px rgba(0,0,0,.5) !important; }
+  .leaflet-bar a { background:rgba(14,14,17,.92) !important; color:var(--txt-dim) !important; border-bottom:1px solid var(--line) !important; }
+  .leaflet-bar a:hover { background:#1a1a20 !important; color:var(--txt) !important; }
+  /* "What's next" chip on the idle map */
+  #next-chip { position:absolute; top:10px; left:10px; z-index:1000; background:rgba(9,9,11,.82); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border:1px solid var(--line-2); border-radius:var(--r); padding:7px 11px; font-size:11px; font-weight:700; color:var(--txt); letter-spacing:.5px; box-shadow:0 6px 24px rgba(0,0,0,.55); }
+  #next-chip .nc-label { color:#000; background:var(--red); font-size:8px; font-weight:800; letter-spacing:1.5px; padding:2px 6px; border-radius:3px; margin-right:7px; vertical-align:1px; }
+  #next-chip .nc-when { color:var(--txt-faint); font-size:9px; letter-spacing:1px; margin-left:6px; }
+  #next-chip .rsep { color:var(--red); font-size:9px; margin:0 2px; }
   /* Flight-phase strip: GATE→TAXI→CLB→CRZ→DES→TAXI→GATE, current lit */
   .phase-strip { display:flex; gap:2px; margin-top:7px; }
   .phase-strip .ph { flex:1; text-align:center; font-size:7.5px; font-weight:700; letter-spacing:.5px; color:var(--txt-ghost); padding:3px 0 2px; border-top:2px solid #222228; user-select:none; }
   .phase-strip .ph.done { color:var(--txt-faint); border-top-color:#3a3a42; }
   .phase-strip .ph.now { color:var(--phase-c,#e63946); border-top-color:var(--phase-c,#e63946); animation:pulse 1.6s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
-  #test-bar { position:absolute; top:8px; right:8px; z-index:1000; display:flex; gap:4px; }
-  #test-bar input { background:#111; border:1px solid #222; color:#ddd; padding:4px 8px; border-radius:2px; font-size:11px; font-family:inherit; width:120px; }
-  #test-bar input::placeholder { color:#444; }
-  #test-bar button { background:#e63946; color:#000; border:none; padding:4px 10px; border-radius:2px; font-size:10px; font-weight:700; cursor:pointer; font-family:inherit; }
+  #test-bar { position:absolute; top:10px; right:10px; z-index:1000; display:flex; gap:5px; }
+  #test-bar input { background:rgba(14,14,17,.92); border:1px solid var(--line-2); color:var(--txt); padding:5px 9px; border-radius:var(--r-sm); font-size:11px; font-family:inherit; width:96px; }
+  #test-bar input:focus { outline:none; border-color:rgba(230,57,70,.5); }
+  #test-bar input::placeholder { color:var(--txt-ghost); }
+  #test-bar button { background:var(--red); color:#000; border:none; padding:5px 11px; border-radius:var(--r-sm); font-size:10px; font-weight:800; letter-spacing:1px; cursor:pointer; font-family:inherit; }
   #bottom { flex:1; display:flex; flex-direction:column; border-top:1px solid var(--line); overflow:hidden; }
   #filters { display:flex; gap:0; padding:8px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
   #filters .btn { border-radius:0; border-right-width:0; text-transform:uppercase; letter-spacing:1px; font-size:9px; font-weight:700; padding:5px 12px; }
@@ -175,7 +185,21 @@
     .commute-row { gap:4px; padding:6px 10px; font-size:9px; }
     .commute-row .c-ident { min-width:50px; font-size:10px; }
   }
+  /* Wide screens: cards read as a centered column, not mile-wide slabs.
+     Padding (not max-width) so the section divider lines stay full-bleed. */
+  @media (min-width: 1000px) {
+    #filters, #trips { padding-left:calc((100% - 920px)/2); padding-right:calc((100% - 920px)/2); }
+    .day-header { padding-left:4px; padding-right:4px; }
+    .trip { margin-left:0; margin-right:0; }
+  }
   @media (max-width: 600px) {
+    #header { padding:8px 10px; }
+    #header .left { gap:7px; }
+    #header .title { font-size:13px; letter-spacing:2px; }
+    #header .right { gap:4px; }
+    .btn .blbl { display:none; }   /* icon-only nav on phones */
+    #header .meta.ver { display:none; }
+    #header .meta { white-space:nowrap; }
     #map-wrap { flex:0 0 35%; min-height:150px; }
     #map-wrap.tracking { flex:0 0 55%; }
     .leg-row1 { gap:4px; }
@@ -183,8 +207,9 @@
     .leg-links { margin-top:4px; width:100%; }
     .leg .fnum { font-size:10px; min-width:auto; }
     .trip .route { font-size:13px; }
-    #live-info { max-width:180px; font-size:9px; padding:6px 8px; }
-    #test-bar input { width:90px; font-size:10px; }
+    #live-info { max-width:190px; font-size:9px; padding:7px 9px; }
+    #next-chip { font-size:10px; padding:6px 9px; }
+    #test-bar input { width:74px; font-size:10px; }
   }
 </style>
 </head>
@@ -197,11 +222,11 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta" title="Build version — bumped on each deploy">v2026-07-05.1</span>
-    <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔 LOG</a>
-    <a class="btn" href="/friends.html" title="Friends" style="text-decoration:none">👥 FRIENDS</a>
-    <a class="btn" href="/fa-usage.html" title="FlightAware API usage" style="text-decoration:none">📊 FA</a>
-    <a class="btn" href="/career-me.html" title="Retirement & upgrade projection (private)" style="text-decoration:none">📈 CAREER</a>
+    <span class="meta ver" title="Build version — bumped on each deploy">v2026-07-05.2</span>
+    <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔<span class="blbl"> LOG</span></a>
+    <a class="btn" href="/friends.html" title="Friends" style="text-decoration:none">👥<span class="blbl"> FRIENDS</span></a>
+    <a class="btn" href="/fa-usage.html" title="FlightAware API usage" style="text-decoration:none">📊<span class="blbl"> FA</span></a>
+    <a class="btn" href="/career-me.html" title="Retirement & upgrade projection (private)" style="text-decoration:none">📈<span class="blbl"> CAREER</span></a>
     <button class="btn" id="refresh-btn" onclick="loadFlights()">↻</button>
   </div>
 </div>
@@ -211,12 +236,13 @@
 <div id="main">
   <div id="map-wrap">
     <div id="map"></div>
+    <div id="next-chip" style="display:none"></div>
     <div id="live-info">
       <div class="flight-id" id="live-ident"></div>
       <div class="detail" id="live-detail"></div>
     </div>
     <div id="test-bar">
-      <input type="text" id="test-input" placeholder="AA1234 or AAL1234">
+      <input type="text" id="test-input" placeholder="AA1234">
       <button onclick="testTrack()">TRACK</button>
       <button onclick="clearTest()" style="background:#333;color:#aaa">✕</button>
     </div>
@@ -602,9 +628,12 @@ function drawMap() {
       const lat=d.lat+t*(a.lat-d.lat), lon=d.lon+t*(a.lon-d.lon);
       pts.push([lat+Math.sin(t*Math.PI)*Math.min(5,Math.abs(a.lon-d.lon)*.025), lon]);
     }
+    // Idle (nothing selected): future routes glow faint red so the map reads
+    // as "my flying", past routes stay ghosted. Selected trip pops bright.
+    var isFuture = new Date(f.start) > new Date();
     L.polyline(pts, {
-      color: sel?(f.isDH?"#666":"#e63946"):(hasSel?"#111":"#262626"),
-      weight: sel?2.5:1, opacity: sel?.9:(hasSel?.12:.35),
+      color: sel?(f.isDH?"#666":"#e63946"):(hasSel?"#16161a":(isFuture?"#e63946":"#2e2e36")),
+      weight: sel?2.5:(isFuture&&!hasSel?1.5:1), opacity: sel?.9:(hasSel?.12:(isFuture?.45:.3)),
       dashArray: f.isDH&&sel?"4 4":null
     }).addTo(layerGroup);
     if (sel) {
@@ -620,10 +649,36 @@ function drawMap() {
   if (ghostInbound) drawGhostInbound();
   if (bounds.length && !testMode && !ghostInbound) map.fitBounds(bounds,{padding:[40,40],maxZoom:6});
   else if (!hasSel && !testMode && !ghostInbound && all.length) {
+    // Idle framing: fit to UPCOMING routes (that's what the map is for) —
+    // fall back to everything only if nothing is scheduled.
+    const now = new Date();
+    const future = all.filter(f => new Date(f.start) > now);
+    const src = future.length ? future : all;
     const ab=[];
-    all.forEach(f=>{const d=AP[f.dep],a=AP[f.arr];if(d&&a)ab.push([d.lat,d.lon],[a.lat,a.lon]);});
-    if(ab.length) map.fitBounds(ab,{padding:[30,30],maxZoom:5});
+    src.forEach(f=>{const d=AP[f.dep],a=AP[f.arr];if(d&&a)ab.push([d.lat,d.lon],[a.lat,a.lon]);});
+    if(ab.length) map.fitBounds(ab,{padding:[45,45],maxZoom:5});
   }
+  updateNextChip();
+}
+
+// Small "what's next" chip on the idle map — gives the empty map a job.
+function updateNextChip() {
+  var el = document.getElementById("next-chip");
+  if (!el) return;
+  if (testMode || ghostInbound) { el.style.display = "none"; return; }
+  var now = new Date();
+  var nextLeg = null, nextTrip = null;
+  allTrips.forEach(function(t) {
+    t.legs.forEach(function(l) {
+      if (new Date(l.start) > now && (!nextLeg || new Date(l.start) < new Date(nextLeg.start))) { nextLeg = l; nextTrip = t; }
+    });
+  });
+  if (!nextLeg) { el.style.display = "none"; return; }
+  var days = Math.ceil((new Date(nextLeg.start) - now) / 864e5);
+  var when = days > 1 ? "IN " + days + " DAYS" : (days === 1 ? "TOMORROW" : "TODAY");
+  el.innerHTML = '<span class="nc-label">NEXT</span> AA' + nextLeg.num + ' ' + nextLeg.dep +
+    '<span class="rsep">▸</span>' + nextLeg.arr + ' <span class="nc-when">' + when + ' · ' + nextLeg.depT + 'L</span>';
+  el.style.display = "block";
 }
 
 // Render the manually-pinned inbound aircraft (clicked "📍 map" on a leg row).
@@ -1498,12 +1553,16 @@ function renderTripCard(trip, idx) {
     '</div>';
   });
 
+  // Info row: first flight + report time + trip shape. The date lives in the
+  // day header directly above — repeating it here was pure noise.
+  var firstLeg = trip.legs[0], lastLeg = trip.legs[trip.legs.length-1];
+  var durDays = Math.max(1, Math.round((new Date(lastLeg.end) - new Date(firstLeg.start)) / 864e5) + 1);
   return '<div class="trip '+(past?"past":"")+' '+(sel?"selected":"")+'" onclick="selectTrip('+idx+')">' +
-    '<div style="display:flex;justify-content:space-between;align-items:center">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
       '<span class="route">'+tripRoute(trip.legs)+'</span>' +
       '<span class="delta">'+timeDelta(trip.legs[0].start)+'</span>' +
     '</div>' +
-    '<div class="info">'+tripDates(trip.legs)+' · '+trip.legs.length+' leg'+(trip.legs.length>1?"s":"")+ ' · SEQ '+(trip.seq||"—")+'</div>' +
+    '<div class="info">AA'+firstLeg.num+' · DEP '+firstLeg.depT+'L · '+durDays+'-DAY · '+trip.legs.length+' leg'+(trip.legs.length>1?"s":"")+ ' · SEQ '+(trip.seq||"—")+'</div>' +
     '<div class="legs">'+legsHtml+'</div>' +
   '</div>';
 }
