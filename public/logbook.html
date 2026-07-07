@@ -36,6 +36,23 @@
 
   h2.section { font-size:12px; color:#e63946; letter-spacing:1.5px; margin-bottom:8px; padding:4px 0; border-bottom:1px solid #1a1a1a; }
 
+  /* Stats panel */
+  #stats { padding:4px 14px 16px; }
+  #stat-tiles { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .stat-tile { flex:1; min-width:110px; background:#0f0f0f; border:1px solid #1c1c1c; border-radius:6px; padding:10px 12px; }
+  .stat-tile .v { font-size:19px; font-weight:800; color:#e63946; font-variant-numeric:tabular-nums; }
+  .stat-tile .k { font-size:8px; color:#666; letter-spacing:1.5px; text-transform:uppercase; margin-top:3px; }
+  .chart-box { background:#0f0f0f; border:1px solid #1c1c1c; border-radius:6px; padding:10px 12px; margin-bottom:10px; }
+  .chart-box h3 { font-size:9px; color:#888; letter-spacing:2px; margin-bottom:8px; font-weight:700; }
+  #stats-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:10px; }
+  #stats-grid .chart-box { margin-bottom:0; }
+  .chart-svg svg { display:block; width:100%; }
+  .hbars .hb { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:10px; }
+  .hbars .hb .lbl { width:96px; color:#aaa; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex-shrink:0; }
+  .hbars .hb .track { flex:1; height:10px; background:#161616; border-radius:2px; overflow:hidden; }
+  .hbars .hb .fill { height:100%; background:linear-gradient(90deg,#e63946,#a8232e); border-radius:2px; }
+  .hbars .hb .n { width:52px; text-align:right; color:#777; font-size:9px; font-variant-numeric:tabular-nums; flex-shrink:0; }
+
   /* Legs table */
   table.legs { width:100%; border-collapse:collapse; font-size:10px; }
   table.legs th { text-align:left; color:#666; font-weight:600; padding:6px 6px; border-bottom:1px solid #1a1a1a; font-size:9px; letter-spacing:.5px; text-transform:uppercase; }
@@ -102,6 +119,7 @@
     <button class="btn" id="sync-apa-btn" onclick="runSyncApaCrew()" style="display:none" title="Fill crew on existing legs that have empty crew arrays">⛏ SYNC APA CREW</button>
     <button class="btn" id="reconcile-btn" onclick="triggerReconcile()" style="display:none" title="Check apa-sabre for FTG'd/dropped legs and soft-delete them">⚖ RECONCILE</button>
     <button class="btn" id="removed-toggle" onclick="toggleRemoved()" style="display:none" title="Show legs that were FTG'd or dropped (soft-deleted)">👁 SHOW REMOVED</button>
+    <button class="btn" id="stats-btn" onclick="toggleStats()" style="display:none" title="Career stats from the logbook: block hours by month, routes, aircraft, crew">📊 STATS</button>
     <button class="btn" id="commute-data-btn" onclick="toggleCommuteData()" style="display:none" title="Master switch for the commute panel's FlightAware fetches (they cost money). OFF = zero commute FA calls.">🛫 COMMUTE: …</button>
     <button class="btn" id="logout-btn" onclick="logout()" style="display:none">LOGOUT</button>
   </div>
@@ -118,6 +136,15 @@
 
 <div id="app">
   <div id="status"></div>
+  <div id="stats" style="display:none">
+    <div id="stat-tiles"></div>
+    <div class="chart-box" id="chart-months"><h3>BLOCK HOURS BY MONTH</h3><div class="chart-svg"></div></div>
+    <div id="stats-grid">
+      <div class="chart-box" id="chart-routes"><h3>TOP ROUTES</h3><div class="hbars"></div></div>
+      <div class="chart-box" id="chart-aircraft"><h3>AIRCRAFT</h3><div class="hbars"></div></div>
+      <div class="chart-box" id="chart-crew"><h3>FLOWN WITH MOST</h3><div class="hbars"></div></div>
+    </div>
+  </div>
   <div id="main">
     <div id="legs-pane">
       <h2 class="section">FLIGHTS</h2>
@@ -232,6 +259,7 @@ async function initApp() {
   document.getElementById("apa-sync-current-btn").style.display = "";
   document.getElementById("reconcile-btn").style.display = "";
   document.getElementById("commute-data-btn").style.display = "";
+  document.getElementById("stats-btn").style.display = "";
   loadCommuteDataState();
   loadApaStats();
 }
@@ -714,6 +742,116 @@ async function runSyncApaCrew() {
     btn.textContent = originalText;
     setTimeout(function() { setStatus(""); }, 5000);
   }
+}
+
+// ===== Logbook stats =====
+var statsShown = false;
+function toggleStats() {
+  statsShown = !statsShown;
+  document.getElementById("stats").style.display = statsShown ? "block" : "none";
+  document.getElementById("stats-btn").classList.toggle("primary", statsShown);
+  if (statsShown) renderStats();
+}
+
+// Block minutes for one leg — actual preferred, scheduled fallback, then
+// derive from OOOI/scheduled timestamps.
+function legBlockMin(l) {
+  if (l.block_min_actual > 0) return l.block_min_actual;
+  if (l.block_min_scheduled > 0) return l.block_min_scheduled;
+  var pairs = [[l.actual_out, l.actual_in], [l.scheduled_out, l.scheduled_in]];
+  for (var i = 0; i < pairs.length; i++) {
+    if (pairs[i][0] && pairs[i][1]) {
+      var m = Math.round((new Date(pairs[i][1]) - new Date(pairs[i][0])) / 60000);
+      if (m > 0 && m < 20 * 60) return m;
+    }
+  }
+  return 0;
+}
+
+function stripSeatPrefix(name) {
+  return String(name).replace(/^[A-Z0-9]{1,3}\s*·\s*/, "").trim();
+}
+
+function renderStats() {
+  var now = new Date();
+  var todayIso = now.toISOString().slice(0, 10);
+  // Flown legs only: no DH, no removed (API already filters removed), no future.
+  var legs = legsData.filter(function(l) {
+    return !l.isDH && !l._removed_at && String(l.date || "") <= todayIso;
+  });
+
+  var totalMin = 0, byMonth = {}, routes = {}, aircraft = {}, crewCount = {}, tails = {}, airports = {};
+  legs.forEach(function(l) {
+    var min = legBlockMin(l);
+    totalMin += min;
+    var mo = String(l.date || "").slice(0, 7);
+    if (mo) { byMonth[mo] = byMonth[mo] || { min: 0, legs: 0 }; byMonth[mo].min += min; byMonth[mo].legs++; }
+    if (l.dep && l.arr) {
+      var pair = [l.dep, l.arr].sort().join("–");
+      routes[pair] = (routes[pair] || 0) + 1;
+      airports[l.dep] = airports[l.arr] = 1;
+    }
+    var ac = l.aircraft_type || l.aircraft || "";
+    if (ac) { aircraft[ac] = aircraft[ac] || { legs: 0, min: 0 }; aircraft[ac].legs++; aircraft[ac].min += min; }
+    var reg = l.registration || l.tail;
+    if (reg) tails[reg] = 1;
+    (l.crew || []).forEach(function(n) {
+      var name = stripSeatPrefix(typeof n === "string" ? n : (n && n.name) || "");
+      if (!name || /goebel/i.test(name) || /^emp:/.test(name) || name === "OPEN") return;
+      crewCount[name] = (crewCount[name] || 0) + 1;
+    });
+  });
+
+  var months = Object.keys(byMonth).sort();
+  var busiest = months.reduce(function(a, m) { return (!a || byMonth[m].min > byMonth[a].min) ? m : a; }, null);
+  function h1(min) { return (min / 60).toFixed(1); }
+
+  document.getElementById("stat-tiles").innerHTML = [
+    { v: (totalMin / 60).toFixed(0) + "h", k: "total block" },
+    { v: legs.length, k: "legs flown" },
+    { v: Object.keys(airports).length, k: "airports" },
+    { v: Object.keys(tails).length, k: "tails" },
+    { v: busiest ? h1(byMonth[busiest].min) + "h" : "—", k: busiest ? "best month · " + busiest : "best month" },
+  ].map(function(t) { return '<div class="stat-tile"><div class="v">' + t.v + '</div><div class="k">' + t.k + '</div></div>'; }).join("");
+
+  // Month bar chart (SVG). Bars red; every 3rd month labeled; hours on the
+  // tallest bar; <title> tooltip on each.
+  var W = 940, H = 130, PAD = 4, LBL = 16;
+  var bw = months.length ? (W - PAD * 2) / months.length : 0;
+  var maxMin = Math.max.apply(null, months.map(function(m) { return byMonth[m].min; }).concat([1]));
+  var bars = months.map(function(m, i) {
+    var v = byMonth[m].min;
+    var bh = Math.max(1, Math.round((H - LBL - 14) * v / maxMin));
+    var x = PAD + i * bw, y = H - LBL - bh;
+    var s = '<rect x="' + (x + 1).toFixed(1) + '" y="' + y + '" width="' + Math.max(1, bw - 2).toFixed(1) + '" height="' + bh + '" rx="1.5" fill="#e63946" opacity="' + (v === maxMin ? 1 : 0.62) + '"><title>' + m + ' · ' + h1(v) + 'h · ' + byMonth[m].legs + ' legs</title></rect>';
+    if (v === maxMin) s += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (y - 4) + '" text-anchor="middle" font-size="9" fill="#e63946" font-family="inherit">' + h1(v) + '</text>';
+    if (i % 3 === 0) {
+      var d = new Date(m + "-15");
+      var lbl = d.toLocaleDateString("en-US", { month: "short" }).toUpperCase() + String(d.getFullYear()).slice(2);
+      s += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle" font-size="8" fill="#555" font-family="inherit">' + lbl + '</text>';
+    }
+    return s;
+  }).join("");
+  document.querySelector("#chart-months .chart-svg").innerHTML =
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="height:130px">' +
+    '<line x1="0" y1="' + (H - LBL) + '" x2="' + W + '" y2="' + (H - LBL) + '" stroke="#222"/>' + bars + '</svg>';
+
+  function hbarList(el, entries, fmt) {
+    var max = entries.length ? entries[0][1].v : 1;
+    document.querySelector(el + " .hbars").innerHTML = entries.map(function(e) {
+      var pct = Math.max(2, Math.round(100 * e[1].v / max));
+      return '<div class="hb"><span class="lbl" title="' + e[0] + '">' + e[0] + '</span>' +
+        '<span class="track"><span class="fill" style="width:' + pct + '%"></span></span>' +
+        '<span class="n">' + fmt(e[1]) + '</span></div>';
+    }).join("") || '<div style="color:#444;font-size:10px">no data</div>';
+  }
+  function topN(obj, n, val) {
+    return Object.keys(obj).map(function(k) { return [k, { v: val(obj[k]), raw: obj[k] }]; })
+      .sort(function(a, b) { return b[1].v - a[1].v; }).slice(0, n);
+  }
+  hbarList("#chart-routes", topN(routes, 8, function(x) { return x; }), function(x) { return x.v + "×"; });
+  hbarList("#chart-aircraft", topN(aircraft, 6, function(x) { return x.legs; }), function(x) { return x.v + " · " + h1(x.raw.min) + "h"; });
+  hbarList("#chart-crew", topN(crewCount, 8, function(x) { return x; }), function(x) { return x.v + " legs"; });
 }
 
 // Commute data kill switch (FlightAware spend control)
