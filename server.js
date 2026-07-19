@@ -2724,10 +2724,11 @@ function dedupeLogbookLegs() {
       ["notes", "registration", "aircraft", "aircraft_type", "tail", "actual_out", "actual_off", "actual_on", "actual_in", "gate_origin", "gate_destination", "ep", "seq", "seat", "block_min_scheduled", "block_min_actual", "distance", "passengers"].forEach(k => {
         if (keep.leg[k] == null && sorted[i].leg[k] != null) keep.leg[k] = sorted[i].leg[k];
       });
-      // Merge crew if winner is empty but loser has it
-      if ((!keep.leg.crew || !keep.leg.crew.length) && sorted[i].leg.crew && sorted[i].leg.crew.length) {
-        keep.leg.crew = sorted[i].leg.crew;
-      }
+      // Union crew by seat — a merge must NEVER shrink the crew. The old
+      // all-or-nothing rule ("take loser's crew only if winner has none")
+      // silently discarded FAs whenever the winning apa-logbook leg carried
+      // its pilot-only crew: auto-log's 5-person list lost to a lone CA.
+      keep.leg.crew = mergeCrewLists(keep.leg.crew, sorted[i].leg.crew);
       delete logbook.legs[sorted[i].id];
       removed++;
     }
@@ -2971,6 +2972,24 @@ async function reconcileExistingLogbook() {
           removed++;
           continue;
         }
+        // A leg with real actuals demonstrably FLEW — reconciliation must
+        // never remove it, whatever the HI reports claim. After the mid-
+        // month bid flip, reconciling an old pairing against the CURRENT
+        // HI reports mislabels flown legs (e.g. Jul 1-2 came back "admin:
+        // Admin day" and vanished from the logbook with their FAs). Also
+        // restore any such leg a previous buggy pass removed (manual
+        // removals stay sticky).
+        const hasActuals = !!(leg.actual_out || leg.actual_in || leg.block_min_actual);
+        if (hasActuals) {
+          if (leg._removed_at && !leg._removed_manual) {
+            delete leg._removed_at;
+            delete leg._removed_reason;
+            console.log(`[reconcile-cleanup] restored ${leg.flight} ${leg.date} — has actuals (flew), removal was bogus`);
+            restored++; changedAny = true;
+          }
+          kept++;
+          continue;
+        }
         const flightNum = leg.flight_number || String(leg.flight || "").replace(/^AA/i, "").replace(/^0+/, "");
         const depCode = String(leg.dep || "").toUpperCase();
         // Key by (flight, dep_apt) only — date excluded because calendar
@@ -3127,13 +3146,18 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     // doesn't break the lookup. See notes in apa-sabre-client.js.
     const reconInfo = recon ? recon.get(`${parsed.flight}-${parsedDep}`) : null;
     if (reconInfo && !reconInfo.actually_operated) {
-      notOperated++;
-      if (existing && !existing._removed_at) {
-        existing._removed_at = new Date().toISOString();
-        existing._removed_reason = `${reconInfo.actual_status}: ${reconInfo.note}`;
-        console.log(`[auto-log] marked AA${parsed.flight} ${parsed.date} removed (${reconInfo.actual_status})`);
+      // Actuals-guard: never remove a leg that demonstrably flew (see the
+      // same rule in reconcileExistingLogbook).
+      const flewAlready = !!(existing && (existing.actual_out || existing.actual_in || existing.block_min_actual));
+      if (!flewAlready) {
+        notOperated++;
+        if (existing && !existing._removed_at) {
+          existing._removed_at = new Date().toISOString();
+          existing._removed_reason = `${reconInfo.actual_status}: ${reconInfo.note}`;
+          console.log(`[auto-log] marked AA${parsed.flight} ${parsed.date} removed (${reconInfo.actual_status})`);
+        }
+        continue;
       }
-      continue;
     }
 
     const { crew, status } = getCrewForCalendarLeg(parsed);
@@ -3189,6 +3213,10 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
       ["registration", "aircraft_type", "actual_out", "actual_off", "actual_on", "actual_in", "gate_origin", "gate_destination"].forEach(k => {
         if (existing[k] != null) legRecord[k] = existing[k];
       });
+      // Never shrink crew on re-import: fresh snapshot wins per seat, but
+      // seats it no longer carries (FAs aged out of Sabre's NS window,
+      // thin cache after a wipe) are preserved from the existing leg.
+      legRecord.crew = mergeCrewLists(legRecord.crew, existing.crew);
       Object.assign(existing, legRecord);
       updated++;
     } else {
@@ -3336,6 +3364,31 @@ function healEmpPlaceholdersFromSabreCache() {
     console.log(`[logbook auto-sync] healed ${replaced} emp:XXX placeholder(s) from Sabre cache`);
   }
   return replaced;
+}
+
+// Union two crew lists (display strings like "FA1 · Clara Kapraun") by seat
+// prefix. Primary's entry wins per seat; secondary contributes seats the
+// primary lacks. Entries without a recognizable seat dedupe by exact string.
+function mergeCrewLists(primary, secondary) {
+  const a = Array.isArray(primary) ? primary : [];
+  const b = Array.isArray(secondary) ? secondary : [];
+  if (!b.length) return a;
+  if (!a.length) return b.slice();
+  const seatOf = (s) => {
+    const m = /^([A-Z]{1,3}\d?)\s*·/.exec(String(s));
+    return m ? m[1].toUpperCase() : null;
+  };
+  const out = a.slice();
+  const seats = new Set(a.map(seatOf).filter(Boolean));
+  const exact = new Set(a.map(String));
+  for (const c of b) {
+    const seat = seatOf(c);
+    if (seat ? !seats.has(seat) : !exact.has(String(c))) {
+      out.push(c);
+      if (seat) seats.add(seat);
+    }
+  }
+  return out;
 }
 
 function autoSyncLogbookCrewFromApa() {
