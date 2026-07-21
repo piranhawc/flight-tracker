@@ -2929,7 +2929,10 @@ async function reconcileExistingLogbook() {
       console.log("[reconcile-cleanup] calendar feed unavailable, skipping vanished-trip check:", e.message);
     }
     const todayIso = new Date().toISOString().slice(0, 10);
-    const cutoffMs = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    // 14-day lookback (was 60): FTG/OX/drops surface within days, flown legs
+    // are protected by the actuals-guard anyway, and the old window re-fetched
+    // dozens of stable pairings every 6h (Sabre access reduction, 2026-07-21).
+    const cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
     // Grouped by trip INSTANCE — a multiply-flown pairing's occurrences
     // reconcile independently. Instance start comes from the leg's UID
     // (date-carrying shape); '' for singletons, where the service's default
@@ -3067,13 +3070,14 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
   // Keyed by instance: ep/seq/seq_start. seq_start comes from date-carrying
   // UIDs (multiply-flown pairings) — null/'' for singletons, where the
   // service's own date anchor is already correct.
-  const wantedPairings = new Map(); // "ep/seq/start" → {ep, seq, start}
+  const wantedPairings = new Map(); // "ep/seq/start" → {ep, seq, start, latest}
   for (const ev of events) {
     const parsed = parseCalendarEvent(ev);
     if (!parsed || !parsed.ep || !parsed.seq) continue;
     if (!isCompleted(parsed) && !isUpcomingSoon(parsed)) continue;
     const k = parsed.ep + "/" + parsed.seq + "/" + (parsed.seq_start || "");
-    if (!wantedPairings.has(k)) wantedPairings.set(k, { ep: parsed.ep, seq: parsed.seq, start: parsed.seq_start || null });
+    if (!wantedPairings.has(k)) wantedPairings.set(k, { ep: parsed.ep, seq: parsed.seq, start: parsed.seq_start || null, latest: parsed.date || "" });
+    else if ((parsed.date || "") > wantedPairings.get(k).latest) wantedPairings.get(k).latest = parsed.date;
   }
   let prefetched = 0, prefetchMissing = 0;
   for (const { ep, seq, start } of wantedPairings.values()) {
@@ -3097,11 +3101,16 @@ async function importCompletedFlights({ force = false, withActuals = true } = {}
     console.log(`[auto-log] prefetch: ${prefetched} pulled, ${prefetchMissing} unavailable, ${wantedPairings.size} total wanted`);
   }
 
-  // Pull reconciliation once per pairing instance. Lets us skip FTG'd/dropped
-  // legs at write time rather than discovering them later in the cleanup pass.
-  // Failure mode: empty map → fall back to trusting the calendar.
+  // Pull reconciliation once per pairing instance — but ONLY for trips with
+  // a leg in the last 7 days or the future. Historical trips' status doesn't
+  // change, and re-checking every pairing in the ±90d window each hour
+  // drove thousands of daily /pairing requests (AA bot warning 2026-07-21).
+  // Legs with no recon entry fall back to trusting the calendar, and the
+  // actuals-guard already protects flown legs regardless.
+  const reconCutoff = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
   const reconByTrip = new Map(); // "ep/seq/start" → Map(flight-dep → reconInfo)
-  for (const { ep, seq, start } of wantedPairings.values()) {
+  for (const { ep, seq, start, latest } of wantedPairings.values()) {
+    if ((latest || "") < reconCutoff) continue;
     reconByTrip.set(`${ep}/${seq}/${start || ""}`, await apa.getPairingReconciliation(ep, seq, start));
   }
 
