@@ -107,6 +107,7 @@
   .leg-times { font-size:10px; color:var(--txt-faint); margin-left:auto; }
   .leg-links { display:flex; gap:4px; flex-shrink:0; }
   .leg-reg { font-size:9px; color:var(--txt-dim); }
+  .neo-badge { display:inline-block; background:rgba(6,214,160,.12); color:var(--green); border:1px solid rgba(6,214,160,.3); font-size:7.5px; font-weight:800; letter-spacing:1px; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:1px; }
   .leg-details { font-size:9px; color:var(--txt-faint); margin-top:2px; }
   .empty { text-align:center; padding:32px; color:var(--txt-ghost); font-size:11px; letter-spacing:1px; }
   #commute-panel { background:var(--panel); border-top:1px solid var(--line); flex-shrink:0; }
@@ -226,7 +227,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta ver" title="Build version — bumped on each deploy">v2026-07-06.1</span>
+    <span class="meta ver" title="Build version — bumped on each deploy">v2026-07-23.1</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔<span class="blbl"> LOG</span></a>
     <a class="btn" href="/friends.html" title="Friends" style="text-decoration:none">👥<span class="blbl"> FRIENDS</span></a>
     <a class="btn" href="/fa-usage.html" title="FlightAware API usage" style="text-decoration:none">📊<span class="blbl"> FA</span></a>
@@ -1402,6 +1403,17 @@ function timeDelta(iso) {
   if (diff < 0) return dd > 0 ? dd+"d ago" : hh+"h ago";
   return dd > 0 ? "in "+dd+"d" : "in "+hh+"h";
 }
+// A321neo detection: FA files the type as A21N; AA's neo fleet also lives in
+// the N400-459 registration block (N400AN..N459AN etc.), which covers legs
+// where FA gave us a tail but no type.
+function isNeo(reg) {
+  if (!reg) return false;
+  var t = String(reg.aircraft_type || "").trim().toUpperCase();
+  if (t === "A21N" || t === "A20N") return true;
+  var m = /^N(4\d{2})[A-Z]{2}$/.exec(String(reg.registration || "").trim().toUpperCase());
+  return !!(m && +m[1] >= 400 && +m[1] <= 459);
+}
+
 function fmtLayover(ms) {
   var mins = Math.round(ms / 60000);
   var h = Math.floor(mins / 60), m = mins % 60;
@@ -1475,7 +1487,8 @@ function renderTripCard(trip, idx) {
     var photoHtml = "";
     if (reg && reg.registration) {
       var photo = getPhotoForReg(reg.registration);
-      regHtml = '<span class="leg-reg">' + reg.registration + '</span>';
+      regHtml = '<span class="leg-reg">' + reg.registration + '</span>' +
+        (isNeo(reg) ? '<span class="neo-badge">NEO</span>' : '');
       if (photo && photo.thumbnail) {
         photoHtml = '<div style="margin-top:4px"><img src="' + photo.thumbnail + '" style="height:36px;border-radius:3px;border:1px solid #222;cursor:pointer;opacity:.85;transition:opacity .15s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.85" onclick="event.stopPropagation();showPhoto(\'' + photo.thumbnail + '\',\'' + (photo.full||photo.thumbnail) + '\',\'' + reg.registration + '\',\'' + (photo.photographer||'').replace(/'/g,"\\'") + '\')"></div>';
       }
