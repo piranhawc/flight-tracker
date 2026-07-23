@@ -770,11 +770,13 @@ console.log(`Loaded ${Object.keys(regCache).length} cached registrations`);
 
 function saveRegCache() { saveCache(REG_CACHE_FILE, regCache); }
 
-// Tail numbers can change up until the aircraft pushes back, so refresh
-// the cache within the hour before scheduled departure. Also refresh once
-// for past flights that don't yet have actual_in stored — needed for the
-// logbook backfill which wants gate-to-gate times.
-const REG_REFRESH_WINDOW_MS = 60 * 60 * 1000;
+// Tail refresh schedule (Mike, 2026-07-23): AA re-plans tails until close
+// to departure, so a projection cached days out is usually wrong — but FA
+// calls cost money. Refresh exactly twice per leg: once when it comes
+// inside 24h of departure (the plan firms up), once inside the final hour
+// (the plan is real). Settled once the aircraft pushes back. Past flights:
+// refresh once for actuals (logbook wants gate-to-gate times).
+const HOUR_MS = 60 * 60 * 1000;
 function shouldRefreshReg(cached, dateParam) {
   if (!cached) return true;
   const targetMs = new Date(dateParam).getTime();
@@ -788,11 +790,14 @@ function shouldRefreshReg(cached, dateParam) {
   }
   // Future / today: settled if actual_out is recorded
   if (cached.actual_out) return false;
-  // Old cache entry (pre-refresh-window feature) — refresh once
+  // Old cache entry with no schedule info — refresh once to get one
   if (!cached.scheduled_out) return true;
-  // Within the hour before scheduled departure
-  const msUntilDeparture = new Date(cached.scheduled_out).getTime() - Date.now();
-  return msUntilDeparture < REG_REFRESH_WINDOW_MS;
+  const depMs = new Date(cached.scheduled_out).getTime();
+  const fetchedMs = cached._fetched_at ? new Date(cached._fetched_at).getTime() : 0;
+  const untilDep = depMs - Date.now();
+  if (untilDep <= HOUR_MS) return fetchedMs < depMs - HOUR_MS;        // T-1h pass
+  if (untilDep <= 24 * HOUR_MS) return fetchedMs < depMs - 24 * HOUR_MS; // T-24h pass
+  return false; // >24h out: whatever we have is a projection anyway
 }
 
 // Lookup registration for a flight number on a specific date
@@ -809,8 +814,12 @@ app.get("/api/fa/registration/:flightNum/:date", async (req, res) => {
     const targetDate = new Date(date);
     const now = new Date();
 
-    // Don't query FA for flights more than 2 days in the future
-    if (targetDate.getTime() > now.getTime() + 2 * 864e5) {
+    // Don't query FA for flights more than ~a day out — tail plans that far
+    // ahead are fiction, and skipping them saves quota. 30h (not 24) because
+    // the date param is midnight-based and the real departure time is later
+    // in the day; the shouldRefreshReg windows take over once we have a
+    // scheduled_out.
+    if (targetDate.getTime() > now.getTime() + 30 * HOUR_MS) {
       return res.json({ registration: null, aircraft_type: null, reason: "future" });
     }
 
@@ -834,6 +843,7 @@ app.get("/api/fa/registration/:flightNum/:date", async (req, res) => {
     // Helper to extract flight details
     function flightDetails(f) {
       return {
+        _fetched_at: new Date().toISOString(),
         registration: f.registration || null,
         aircraft_type: f.aircraft_type || null,
         filed_ete: f.filed_ete || null,
@@ -867,6 +877,7 @@ app.get("/api/fa/registration/:flightNum/:date", async (req, res) => {
     }
 
     const result = flight ? flightDetails(flight) : {
+      _fetched_at: new Date().toISOString(),
       registration: null, aircraft_type: null,
       filed_ete: null, filed_airspeed: null, filed_altitude: null, route_distance: null,
       scheduled_out: null, scheduled_off: null, scheduled_on: null, scheduled_in: null,
