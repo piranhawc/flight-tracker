@@ -52,13 +52,13 @@ try { loginLog.init(); loginLogReady = true; } catch (e) {
 }
 // Pull the seniority list on boot (best-effort) and refresh ~monthly.
 if (careerReady) {
-  career.refreshRoster().then(
+  if (!apaSyncPaused()) career.refreshRoster().then(
     (r) => console.log(`[career] roster ${r.refreshed ? "refreshed" : "cached"}: ${r.count} pilots (${r.updated_label})`),
     (e) => console.error("[career] initial roster pull failed:", e.message));
   // Poll every 6h; refreshRoster() only actually refetches when its ~monthly
   // TTL has lapsed. (Don't use a >24.8-day interval — it overflows Node's
   // 32-bit timer and fires in a tight loop.)
-  setInterval(() => career.refreshRoster().catch((e) => console.error("[career] roster refresh check failed:", e.message)),
+  setInterval(() => { if (apaSyncPaused()) return; career.refreshRoster().catch((e) => console.error("[career] roster refresh check failed:", e.message)); },
     6 * 60 * 60 * 1000);
 }
 
@@ -135,8 +135,13 @@ function saveCache(file, data) {
 // daily commute-week schedule refresh) — Mike toggles it from the logbook
 // page when he isn't commuting, since those calls cost real FA money.
 const SETTINGS_FILE = path.join(CACHE_DIR, "settings.json");
-let appSettings = Object.assign({ commute_enabled: true }, loadCache(SETTINGS_FILE) || {});
+let appSettings = Object.assign({ commute_enabled: true, apa_sync_enabled: true }, loadCache(SETTINGS_FILE) || {});
 function saveSettings() { saveCache(SETTINGS_FILE, appSettings); }
+// Master kill switch for ALL APA/Sabre-backed sync (2026-07-30: Mike locked
+// out of his APA/Sabre account — zero automated access until he's back in).
+// Gates every scheduled loop and manual endpoint that reaches
+// apa-sabre-service or alliedpilots.org. Cached/local data keeps serving.
+function apaSyncPaused() { return appSettings.apa_sync_enabled === false; }
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
@@ -1860,6 +1865,15 @@ app.post("/api/settings/commute", logbookAuth, express.json(), (req, res) => {
   res.json({ ok: true, commute_enabled: appSettings.commute_enabled });
 });
 
+// APA/Sabre sync master switch — pauses every poller and manual trigger
+// that reaches apa-sabre-service / alliedpilots.org.
+app.post("/api/settings/apa-sync", logbookAuth, express.json(), (req, res) => {
+  appSettings.apa_sync_enabled = !!(req.body && req.body.enabled);
+  saveSettings();
+  console.log(`[settings] APA/Sabre sync ${appSettings.apa_sync_enabled ? "RESUMED" : "PAUSED"} via API`);
+  res.json({ ok: true, apa_sync_enabled: appSettings.apa_sync_enabled });
+});
+
 // --- Pilot logbook ---
 // Persistent JSON store of legs (with crew lists) and crewmembers (with notes).
 // Auth via single shared password env var. Sessions are in-memory tokens.
@@ -2918,6 +2932,7 @@ function isCompleted(parsed) {
 // _removed_reason; preserves audit trail and the UI can toggle them back.
 let reconcileRunning = false;
 async function reconcileExistingLogbook() {
+  if (apaSyncPaused()) { console.log("[reconcile-cleanup] APA sync paused — skipping"); return { removed: 0, kept: 0, restored: 0, trips: 0 }; }
   if (reconcileRunning) {
     console.log("[reconcile-cleanup] already running, skipping");
     return { removed: 0, kept: 0, unrestored: 0, restored: 0, trips: 0 };
@@ -3062,6 +3077,7 @@ function isUpcomingSoon(parsed) {
 }
 
 async function importCompletedFlights({ force = false, withActuals = true } = {}) {
+  if (apaSyncPaused()) { console.log("[auto-log] APA sync paused — skipping"); return { created: 0, updated: 0, skipped: 0, deadhead: 0, no_crew: 0, scanned: 0 }; }
   if (!crewCacheReady) {
     console.log("[auto-log] crew cache not ready, skipping");
     return { created: 0, updated: 0, skipped: 0, deadhead: 0, no_crew: 0, scanned: 0 };
@@ -3309,6 +3325,7 @@ async function backfillFaActuals(legs) {
 // the number of pairings actually fetched.
 async function fetchMissingPairingsForPlaceholders() {
   if (!crewCacheReady) return 0;
+  if (apaSyncPaused()) return 0;
   const wanted = new Map();
   for (const leg of Object.values(logbook.legs)) {
     if (!leg.crew || !leg.crew.length) continue;
@@ -3433,6 +3450,7 @@ function autoSyncLogbookCrewFromApa() {
 
 async function refreshCrewCache() {
   if (!crewCacheReady) return;
+  if (apaSyncPaused()) return;
   console.log("[crew-cache] starting refresh");
   try {
     const schedule = await apa.getCurrentSchedule();
@@ -3470,6 +3488,7 @@ async function refreshCrewCache() {
 let eagerSnapshotRunning = false;
 async function eagerSnapshotNewTrips() {
   if (!crewCacheReady || eagerSnapshotRunning) return;
+  if (apaSyncPaused()) return;
   eagerSnapshotRunning = true;
   try {
     let schedule;
@@ -3521,6 +3540,7 @@ async function eagerSnapshotNewTrips() {
 let imminentRefreshRunning = false;
 async function refreshImminentLegCrew() {
   if (!crewCacheReady || imminentRefreshRunning) return;
+  if (apaSyncPaused()) return;
   imminentRefreshRunning = true;
   try {
     // Use CT (user's base) for the "today/tomorrow" date set; the flight_date
@@ -3695,6 +3715,7 @@ app.get("/api/crew/:ep/:seq", logbookAuth, (req, res) => {
 });
 
 app.post("/api/crew/:ep/:seq/refresh", logbookAuth, async (req, res) => {
+  if (apaSyncPaused()) return res.status(409).json({ error: "APA/Sabre sync is paused" });
   if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
   const ep = parseInt(req.params.ep, 10);
   const seq = parseInt(req.params.seq, 10);
@@ -3741,6 +3762,7 @@ app.get("/api/crew/flight/:flightNum/:date", logbookAuth, (req, res) => {
 });
 
 app.post("/api/crew/refresh-all", logbookAuth, (req, res) => {
+  if (apaSyncPaused()) return res.status(409).json({ error: "APA/Sabre sync is paused" });
   if (!crewCacheReady) return res.status(503).json({ error: "crew cache not initialized" });
   refreshCrewCache().catch(() => {});
   res.json({ ok: true, message: "refresh started in background" });
@@ -3836,6 +3858,7 @@ function makeApaLogId(year, month, seq, legIdx) {
 
 let backfillRunning = false;
 async function backfillFromApa({ since = null, force = false } = {}) {
+  if (apaSyncPaused()) { console.log("[apa-backfill] APA sync paused — skipping"); return { imported: 0, skipped: 0 }; }
   if (backfillRunning) return { error: "backfill already running" };
   backfillRunning = true;
   console.log(`[apa-backfill] starting (since=${since || "all"}, force=${force})`);
@@ -3978,6 +4001,7 @@ async function backfillFromApa({ since = null, force = false } = {}) {
 }
 
 app.post("/api/logbook/backfill-from-apa", logbookAuth, express.json(), (req, res) => {
+  if (apaSyncPaused()) return res.status(409).json({ error: "APA/Sabre sync is paused" });
   const since = req.body && req.body.since;
   const force = !!(req.body && req.body.force);
   if (backfillRunning) return res.status(409).json({ error: "backfill already running" });
