@@ -9,6 +9,15 @@ const FA_API_KEY = process.env.FA_API_KEY;
 const FA_BASE = "https://aeroapi.flightaware.com/aeroapi";
 const CACHE_DIR = process.env.CACHE_DIR || "/app/data";
 const REG_CACHE_FILE = path.join(CACHE_DIR, "reg-cache.json");
+
+const SETTINGS_FILE = path.join(CACHE_DIR, "settings.json");
+let appSettings = Object.assign({ commute_enabled: true, apa_sync_enabled: true }, loadCache(SETTINGS_FILE) || {});
+function saveSettings() { saveCache(SETTINGS_FILE, appSettings); }
+// Master kill switch for ALL APA/Sabre-backed sync (2026-07-30: Mike locked
+// out of his APA/Sabre account — zero automated access until he's back in).
+// Gates every scheduled loop and manual endpoint that reaches
+// apa-sabre-service or alliedpilots.org. Cached/local data keeps serving.
+function apaSyncPaused() { return appSettings.apa_sync_enabled === false; }
 const PHOTO_CACHE_FILE = path.join(CACHE_DIR, "photo-cache.json");
 const GATE_CACHE_FILE = path.join(CACHE_DIR, "gate-cache.json");
 const GATE_LEARNED_FILE = path.join(CACHE_DIR, "gate-learned.json");
@@ -134,14 +143,7 @@ function saveCache(file, data) {
 // FlightAware fetch the commute feature makes (on-demand day view + the
 // daily commute-week schedule refresh) — Mike toggles it from the logbook
 // page when he isn't commuting, since those calls cost real FA money.
-const SETTINGS_FILE = path.join(CACHE_DIR, "settings.json");
-let appSettings = Object.assign({ commute_enabled: true, apa_sync_enabled: true }, loadCache(SETTINGS_FILE) || {});
-function saveSettings() { saveCache(SETTINGS_FILE, appSettings); }
-// Master kill switch for ALL APA/Sabre-backed sync (2026-07-30: Mike locked
-// out of his APA/Sabre account — zero automated access until he's back in).
-// Gates every scheduled loop and manual endpoint that reaches
-// apa-sabre-service or alliedpilots.org. Cached/local data keeps serving.
-function apaSyncPaused() { return appSettings.apa_sync_enabled === false; }
+// (settings block moved above first use — see top of file)
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
