@@ -227,7 +227,7 @@
     <span class="meta" id="leg-count"></span>
   </div>
   <div class="right">
-    <span class="meta ver" title="Build version — bumped on each deploy">v2026-07-23.1</span>
+    <span class="meta ver" title="Build version — bumped on each deploy">v2026-08-11.1</span>
     <a class="btn" href="/logbook.html" title="Pilot logbook" style="text-decoration:none">📔<span class="blbl"> LOG</span></a>
     <a class="btn" href="/friends.html" title="Friends" style="text-decoration:none">👥<span class="blbl"> FRIENDS</span></a>
     <a class="btn" href="/fa-usage.html" title="FlightAware API usage" style="text-decoration:none">📊<span class="blbl"> FA</span></a>
@@ -365,7 +365,12 @@ function parseEvent(ev) {
     // Trip-instance id = the UID minus its "-legNN@..." suffix (i.e. the HssId).
     // Uniquely identifies each pairing occurrence, so a Seq flown more than once
     // in a month (e.g. ORD-ANC seq 9452 on Jul 20 AND Jul 23) stays two trips.
-    tripId: (ev.uid||"").replace(/-leg\d+@.*$/, "") || null,
+    // APA's official calendar sync uses opaque Google UIDs with no leg suffix,
+    // so fall back to the SEQ in the description; groupTrips() then splits
+    // same-Seq occurrences apart by time gap.
+    tripId: /-leg\d+@/.test(ev.uid || "")
+      ? (ev.uid || "").replace(/-leg\d+@.*$/, "")
+      : (seq ? "seq-" + seq[1] : (ev.uid || null)),
     start: ev.start?.dateTime||ev.start, end: ev.end?.dateTime||ev.end, summary: s,
   };
 }
@@ -380,8 +385,27 @@ function groupTrips(legs) {
     t[k].legs.push(l);
     if (new Date(l.start) < new Date(t[k].first)) t[k].first = l.start;
   });
-  const trips = Object.values(t);
-  trips.forEach(tr => tr.legs.sort((a,b) => new Date(a.start) - new Date(b.start)));
+  // Split a group where consecutive legs sit far apart in time. Required for
+  // SEQ-keyed groups (APA calendar source): the same pairing flown twice in a
+  // month would otherwise collapse into one trip. 36h clears the longest real
+  // layover seen (ANC ~25h) while still separating distinct trips (days apart).
+  const SPLIT_GAP_MS = 36 * 3600e3;
+  const trips = [];
+  Object.values(t).forEach(tr => {
+    const legs = tr.legs.slice().sort((a,b) => new Date(a.start) - new Date(b.start));
+    let cur = [];
+    legs.forEach(l => {
+      if (cur.length) {
+        const prev = cur[cur.length - 1];
+        if (new Date(l.start) - new Date(prev.end || prev.start) > SPLIT_GAP_MS) {
+          trips.push({seq: tr.seq, legs: cur, first: cur[0].start});
+          cur = [];
+        }
+      }
+      cur.push(l);
+    });
+    if (cur.length) trips.push({seq: tr.seq, legs: cur, first: cur[0].start});
+  });
   return trips.sort((a,b) => new Date(a.first) - new Date(b.first));
 }
 

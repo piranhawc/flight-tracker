@@ -11,7 +11,11 @@ const CACHE_DIR = process.env.CACHE_DIR || "/app/data";
 const REG_CACHE_FILE = path.join(CACHE_DIR, "reg-cache.json");
 
 const SETTINGS_FILE = path.join(CACHE_DIR, "settings.json");
-let appSettings = Object.assign({ commute_enabled: true, apa_sync_enabled: true }, loadCache(SETTINGS_FILE) || {});
+let appSettings = Object.assign({ commute_enabled: true, apa_sync_enabled: true,
+  // "auto" = APA Google calendar (via HA), fall back to the Sabre-built ICS.
+  // "ha" = APA calendar only. "ics" = Sabre-built feed only (the old pipeline,
+  // kept intact for when Sabre access is restored).
+  calendar_source: "auto" }, loadCache(SETTINGS_FILE) || {});
 function saveSettings() { saveCache(SETTINGS_FILE, appSettings); }
 // Master kill switch for ALL APA/Sabre-backed sync (2026-07-30: Mike locked
 // out of his APA/Sabre account — zero automated access until he's back in).
@@ -229,9 +233,75 @@ const ICS_CACHE_TTL = 5 * 60 * 1000;
 // Returns the parsed +/- 90 day window of calendar events (cached). Used by
 // /api/flights and by server-side jobs (e.g. the auto-log poller) so they
 // don't have to round-trip through HTTP.
+// APA restored their official calendar sync (2026-08), publishing Mike's
+// schedule straight into his Google Calendar. Home Assistant already has that
+// account linked, so we read the schedule through HA's calendar API with
+// credentials the container already holds. This replaces the Sabre-scraping
+// pipeline entirely: no alliedpilots.org login, no DECS/OAC, nothing that
+// touches the systems AA warned about.
+const HA_CAL_ENTITY = process.env.HA_CALENDAR_ENTITY || "calendar.goeb26_gmail_com";
+
+async function fetchHaCalendarEvents(winStart, winEnd) {
+  const qs = `start=${new Date(winStart).toISOString()}&end=${new Date(winEnd).toISOString()}`;
+  const resp = await fetch(`${HA_URL}/api/calendars/${HA_CAL_ENTITY}?${qs}`, {
+    headers: { Authorization: `Bearer ${HA_TOKEN}` },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!resp.ok) throw new Error(`HA calendar returned ${resp.status}`);
+  const raw = await resp.json();
+  if (!Array.isArray(raw)) throw new Error("HA calendar returned non-array");
+  // Map to the same shape parseIcs() produces so every downstream consumer
+  // (flights UI, auto-log, reconciliation) is unchanged. All-day events carry
+  // `date` instead of `dateTime`.
+  return raw.map(e => {
+    const s = e.start || {}, en = e.end || {};
+    const start = s.dateTime || (s.date ? `${s.date}T00:00:00Z` : null);
+    const end = en.dateTime || (en.date ? `${en.date}T00:00:00Z` : null);
+    return {
+      uid: e.uid || `ha-${start}-${e.summary || ""}`,
+      summary: e.summary || "",
+      description: e.description || "",
+      start: start ? new Date(start).toISOString() : null,
+      end: end ? new Date(end).toISOString() : null,
+    };
+  }).filter(e => e.start);
+}
+
 async function getCachedCalendarEvents() {
-  if (!ICS_URL) throw new Error("ICS_URL not configured");
   if (icsCache && Date.now() - icsCache.ts < ICS_CACHE_TTL) return icsCache.events;
+  const winStart = Date.now() - 90 * 864e5;
+  const winEnd = Date.now() + 90 * 864e5;
+
+  const source = appSettings.calendar_source || "auto";
+  // Primary: APA's official calendar via Home Assistant.
+  if (source !== "ics" && HA_URL && HA_TOKEN && HA_CAL_ENTITY) {
+    try {
+      const all = await fetchHaCalendarEvents(winStart, winEnd);
+      const events = all.filter(e => {
+        const t = new Date(e.start).getTime();
+        return t >= winStart && t <= winEnd;
+      });
+      if (events.length) {
+        console.log(`Calendar(HA ${HA_CAL_ENTITY}): ${events.length} events in ±90d window`);
+        icsCache = { ts: Date.now(), events };
+        return events;
+      }
+      console.log("Calendar(HA): 0 events");
+    } catch (e) {
+      console.log(`Calendar(HA) failed: ${e.message}`);
+    }
+    if (source === "ha") {
+      if (icsCache) return icsCache.events;
+      throw new Error("calendar_source=ha but HA returned nothing");
+    }
+  }
+
+  // Fallback: the legacy ICS feed (frozen since the Sabre pause, but keeps
+  // older history visible if HA is unreachable).
+  if (!ICS_URL) {
+    if (icsCache) return icsCache.events;
+    throw new Error("No calendar source available (HA failed, ICS_URL not set)");
+  }
   const resp = await fetch(ICS_URL);
   if (!resp.ok) {
     if (icsCache) { console.log("Serving stale ICS cache"); return icsCache.events; }
@@ -239,8 +309,6 @@ async function getCachedCalendarEvents() {
   }
   const text = await resp.text();
   const all = parseIcs(text);
-  const winStart = Date.now() - 90 * 864e5;
-  const winEnd = Date.now() + 90 * 864e5;
   const events = all.filter(e => {
     if (!e.start) return false;
     const t = new Date(e.start).getTime();
@@ -1869,6 +1937,16 @@ app.post("/api/settings/commute", logbookAuth, express.json(), (req, res) => {
 
 // APA/Sabre sync master switch — pauses every poller and manual trigger
 // that reaches apa-sabre-service / alliedpilots.org.
+app.post("/api/settings/calendar-source", logbookAuth, express.json(), (req, res) => {
+  const v = String((req.body && req.body.source) || "").toLowerCase();
+  if (!["auto", "ha", "ics"].includes(v)) return res.status(400).json({ error: "source must be auto|ha|ics" });
+  appSettings.calendar_source = v;
+  saveSettings();
+  icsCache = null; // drop cached events so the next read uses the new source
+  console.log(`[settings] calendar source -> ${v}`);
+  res.json({ ok: true, calendar_source: v });
+});
+
 app.post("/api/settings/apa-sync", logbookAuth, express.json(), (req, res) => {
   appSettings.apa_sync_enabled = !!(req.body && req.body.enabled);
   saveSettings();
@@ -2869,7 +2947,19 @@ function parseCalendarEvent(event) {
   // Derive (ep, seq, leg_idx) from the calendar UID — supports both UID
   // shapes the APA Calendar Sync produces. ep/seq are what we need to fetch
   // crew for pairings that aren't yet in the cache.
-  const { ep, seq, leg_idx, seq_start } = extractEpSeqFromUid(event.uid);
+  let { ep, seq, leg_idx, seq_start } = extractEpSeqFromUid(event.uid);
+  // APA's official calendar sync (via Google) uses opaque Google UIDs, so the
+  // UID carries no ep/seq. The trip sequence is in the description instead
+  // ("SEQ: 31109."); derive the bid period from the leg date. leg_idx stays
+  // null — it only fed Sabre crew accumulation, which no longer runs.
+  if (seq == null) {
+    const dm = /SEQ:\s*0*(\d+)/.exec(event.description || "");
+    if (dm) {
+      seq = +dm[1];
+      const d0 = new Date(event.start);
+      if (!isNaN(d0)) ep = d0.getUTCFullYear() * 100 + (d0.getUTCMonth() + 1);
+    }
+  }
 
   const startDate = new Date(event.start);
   const endDate = new Date(event.end || event.start);
