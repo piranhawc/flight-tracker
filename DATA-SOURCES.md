@@ -1,0 +1,181 @@
+# Schedule Data Sources — how the flight tracker gets Mike's schedule
+
+Last updated 2026-08-11.
+
+There are **two independent ways** this system can learn Mike's flying
+schedule. Only one is active at a time, and you can switch between them
+without redeploying. Both are retained on purpose.
+
+| | **A. APA official calendar** (active) | **B. Sabre/APA scraping** (paused) |
+|---|---|---|
+| Source | APA Calendar Sync → Google Calendar → Home Assistant | DECS HI1/HI2/HI3 + OAC pairing API |
+| Credentials | HA long-lived token (already in container) | Mike's APA web + Sabre DECS logins |
+| Logs into alliedpilots.org? | **No** | Yes (Playwright + requests) |
+| Gives | flight legs, times, routes, DH flag, trip SEQ | all of that **plus crew names, reserve days, FTG/OX reconciliation, layover detail** |
+| Status | live since 2026-08-11 | paused since 2026-07-30 |
+
+---
+
+## Why there are two
+
+AA emailed a warning about "interfacing with bots" (2026-07-21) — aimed at
+apps that snipe premium open-time trips for profit, which this system has
+never done (it is read-only, never touches open time, trades, or bidding).
+Around the same time Mike's APA password expired; after the reset,
+**automated** logins began getting `You are not authorized` from ADFS while
+his **browser** logins worked fine. That looked like APA blocking automation,
+so all scraping was paused (2026-07-30) rather than trying to evade it.
+
+Then APA restored their own calendar-sync feature, which publishes the
+schedule into Mike's Google Calendar. That is the sanctioned path — no
+scraping, no login — so it became the primary source.
+
+**Do not build bot-detection evasion.** If source B is ever refused again,
+stop and ask Mike. See `memory/apa-polling-rate-limits.md`.
+
+---
+
+## A. APA official calendar (current)
+
+```
+APA Calendar Sync  ──►  Google Calendar (goeb26@gmail.com)
+                              │
+                              ▼
+                   Home Assistant Google Calendar integration
+                     entity: calendar.goeb26_gmail_com
+                              │  HA REST API + HA_TOKEN
+                              ▼
+                   flight-tracker  getCachedCalendarEvents()
+                              │
+                              ▼
+                   /api/flights → UI, logbook auto-import
+```
+
+**Key code:** `server.js` → `fetchHaCalendarEvents()` and
+`getCachedCalendarEvents()`. Entity is `HA_CALENDAR_ENTITY` env, defaulting
+to `calendar.goeb26_gmail_com`. Uses `HA_URL` + `HA_TOKEN` already in the
+container. 5-minute cache, ±90-day window — same as the ICS path.
+
+**Event format APA publishes** (real example):
+
+```
+summary:     "AA 769 ORD-PHX  (06:59L - 08:45L)"      # note the double space
+summary(DH): "AA 332 (DH) PHX-ORD  (10:08L - 16:05L)"
+description: "Meal: Breakfast \n\nSEQ: 31109.\nUploaded by APA Calendar Sync process..."
+uid:         "fj8j01lejikne012lq8a03nlpk@google.com"   # opaque Google UID
+start/end:   RFC3339 with offset, e.g. 2026-08-12T07:59:00-04:00
+```
+
+Two adaptations were needed because Google UIDs carry no structure (the old
+Sabre-built UIDs looked like `HI-202607-9452-20260720-861307-leg01@...`):
+
+1. **Trip SEQ** is parsed from the description (`SEQ: 31109.`) instead of the
+   UID; the bid period (`ep`) is derived from the leg date. `server.js` →
+   `parseCalendarEvent()`.
+2. **Trip grouping** keys on `seq-<SEQ>` and then splits a group wherever
+   consecutive legs are **>36h apart**. Without the split, a pairing flown
+   twice in a month (seq 9452 on Jul 20 *and* Jul 28) would collapse into one
+   trip. 36h clears the longest real layover seen (ANC ~25h) while separating
+   distinct trips. `public/index.html` → `parseEvent()` / `groupTrips()`.
+
+**What still works on this source:** live FlightAware tracking, tail numbers
+(T-24h / T-1h refresh), NEO badges, flight phases, layover chips, logbook
+auto-import, dedupe, stats.
+
+**What this source cannot provide:** crew names (FA/CA — those came from
+Sabre NS lookups), reserve-day banners (parsed from HI2), and FTG/OX/dropped
+reconciliation. Existing crew history in the logbook is untouched; no new
+names get added while source A is active.
+
+---
+
+## B. Sabre / APA scraping (paused, fully intact)
+
+Nothing was deleted. Still present and working, just gated:
+
+- `~/apa-sabre-service/` on the Mac mini (192.168.128.115) — FastAPI service,
+  HI1/HI2/HI3 parsing, pairing detail, crew lookup, reserve-day parsing.
+- `~/.openclaw/scripts/apa_trips_to_ics.py` — builds the ICS, scp's to Unraid.
+- `~/.openclaw/scripts/apa_login_capture.py` — Playwright cookie capture.
+- Published feed: `https://cal.mikegoebel.net/<token>.ics` (frozen at Jul 29).
+
+**Five pause layers** (all must be lifted to resume) — see
+`memory/apa-sync-paused-2026-07.md` for the authoritative list:
+
+1. Sentinel file `~/.openclaw/APA_SYNC_PAUSED` — scripts exit immediately.
+2. Guards at the top of `apa_login_capture.py` and `apa_trips_to_ics.py`.
+3. **Root LaunchDaemon `com.mikeg.apa-login-capture.plist` still fires hourly**
+   — the sentinel is what stops it. Commenting cron alone did NOT.
+4. Crontab lines for the ICS build + login capture are commented out.
+5. `apa_sync_enabled: false` in the tracker's settings — gates every poller
+   and manual endpoint (409).
+
+---
+
+## Switching sources
+
+Setting lives in `/app/data/settings.json` as `calendar_source`:
+
+- `auto` (default) — APA calendar first, legacy ICS feed if HA fails
+- `ha` — APA calendar only
+- `ics` — Sabre-built feed only (the old pipeline)
+
+```bash
+# get a logbook token
+TOKEN=$(curl -s -X POST https://whereis.mikegoebel.net/api/logbook/auth \
+  -H 'Content-Type: application/json' -d '{"password":"<LOGBOOK_PASSWORD>"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+
+# switch source
+curl -s -X POST https://whereis.mikegoebel.net/api/settings/calendar-source \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"source":"ics"}'
+
+# read all settings
+curl -s https://whereis.mikegoebel.net/api/settings -H "Authorization: Bearer $TOKEN"
+```
+
+Switching clears the event cache, so the next read uses the new source.
+
+### To restore source B (only on Mike's say-so)
+
+1. Delete `~/.openclaw/APA_SYNC_PAUSED`.
+2. Run **one** `apa_login_capture.py` by hand. If it still returns
+   *"You are not authorized"* while a browser login works — **stop**. That is
+   APA refusing automation, not a bug to engineer around.
+3. If it captures cookies: re-enable `apa_sync_enabled`, uncomment the two
+   crontab lines, and set `calendar_source` to `ics` (or leave `auto`).
+4. Respect the rate limits: hourly max, caches mandatory. Sabre session trust
+   window is 15 min; pairing detail is disk-cached 6h (current) / 7d (past).
+
+---
+
+## Useful commands
+
+```bash
+# What HA sees (this is the live source of truth for source A)
+HA_URL=$(ssh root@192.168.128.175 'docker exec flight-tracker printenv HA_URL')
+HA_TOKEN=$(ssh root@192.168.128.175 'docker exec flight-tracker printenv HA_TOKEN')
+curl -s -H "Authorization: Bearer $HA_TOKEN" \
+  "$HA_URL/api/calendars/calendar.goeb26_gmail_com?start=2026-08-01T00:00:00Z&end=2026-09-30T00:00:00Z" | python3 -m json.tool
+
+# List every HA calendar entity (if the AA calendar entity name ever changes)
+curl -s -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states" \
+  | python3 -c 'import sys,json;[print(s["entity_id"]) for s in json.load(sys.stdin) if s["entity_id"].startswith("calendar.")]'
+
+# What the app is serving
+curl -s https://whereis.mikegoebel.net/api/flights | python3 -m json.tool | head -40
+
+# Which source served it
+ssh root@192.168.128.175 'docker logs flight-tracker --tail 50 | grep -E "Calendar\(HA\)|ICS:"'
+```
+
+**Gotcha:** if HA's Google integration ever loses the calendar, reload the
+config entry — that is how `calendar.goeb26_gmail_com` was discovered in the
+first place (it was absent until reloaded):
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $HA_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"entity_id":"calendar.goeb26_gmail_com"}' \
+  "$HA_URL/api/services/homeassistant/reload_config_entry"
+```
