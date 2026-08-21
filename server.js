@@ -15,13 +15,22 @@ let appSettings = Object.assign({ commute_enabled: true, apa_sync_enabled: true,
   // "auto" = APA Google calendar (via HA), fall back to the Sabre-built ICS.
   // "ha" = APA calendar only. "ics" = Sabre-built feed only (the old pipeline,
   // kept intact for when Sabre access is restored).
-  calendar_source: "auto" }, loadCache(SETTINGS_FILE) || {});
+  calendar_source: "auto",
+  // Periodic Sabre-backed pollers. OFF by default since 2026-08-21: Mike
+  // wants Sabre touched ONLY on the trip-driven schedule (T-2h / T+1h)
+  // run by apa_sync_scheduler.py on the mini. The master switch
+  // apa_sync_enabled still gates everything.
+  apa_auto_pollers: false }, loadCache(SETTINGS_FILE) || {});
 function saveSettings() { saveCache(SETTINGS_FILE, appSettings); }
 // Master kill switch for ALL APA/Sabre-backed sync (2026-07-30: Mike locked
 // out of his APA/Sabre account — zero automated access until he's back in).
 // Gates every scheduled loop and manual endpoint that reaches
 // apa-sabre-service or alliedpilots.org. Cached/local data keeps serving.
 function apaSyncPaused() { return appSettings.apa_sync_enabled === false; }
+// Periodic background loops: additionally require apa_auto_pollers.
+// On-demand endpoints (used by the trip-driven scheduler) only need the
+// master switch, so a scheduled sync works while polling stays off.
+function apaPollersPaused() { return apaSyncPaused() || appSettings.apa_auto_pollers === false; }
 const PHOTO_CACHE_FILE = path.join(CACHE_DIR, "photo-cache.json");
 const GATE_CACHE_FILE = path.join(CACHE_DIR, "gate-cache.json");
 const GATE_LEARNED_FILE = path.join(CACHE_DIR, "gate-learned.json");
@@ -71,7 +80,7 @@ if (careerReady) {
   // Poll every 6h; refreshRoster() only actually refetches when its ~monthly
   // TTL has lapsed. (Don't use a >24.8-day interval — it overflows Node's
   // 32-bit timer and fires in a tight loop.)
-  setInterval(() => { if (apaSyncPaused()) return; career.refreshRoster().catch((e) => console.error("[career] roster refresh check failed:", e.message)); },
+  setInterval(() => { if (apaPollersPaused()) return; career.refreshRoster().catch((e) => console.error("[career] roster refresh check failed:", e.message)); },
     6 * 60 * 60 * 1000);
 }
 
@@ -1937,6 +1946,13 @@ app.post("/api/settings/commute", logbookAuth, express.json(), (req, res) => {
 
 // APA/Sabre sync master switch — pauses every poller and manual trigger
 // that reaches apa-sabre-service / alliedpilots.org.
+app.post("/api/settings/apa-pollers", logbookAuth, express.json(), (req, res) => {
+  appSettings.apa_auto_pollers = !!(req.body && req.body.enabled);
+  saveSettings();
+  console.log(`[settings] APA periodic pollers ${appSettings.apa_auto_pollers ? "ON" : "OFF"}`);
+  res.json({ ok: true, apa_auto_pollers: appSettings.apa_auto_pollers });
+});
+
 app.post("/api/settings/calendar-source", logbookAuth, express.json(), (req, res) => {
   const v = String((req.body && req.body.source) || "").toLowerCase();
   if (!["auto", "ha", "ics"].includes(v)) return res.status(400).json({ error: "source must be auto|ha|ics" });
@@ -3417,7 +3433,7 @@ async function backfillFaActuals(legs) {
 // the number of pairings actually fetched.
 async function fetchMissingPairingsForPlaceholders() {
   if (!crewCacheReady) return 0;
-  if (apaSyncPaused()) return 0;
+  if (apaPollersPaused()) return 0;
   const wanted = new Map();
   for (const leg of Object.values(logbook.legs)) {
     if (!leg.crew || !leg.crew.length) continue;
@@ -3542,7 +3558,7 @@ function autoSyncLogbookCrewFromApa() {
 
 async function refreshCrewCache() {
   if (!crewCacheReady) return;
-  if (apaSyncPaused()) return;
+  if (apaPollersPaused()) return;
   console.log("[crew-cache] starting refresh");
   try {
     const schedule = await apa.getCurrentSchedule();
@@ -3580,7 +3596,7 @@ async function refreshCrewCache() {
 let eagerSnapshotRunning = false;
 async function eagerSnapshotNewTrips() {
   if (!crewCacheReady || eagerSnapshotRunning) return;
-  if (apaSyncPaused()) return;
+  if (apaPollersPaused()) return;
   eagerSnapshotRunning = true;
   try {
     let schedule;
@@ -3632,7 +3648,7 @@ async function eagerSnapshotNewTrips() {
 let imminentRefreshRunning = false;
 async function refreshImminentLegCrew() {
   if (!crewCacheReady || imminentRefreshRunning) return;
-  if (apaSyncPaused()) return;
+  if (apaPollersPaused()) return;
   imminentRefreshRunning = true;
   try {
     // Use CT (user's base) for the "today/tomorrow" date set; the flight_date
@@ -3762,13 +3778,13 @@ if (crewCacheReady) {
   // Auto-log poller: scan the calendar hourly for completed flights
   // and create logbook entries (with crew). 60 sec after boot for the first
   // pass so the crew cache has a chance to settle.
-  setTimeout(() => { importCompletedFlights().catch(() => {}); }, 60 * 1000);
-  setInterval(() => { importCompletedFlights().catch(() => {}); }, 60 * 60 * 1000);
+  setTimeout(() => { if (apaPollersPaused()) return; importCompletedFlights().catch(() => {}); }, 60 * 1000);
+  setInterval(() => { if (apaPollersPaused()) return; importCompletedFlights().catch(() => {}); }, 60 * 60 * 1000);
   // Reconciliation sweep: re-check trips from the last 60 days for FTGs /
   // drops that happened after auto-log already created the leg. 90 sec
   // after boot, then every 6 hours.
-  setTimeout(() => { reconcileExistingLogbook().catch(() => {}); }, 90 * 1000);
-  setInterval(() => { reconcileExistingLogbook().catch(() => {}); }, 6 * 60 * 60 * 1000);
+  setTimeout(() => { if (apaPollersPaused()) return; reconcileExistingLogbook().catch(() => {}); }, 90 * 1000);
+  setInterval(() => { if (apaPollersPaused()) return; reconcileExistingLogbook().catch(() => {}); }, 6 * 60 * 60 * 1000);
   // Daily APA logbook sync covering current month AND previous month.
   // Includes prior month so premium / picked-up trips at a month boundary
   // (e.g. May 31 trip first appearing in HI on June 2) flow into the
@@ -3780,8 +3796,8 @@ if (crewCacheReady) {
     return prev.getFullYear() * 100 + (prev.getMonth() + 1);
   }
   // Boot pass at +75s, then every 24h thereafter.
-  setTimeout(() => { backfillFromApa({ since: recentSyncSince(), force: false }).catch(() => {}); }, 75 * 1000);
-  setInterval(() => { backfillFromApa({ since: recentSyncSince(), force: false }).catch(() => {}); }, 24 * 60 * 60 * 1000);
+  setTimeout(() => { if (apaPollersPaused()) return; backfillFromApa({ since: recentSyncSince(), force: false }).catch(() => {}); }, 75 * 1000);
+  setInterval(() => { if (apaPollersPaused()) return; backfillFromApa({ since: recentSyncSince(), force: false }).catch(() => {}); }, 24 * 60 * 60 * 1000);
 }
 
 app.get("/api/crew/health", async (req, res) => {
