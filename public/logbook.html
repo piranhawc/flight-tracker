@@ -345,34 +345,65 @@ function buildCrewIndex() {
     crewByDate[c.name] = (c.flights || []).map(function(f) { return f.date; }).sort();
     crewByTrip[c.name] = (c.flights || []).map(function(f) {
       var trip = (f.ep != null && f.seq != null) ? (f.ep + "/" + f.seq) : null;
-      return { date: f.date || "", trip: trip };
+      // seq is kept separately: a trip that straddles a bid-period boundary
+      // has the SAME seq but a different ep on its later legs (real example:
+      // seq 9241 carries ep 202609 and ep 202610), so the trip id alone
+      // cannot tell you two legs belong to one trip.
+      return {
+        date: f.date || "",
+        trip: trip,
+        seq: (f.seq != null ? String(f.seq) : null),
+      };
     }).sort(function(a, b) { return a.date.localeCompare(b.date); });
   });
 }
 
-// Have we flown with this person before? Behavior depends on seat:
-//  - Pilots/RC: "before THIS DATE" — earlier date = repeat.
-//  - FAs: "on a PRIOR TRIP" — multiple legs within the same (ep, seq) don't
-//    count as a repeat. A different trip-id earlier in time does.
-// Legs missing ep/seq fall back to date-based detection.
+// Longest realistic pairing, in days. Used to decide whether two legs sharing
+// a seq belong to one trip or to the same pairing flown twice in a month.
+var SAME_TRIP_MAX_DAYS = 5;
+
+function daysBetween(d1, d2) {
+  var a = Date.parse(d1 + "T00:00:00Z"), b = Date.parse(d2 + "T00:00:00Z");
+  if (isNaN(a) || isNaN(b)) return Infinity;
+  return Math.abs(b - a) / 86400000;
+}
+
+// Have we flown with this person on a PRIOR TRIP?
+//
+// Applies to every seat. Legs within the same (ep, seq) never count as a
+// repeat: on day 2 of a 3-day trip you have not "flown with" your Captain
+// before — you are still on the same trip with them. Previously only FAs
+// used this rule and pilots used a bare earlier-date test, so a pilot went
+// green on the second day (or the second leg of a turn spanning midnight
+// UTC) of the very trip you were on with them.
+//
+// A repeat requires an earlier leg belonging to a DIFFERENT trip id. Legs
+// missing ep/seq fall back to date-only comparison.
 function flownBeforeWith(rawName, leg) {
   var name = bareCrewName(rawName);
-  var seat = splitCrewName(rawName).seat;
   var thisDate = leg && leg.date || "";
   var thisTrip = (leg && leg.ep != null && leg.seq != null) ? (leg.ep + "/" + leg.seq) : null;
-  if (isFASeat(seat)) {
-    var entries = crewByTrip[name];
-    if (!entries) return false;
+
+  var thisSeq = (leg && leg.seq != null) ? String(leg.seq) : null;
+
+  var entries = crewByTrip[name];
+  if (entries && entries.length) {
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       if (!e.date) continue;
       if (e.date >= thisDate) continue;
-      // Same trip ID = same trip across multiple legs; don't count.
+      // Same trip ID = same trip across multiple legs/days; not a repeat.
       if (thisTrip && e.trip && e.trip === thisTrip) continue;
+      // Same seq a few days back = still the same trip, even though the ep
+      // rolled at the bid-period boundary. Bounded by SAME_TRIP_MAX_DAYS so
+      // a pairing genuinely re-flown later in the month still counts.
+      if (thisSeq && e.seq && e.seq === thisSeq &&
+          daysBetween(e.date, thisDate) <= SAME_TRIP_MAX_DAYS) continue;
       return true;
     }
     return false;
   }
+
   var dates = crewByDate[name];
   if (!dates) return false;
   for (var j = 0; j < dates.length; j++) {

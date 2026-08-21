@@ -21,17 +21,43 @@ without redeploying. Both are retained on purpose.
 AA emailed a warning about "interfacing with bots" (2026-07-21) — aimed at
 apps that snipe premium open-time trips for profit, which this system has
 never done (it is read-only, never touches open time, trades, or bidding).
-Around the same time Mike's APA password expired; after the reset,
-**automated** logins began getting `You are not authorized` from ADFS while
-his **browser** logins worked fine. That looked like APA blocking automation,
-so all scraping was paused (2026-07-30) rather than trying to evade it.
+Around the same time, automated logins began getting `You are not authorized`
+from ADFS while browser logins worked fine, so all scraping was paused
+(2026-07-30) rather than trying to evade it.
 
 Then APA restored their own calendar-sync feature, which publishes the
-schedule into Mike's Google Calendar. That is the sanctioned path — no
-scraping, no login — so it became the primary source.
+schedule into Mike's Google Calendar. That needs no login at all, so it
+became the primary source and remains the fallback.
 
-**Do not build bot-detection evasion.** If source B is ever refused again,
-stop and ask Mike. See `memory/apa-polling-rate-limits.md`.
+### What that block actually was (diagnosed 2026-08-21)
+
+The earlier reading — "APA is refusing automation" — was **wrong**. Evidence:
+
+- The refusal began at a hard cutover, **2026-07-29 16:21 EDT** (timestamps
+  decoded from the .NET ticks in ADFS's own `nonce`): 3,452 consecutive
+  successes before it, then every attempt refused. Neither repo has a commit
+  between Jul 25 and Aug 2 — our code was byte-identical across the cutover.
+- `ADFS form detected` fired exactly 3,452 times, matching the successes and
+  **zero** of the 46 failures. The form never rendered, so **no credential was
+  ever submitted** — none of those failures said anything about the password.
+- Same URL, same public IP, minutes apart: **headless Chromium → 62 bytes,
+  "You are not authorized."** but **`curl`, honestly identified → HTTP 200 and
+  the full 29 KB ADFS sign-in form.**
+
+`auth.alliedpilots.org` sits behind **Azure Application Gateway** (the
+`ApplicationGatewayAffinity` cookies), whose WAF allows a custom block body —
+which explains a bare message carrying no reference ID. The rule targets the
+**headless-browser signature**, not programmatic access. That is consistent
+with APA's stated policy, which prohibits bots that *manipulate* schedules
+(trip sniping), not read-only access — third-party apps like CheckMyPay
+authenticate against Sabre routinely.
+
+**So the fix was to stop driving a browser, not to disguise one.** See
+source B below. Nothing spoofs a fingerprint; the client self-identifies.
+
+**Still do not build bot-detection evasion** (stealth/patched browsers,
+fingerprint spoofing, residential proxies). If an honestly-identified client
+is ever refused, stop and ask Mike. See `memory/apa-polling-rate-limits.md`.
 
 ---
 
@@ -96,8 +122,57 @@ Nothing was deleted. Still present and working, just gated:
 - `~/apa-sabre-service/` on the Mac mini (192.168.128.115) — FastAPI service,
   HI1/HI2/HI3 parsing, pairing detail, crew lookup, reserve-day parsing.
 - `~/.openclaw/scripts/apa_trips_to_ics.py` — builds the ICS, scp's to Unraid.
-- `~/.openclaw/scripts/apa_login_capture.py` — Playwright cookie capture.
+- `~/.openclaw/scripts/apa_login_requests.py` — **the login path (2026-08-21).**
+- `~/.openclaw/scripts/apa_login_capture.py` — old Playwright capture.
+  **Superseded — headless Chromium is exactly what the Jul-29 rule blocks.**
+  Kept for reference only; do not put it back on a timer.
 - Published feed: `https://cal.mikegoebel.net/<token>.ics` (frozen at Jul 29).
+
+#### The working login (`apa_login_requests.py`)
+
+Plain `requests`, no browser. Verified end-to-end 2026-08-21 16:10 EDT.
+
+1. GET `https://oac.alliedpilots.org/` — cold-bounces to ADFS WS-Fed
+   (`/adfs/ls/?wa=wsignin1.0&wtrealm=...`) and serves the sign-in form. This
+   deliberately skips the `www` → `id.alliedpilots.org` → Sitecore OIDC chain;
+   the data lives on `oac` (pairings) and `tasc` (DECS), not on Sitecore.
+2. POST `UserName`/`Password`/`AuthMethod`/`Kmsi`.
+3. Follow the auto-submitting federation forms (handles both OIDC
+   `response_mode=form_post` and WS-Fed `wresult`).
+4. Warm `oac` + `tasc`, then the Sabre DECS form login.
+5. Write `~/.openclaw/secrets/apa-state.json` in Playwright storage-state
+   shape, so everything downstream is unchanged.
+
+#### Two gotchas that both masquerade as "wrong password"
+
+**1. `ALLIED_USER` must be the full UPN — `861307@unionpilots.org`.** The ADFS
+page appends `@unionpilots.org` in JavaScript, which an HTTP client does not
+run. A bare `861307` gets *"Incorrect user ID or password"* — identical to a
+genuinely wrong password.
+
+**2. Never log into Sabre on top of an existing `ASP.NET_SessionId`.** DECS has
+two levels. The Sabre User ID reaches DECS Main in *general* mode; the password
+on that login form (labelled **"Personal Mode Password"**) grants *personal*
+mode, which is what HI reports require. If a saved DECS session cookie is sent
+with the login, the server reuses that session and it **stays in general mode**:
+DECS Main renders, your name and the HI buttons appear, and every HI report
+answers `ENTER PERSONAL MODE WITH PASSWORD` — with completely correct
+credentials. Dropping `ASP.NET_SessionId` before the login makes the server mint
+a fresh session, and the identical credentials land in personal mode. Verified
+both ways on 2026-08-21.
+
+Handled in `apa_login_requests.py` (`drop_cookie()` before the Sabre step) and
+in `apa_sabre/auth.py::_fresh_sabre_login` (skips that cookie when seeding).
+`apa_login_requests.py` then *proves* personal mode by pressing HI1 and exits
+`rc=7` if only general mode was obtained — because "DECS Main is present" is
+not evidence the session can read a single trip.
+
+Run manually with `--force` to bypass the pause sentinel for one deliberate
+attempt (the sentinel file stays in place, so the hourly LaunchDaemon stays
+blocked). Output defaults to a sidecar file so a failure cannot clobber a
+known-good jar. **Do not retry a rejected login** — ADFS Extranet Smart
+Lockout trips around 3–5 failures. Diagnose with
+`~/.openclaw/scripts/check_apa_creds.py`, which prints no secrets.
 
 **Five pause layers** (all must be lifted to resume) — see
 `memory/apa-sync-paused-2026-07.md` for the authoritative list:
