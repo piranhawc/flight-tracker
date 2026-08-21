@@ -179,3 +179,39 @@ curl -s -X POST -H "Authorization: Bearer $HA_TOKEN" -H 'Content-Type: applicati
   -d '{"entity_id":"calendar.goeb26_gmail_com"}' \
   "$HA_URL/api/services/homeassistant/reload_config_entry"
 ```
+
+---
+
+## Sabre access schedule (trip-driven) — added 2026-08-21
+
+When source B is restored, Sabre is **not** polled. `apa_sync_scheduler.py`
+on the mini decides everything from APA's published calendar (which costs no
+Sabre access at all) and only reaches Sabre inside two narrow windows:
+
+| Trigger | When | What runs |
+|---|---|---|
+| Pre-trip | first leg departure **− 2h** | logbook import (fills crew for the trip) |
+| Post-trip | last leg arrival **+ 1h** | logbook import **+** reconcile (catches FTG / drops / trades) |
+| HI1/HI2 | every **3–4 days**, randomized time of day | `/schedule/current` refresh |
+
+Roughly **2 syncs per trip** plus ~8–10 HI refreshes a month — an order of
+magnitude below the old hourly polling, and irregular by design.
+
+- Cron: every 20 min (`9,29,49`) — almost always a no-op; it reads the
+  calendar, compares to its state file, exits.
+- State: `~/.openclaw/cache/sync-scheduler-state.json` (`fired` keys +
+  `hi_next_at`). Missed windows are marked done rather than fired late, so
+  an outage never causes a catch-up burst.
+- Needs `LOGBOOK_PASSWORD` in `~/.openclaw/.env` to drive the tracker.
+- Honors `~/.openclaw/APA_SYNC_PAUSED` — no-ops entirely while paused.
+
+**The tracker's own periodic pollers must stay off** for this to hold:
+
+```bash
+# master ON (allows on-demand syncs), periodic polling OFF
+curl -sX POST $T/api/settings/apa-sync    -H "$A" -H 'Content-Type: application/json' -d '{"enabled":true}'
+curl -sX POST $T/api/settings/apa-pollers -H "$A" -H 'Content-Type: application/json' -d '{"enabled":false}'
+```
+
+`apa_sync_enabled` = master (gates everything, including on-demand).
+`apa_auto_pollers` = the periodic loops only; keep **false**.
