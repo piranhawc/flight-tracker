@@ -265,20 +265,75 @@ Sabre access at all) and only reaches Sabre inside two narrow windows:
 
 | Trigger | When | What runs |
 |---|---|---|
+| **New trip** | a trip appears in the calendar we've never seen | logbook import (fills crew immediately) |
 | Pre-trip | first leg departure **− 2h** | logbook import (fills crew for the trip) |
 | Post-trip | last leg arrival **+ 1h** | logbook import **+** reconcile (catches FTG / drops / trades) |
 | HI1/HI2 | every **3–4 days**, randomized time of day | `/schedule/current` refresh |
 
-Roughly **2 syncs per trip** plus ~8–10 HI refreshes a month — an order of
+Roughly **2–3 syncs per trip** plus ~8–10 HI refreshes a month — an order of
 magnitude below the old hourly polling, and irregular by design.
 
 - Cron: every 20 min (`9,29,49`) — almost always a no-op; it reads the
   calendar, compares to its state file, exits.
 - State: `~/.openclaw/cache/sync-scheduler-state.json` (`fired` keys +
-  `hi_next_at`). Missed windows are marked done rather than fired late, so
-  an outage never causes a catch-up burst.
+  `hi_next_at` + `known_trips` / `new_trip_tries`). Missed windows are marked
+  done rather than fired late, so an outage never causes a catch-up burst.
 - Needs `LOGBOOK_PASSWORD` in `~/.openclaw/.env` to drive the tracker.
 - Honors `~/.openclaw/APA_SYNC_PAUSED` — no-ops entirely while paused.
+
+### The new-trip trigger (added 2026-08-24)
+
+Two windows a trip is not enough for a reserve pilot. An assignment can land
+**inside** the T−2h window, and past windows are marked done rather than
+fired late — so that trip would never sync at all. And when the single
+pre-trip attempt fails there is nothing behind it.
+
+So: any trip key (`<start-date>-<seq>`) not in `known_trips` fires one sync
+right away. **One** sync covers every newly-seen trip, because
+`import-from-calendar` walks the whole calendar — a monthly bid award of 15
+trips is one sync, not fifteen.
+
+The sync is then **verified**: `trips_with_crew()` re-reads the tracker's own
+logbook (free — no Sabre) and checks whether crew actually landed on each new
+trip. Unsatisfied trips are retried on later cron ticks up to
+`NEW_TRIP_MAX_TRIES` (3), then given up on with a loud log line. Worst case
+per trip is therefore 3 syncs, not an open-ended loop. `NEW_TRIP_COOLDOWN_MIN`
+(15) keeps a flapping calendar from firing more than one sync per quarter hour.
+
+Verification exists because a sync can return HTTP 200 having populated
+nothing — see below.
+
+### The silent-no-op bug this exposed (fixed 2026-08-24)
+
+A reserve trip assigned 2026-08-23 (seq 8998) never got its FAs. The cause
+was not the schedule: **every automated APA login since 2026-08-21 had been a
+no-op.**
+
+`apa_login_requests.py` writes its cookie jar to a *sidecar*
+(`~/.openclaw/secrets/apa-state-requests.json`) so a failed run can't clobber
+a good jar, and printed `promote with: mv …`. Both automated callers — the
+scheduler's `ensure_login()` and apa-sabre-service's auto-recovery
+(`apa_auth_refresh.py`) — invoke it with no `--out`, so nothing was ever
+promoted. `apa-state.json` stayed frozen at Aug 21 16:58 while every log line
+said `login OK`; every OAC pairing fetch answered `Got bounced to ADFS`, and
+the import reported `no_crew: 20` and exited 0.
+
+Fix: the script now **promotes the sidecar onto `apa-state.json` itself**,
+but only after the run verifies COMPLETE + personal mode — so the safety
+property is kept, not traded away. The previous jar is preserved as
+`apa-state.json.prev`. An INCOMPLETE jar now returns **rc=8** instead of 0
+(it used to report failure in prose and exit success, which is how both
+callers came to believe a broken login had worked). `--no-promote` writes the
+sidecar only, for diagnostic runs.
+
+Symptom to watch for: `login OK` in the scheduler log followed by
+`no_crew` on the import, and `mtime` on `apa-state.json` older than the last
+login. Check with:
+
+```bash
+ls -la ~/.openclaw/secrets/apa-state*.json
+grep -c "bounced to ADFS" ~/.openclaw/logs/apa-sabre-stderr.log
+```
 
 **The tracker's own periodic pollers must stay off** for this to hold:
 
