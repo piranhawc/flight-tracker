@@ -3055,13 +3055,54 @@ async function reconcileExistingLogbook() {
     // FTG/OX marker, its legs still report "future". null = feed
     // unavailable this pass → skip the vanished-trip check, never remove
     // on missing data.
-    let feedUids = null;
+    // Matched on (flight, dep, arr) with a day of tolerance — NOT on UID.
+    // APA's calendar sync deletes and recreates events, so a UID can change
+    // while the flight is still yours: on 2026-08-25 the UID check would have
+    // deleted AA2123, a leg Mike was still scheduled to fly. The date
+    // tolerance covers the local-vs-pairing-day drift documented below.
+    let calLegs = null;
     try {
       const events = await getCachedCalendarEvents();
-      if (events && events.length > 0) feedUids = new Set(events.map(e => e.uid).filter(Boolean));
+      if (events && events.length > 0) {
+        calLegs = new Map();
+        for (const ev of events) {
+          const p = parseCalendarEvent(ev);
+          if (!p || !p.flight || !p.date) continue;
+          const k = `${p.flight}|${String(p.dep_apt || "").toUpperCase()}|${String(p.arr_apt || "").toUpperCase()}`;
+          if (!calLegs.has(k)) calLegs.set(k, []);
+          calLegs.get(k).push({ date: p.date, isDH: !!p.isDH });
+        }
+      }
     } catch (e) {
       console.log("[reconcile-cleanup] calendar feed unavailable, skipping vanished-trip check:", e.message);
     }
+    // The independent second opinion. The calendar is a sync product and does
+    // go flaky; HI1/HI2 is Mike's schedule as Sabre holds it, on a completely
+    // separate path (DECS, not Google). Nothing is removed on the calendar's
+    // word alone. Only bid months HI actually returned count as covered —
+    // a month HI says nothing about proves nothing, and a leg beyond HI's
+    // horizon is left alone until the bid month rolls into view.
+    let hiTrips = null, hiEps = null;
+    try {
+      const sched = await apa.getCurrentSchedule();
+      if (Array.isArray(sched) && sched.length) {
+        hiTrips = new Set(sched.map(t => `${t.ep}/${t.seq}`));
+        hiEps = new Set(sched.map(t => Number(t.ep)));
+      }
+    } catch (e) {
+      console.log("[reconcile-cleanup] HI schedule unavailable, skipping vanished-trip check:", e.message);
+    }
+    // Does the calendar still show this leg (flight + route, ±1 day)?
+    const calendarHasLeg = (leg) => {
+      if (!calLegs) return true;   // no feed → assume yes, never remove blind
+      const fn = leg.flight_number || String(leg.flight || "").replace(/^AA/i, "").replace(/^0+/, "");
+      const k = `${fn}|${String(leg.dep || "").toUpperCase()}|${String(leg.arr || "").toUpperCase()}`;
+      const hits = calLegs.get(k);
+      if (!hits || !hits.length) return false;
+      const legMs = new Date(String(leg.date) + "T00:00:00Z").getTime();
+      return hits.some(h =>
+        Math.abs(new Date(h.date + "T00:00:00Z").getTime() - legMs) <= 864e5);
+    };
     const todayIso = new Date().toISOString().slice(0, 10);
     // 14-day lookback (was 60): FTG/OX/drops surface within days, flown legs
     // are protected by the actuals-guard anyway, and the old window re-fetched
@@ -3088,27 +3129,41 @@ async function reconcileExistingLogbook() {
       const parts = tripKey.split("/");
       const ep = Number(parts[0]), seq = Number(parts[1]);
       const startKey = parts[2] || null;
-      const recon = await apa.getPairingReconciliation(ep, seq, startKey);
-      if (!recon || recon.size === 0) { kept += legs.length; continue; }
+      // Vanished-trip pass. Runs BEFORE the reconciliation branch, which
+      // would otherwise see "future" → operated and restore the leg on every
+      // pass. It costs nothing — the calendar and HI are already in hand —
+      // and a trip that loses every leg here never needs its pairing fetched.
+      //
+      // A whole trip disappearing (traded, or a reserve assignment pulled)
+      // leaves no FTG/OX marker, so per-leg reconciliation cannot see it.
+      // Both sources must agree before anything is removed: gone from the
+      // calendar AND absent from HI1/HI2 for a bid month HI actually covers.
+      // Either one alone has been wrong in practice.
+      const survivors = [];
       for (const leg of legs) {
-        // Vanished-trip check — must run BEFORE the reconciliation branch,
-        // which would otherwise see "future" → operated and restore the leg
-        // on every pass. Future + auto-imported + UID gone from feed =
-        // traded/dropped after import. Manual removals/entries untouched.
         const isFutureLeg = leg.date && String(leg.date) >= todayIso;
-        if (feedUids && isFutureLeg && leg._auto_filled && !leg._removed_manual &&
-            typeof leg.id === "string" && leg.id.includes("@apa.alliedpilots.org") &&
-            !feedUids.has(leg.id)) {
+        const flewAlready = !!(leg.actual_out || leg.actual_in || leg.block_min_actual);
+        const tripGoneFromHi = hiTrips && hiEps && hiEps.has(Number(leg.ep)) &&
+          !hiTrips.has(`${leg.ep}/${leg.seq}`);
+        if (calLegs && isFutureLeg && !flewAlready && leg._auto_filled &&
+            !leg._removed_manual && !calendarHasLeg(leg) && tripGoneFromHi) {
           if (!leg._removed_at) {
             leg._removed_at = new Date().toISOString();
-            leg._removed_reason = "traded/dropped: no longer in calendar schedule";
+            leg._removed_reason = "removed from your schedule: gone from the calendar and absent from HI1/HI2";
             leg._reconciliation_status = "dropped";
-            console.log(`[reconcile-cleanup] removed ${leg.flight} ${leg.date} (traded/dropped — gone from calendar feed)`);
+            console.log(`[reconcile-cleanup] removed ${leg.flight} ${leg.date} (trip ${leg.ep}/${leg.seq} no longer on the HI schedule)`);
             changedAny = true;
           }
           removed++;
           continue;
         }
+        survivors.push(leg);
+      }
+      if (!survivors.length) continue;
+
+      const recon = await apa.getPairingReconciliation(ep, seq, startKey);
+      if (!recon || recon.size === 0) { kept += survivors.length; continue; }
+      for (const leg of survivors) {
         // A leg with real actuals demonstrably FLEW — reconciliation must
         // never remove it, whatever the HI reports claim. After the mid-
         // month bid flip, reconciling an old pairing against the CURRENT
