@@ -303,6 +303,74 @@ per trip is therefore 3 syncs, not an open-ended loop. `NEW_TRIP_COOLDOWN_MIN`
 Verification exists because a sync can return HTTP 200 having populated
 nothing — see below.
 
+---
+
+## Removing a leg you were taken off (2026-08-25)
+
+The mirror image of the new-trip trigger: trips also get taken *away*. Mike
+was pulled off trip 9020 (Sep 1–4) entirely, and two legs of 8998 were
+replaced by a deadhead when the trip was re-issued. All of it sat in the
+logbook with crew attached.
+
+**Nothing is removed on the calendar's word alone.** The calendar is a sync
+product and does go flaky; a leg missing from it is a question, not an answer.
+Two independent paths must agree:
+
+| Case | Calendar says | Sabre says | Result |
+|---|---|---|---|
+| Whole trip pulled (9020) | leg absent | trip absent from HI1/HI2 | soft-delete |
+| Leg pulled from a trip you're still on (8998) | leg absent | HI day row for that date doesn't list the flight | soft-delete |
+| Leg absent, HI silent about that bid month | leg absent | *no data* | **keep** |
+| Calendar feed empty/unavailable | *no data* | — | **keep** |
+
+Removals are soft (`_removed_at` + `_removed_reason`), so the UI can show them
+and a mistake is reversible. Legs with actuals are never removed — flown is
+flown. Manual removals stay sticky.
+
+### Two traps this walked into
+
+**Matching by UID deletes live legs.** The old check keyed on the calendar
+UID. APA's calendar sync deletes and recreates events, so the UID changes
+while the flight stays yours — on Aug 25 that logic would have deleted AA2123
+on Aug 26, a leg Mike was still scheduled to fly. Matching is now
+`(flight, dep, arr)` with a day of tolerance for the local-vs-pairing-day
+drift. (The check was dead anyway: it also required the UID to end
+`@apa.alliedpilots.org`, the retired Sabre-ICS shape, so it had done nothing
+since the switch to source A.)
+
+**The OAC pairing is not your assignment.** `/pairing/{ep}/{seq}` still lists
+2408 and 1754 for trip 8998, and pairing 9020 exists in OAC in full — both
+are the *published* trips. Only HI1/HI2 says what Mike is actually assigned
+to. Never corroborate an assignment question with pairing detail.
+
+### HI parsing was silently returning nothing
+
+Diagnosing the above turned up three faults in `apa-sabre-service`, all of
+which answered "no trips" or "nothing changed" rather than failing (fixed in
+service commit `9c7ebd1`):
+
+1. Both HI parsers hardcoded a `14` in the day-row prefix. **That two-digit
+   code is not a constant** — Sep-2026 reads `14`, Aug-2026 reads `15`. HI1
+   (the *current* bid month) had therefore been parsing to zero trips. A
+   pilot with no trips left is a legitimate answer, so nothing complained.
+   Seq now comes from the HSS anchor the report puts on every real Seq
+   (`FOSLINE=HSS/FO/9019/01SEP26`) — exact, and it carries the start date.
+   Scanning the text grid also misread reserve rows, whose flight columns
+   hold *times*: `2R … 2029` was being read as trip 2029.
+2. `parse_day_rows` attributed each trip's first day to the previous trip as
+   well, because the Seq hyperlink is emitted after the day row it sits in.
+3. Future legs short-circuited to "trusting pairing", making a leg taken off
+   after assignment invisible. HI day rows now decide when they carry one,
+   and deadheads are parsed (`D1759`) so a leg swapped *for* a deadhead is
+   evidence rather than an empty day.
+
+Watch for: `/schedule/current` returning trips for only one `ep` when it
+should cover two.
+
+```bash
+curl -s http://127.0.0.1:8765/schedule/current | python3 -m json.tool
+```
+
 ### The silent-no-op bug this exposed (fixed 2026-08-24)
 
 A reserve trip assigned 2026-08-23 (seq 8998) never got its FAs. The cause
