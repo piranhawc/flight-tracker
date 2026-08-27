@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flight Stats — logbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* Design tokens lifted from regard-league's style.css so the two apps read as
+   one system. Data hue is the league's chart accent (#4ea1ff); the dim step is
+   the same hue one stop down. Both validated against this surface:
+   ordinal ramp, monotone L, light end 3.41:1 — see scripts/validate_palette.js. */
+:root {
+  --bg: #0a0a0c;
+  --surface: #141518;
+  --surface-2: #1b1c20;
+  --ink: #f5f6f7;
+  --ink-2: #c3c7cd;
+  --muted: #80858d;
+  --border: #232529;
+  --border-2: #2d2f34;
+  --series-1: #4ea1ff;
+  --series-dim: #2f6ea8;
+  --track: #1f2126;
+  --up: #00c805;
+  --down: #ff5b52;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --radius: 12px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  letter-spacing: -0.005em; -webkit-font-smoothing: antialiased;
+}
+a { color: var(--ink); text-decoration: none; }
+
+/* ---- masthead ---- */
+.masthead { position: sticky; top: 0; z-index: 40; background: rgba(10,10,12,0.78);
+  backdrop-filter: saturate(140%) blur(12px); border-bottom: 1px solid var(--border); }
+.masthead-inner { max-width: 1080px; margin: 0 auto; display: flex; align-items: center;
+  gap: 1.25rem; padding: 0.85rem 1.5rem; }
+.brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 1.12rem;
+  letter-spacing: -0.02em; white-space: nowrap; }
+.brand-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--series-1);
+  box-shadow: 0 0 0 3px rgba(78,161,255,0.16); }
+.nav { margin-left: auto; display: flex; align-items: center; gap: 1.4rem; flex-wrap: wrap; }
+.navlink { color: var(--muted); font-size: 0.875rem; font-weight: 500; }
+.navlink:hover, .navlink.on { color: var(--ink); }
+
+/* ---- layout ---- */
+.container { max-width: 1080px; margin: 0 auto; padding: 2.25rem 1.5rem 4rem; }
+h1 { font-weight: 800; letter-spacing: -0.03em; line-height: 1.08; font-size: 2rem; margin: 0 0 0.65rem; }
+.lede { color: var(--ink-2); font-size: 1.05rem; max-width: 60ch; margin: 0; }
+.muted-note { color: var(--muted); font-size: 0.82rem; }
+
+/* ---- filter row (one row, above the charts) ---- */
+.filters { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 1.4rem 0 0; }
+.chip { background: var(--surface); border: 1px solid var(--border-2); color: var(--ink-2);
+  border-radius: 999px; padding: 0.35rem 0.9rem; font: inherit; font-size: 0.85rem;
+  font-weight: 600; cursor: pointer; transition: border-color .14s, color .14s; }
+.chip:hover { color: var(--ink); border-color: var(--muted); }
+.chip[aria-pressed="true"] { background: var(--series-1); border-color: var(--series-1); color: #04203f; }
+
+/* ---- stat tiles ---- */
+.summary { display: flex; flex-wrap: wrap; gap: 2.5rem; margin: 1.4rem 0 1.75rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1.4rem 1.6rem; }
+.stat { display: flex; flex-direction: column; gap: 0.2rem; }
+.stat-label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase;
+  letter-spacing: 0.05em; font-weight: 600; }
+/* Proportional figures on the hero numbers — tabular-nums makes a 3-digit
+   value look loose at display size. Tabular is kept for table/axis columns. */
+.stat-big { font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; }
+.stat-big .unit { font-size: 1rem; font-weight: 600; color: var(--muted); margin-left: 0.15rem; }
+.stat-mid { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
+
+/* ---- cards ---- */
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; align-items: start; }
+@media (max-width: 760px) { .cards { grid-template-columns: 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1.15rem 1.3rem 1.3rem; margin-bottom: 1.25rem; }
+.cardhead { display: flex; align-items: baseline; justify-content: space-between;
+  gap: 1rem; margin-bottom: 0.9rem; }
+.cardhead h2 { font-size: 1.02rem; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+.linkbtn { background: none; border: none; padding: 0; cursor: pointer; color: var(--series-1);
+  font: inherit; font-size: 0.8rem; font-weight: 600; }
+
+/* ---- month bar chart (CSS bars: container grows to include the axis band) ---- */
+.chart { position: relative; }
+.plot { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 190px; }
+.gridline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border);
+  pointer-events: none; }
+.gridline span { position: absolute; right: 0; top: -0.95em; font-size: 0.65rem;
+  color: var(--muted); font-variant-numeric: tabular-nums; background: var(--surface);
+  padding-left: 0.35rem; }
+.col { flex: 1 1 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end;
+  position: relative; cursor: default; min-width: 0; }
+.bar { background: var(--series-dim); border-radius: 4px 4px 0 0; min-height: 2px;
+  transition: background .12s; }
+.col.is-max .bar { background: var(--series-1); }
+.col:hover .bar { background: var(--series-1); }
+.col .peak { position: absolute; left: 50%; transform: translateX(-50%); font-size: 0.65rem;
+  font-weight: 700; color: var(--series-1); white-space: nowrap; }
+.axis { display: flex; gap: 2px; margin-top: 0.4rem; }
+.axis .tick { flex: 1 1 0; text-align: center; font-size: 0.62rem; color: var(--muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 0; }
+
+/* ---- ranked horizontal bars ---- */
+.hbars { display: flex; flex-direction: column; gap: 0.5rem; }
+.hb { display: grid; grid-template-columns: minmax(74px, auto) 1fr auto; align-items: center;
+  gap: 0.7rem; font-size: 0.85rem; }
+.hb .lbl { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hb .track { background: var(--track); border-radius: 4px; height: 9px; overflow: hidden; }
+.hb .fill { display: block; height: 100%; background: var(--series-dim); border-radius: 4px; }
+.hb:first-child .fill { background: var(--series-1); }
+.hb .n { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums;
+  font-size: 0.8rem; white-space: nowrap; }
+
+/* ---- tables ---- */
+.scrollx { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.grid { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.grid thead th { text-align: left; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted); padding: 0.5rem; border-bottom: 1px solid var(--border);
+  white-space: nowrap; }
+.grid tbody td { padding: 0.62rem 0.5rem; border-bottom: 1px solid var(--border); }
+.grid tbody tr:last-child td { border-bottom: none; }
+.grid .num { font-variant-numeric: tabular-nums; }
+.grid td.r, .grid th.r { text-align: right; }
+
+/* ---- tooltip ---- */
+#tip { position: fixed; z-index: 60; pointer-events: none; opacity: 0;
+  transition: opacity .1s; background: var(--surface-2); border: 1px solid var(--border-2);
+  border-radius: 8px; padding: 0.45rem 0.6rem; font-size: 0.78rem; line-height: 1.35;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.45); white-space: nowrap; }
+#tip .t-key { color: var(--muted); }
+#tip b { color: var(--ink); }
+
+/* ---- login ---- */
+#login { max-width: 340px; margin: 4rem auto; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; }
+.input { width: 100%; background: var(--bg); border: 1px solid var(--border-2); border-radius: 10px;
+  color: var(--ink); padding: 0.7rem 0.85rem; font-size: 0.95rem; font-family: inherit; }
+.input:focus { outline: none; border-color: var(--series-1); box-shadow: 0 0 0 3px rgba(78,161,255,0.16); }
+.btn { display: inline-block; background: var(--series-1); color: #04203f; font-weight: 700;
+  font-size: 0.95rem; padding: 0.65rem 1.3rem; border: none; border-radius: 999px; cursor: pointer;
+  font-family: inherit; margin-top: 0.8rem; }
+.err { color: var(--down); font-size: 0.85rem; min-height: 1.2em; }
+#app { display: none; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="/"><span class="brand-dot"></span>Flight Tracker</a>
+    <nav class="nav">
+      <a class="navlink" href="/">Tracker</a>
+      <a class="navlink" href="/logbook.html">Logbook</a>
+      <a class="navlink on" href="/stats.html">Stats</a>
+      <a class="navlink" href="/career.html">Career</a>
+    </nav>
+  </div>
+</header>
+
+<div id="login">
+  <h2 style="margin:0 0 0.8rem;font-size:1.1rem">Logbook sign-in</h2>
+  <form id="login-form">
+    <input class="input" type="password" id="password" placeholder="password" autocomplete="current-password">
+    <div class="err" id="login-err"></div>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+</div>
+
+<main class="container" id="app">
+  <h1>Flight Stats</h1>
+  <p class="lede" id="lede">Loading…</p>
+
+  <div class="filters" id="year-filters" role="group" aria-label="Filter by year"></div>
+
+  <div class="summary" id="tiles"></div>
+
+  <section class="card">
+    <div class="cardhead">
+      <h2>Block hours by month</h2>
+      <button class="linkbtn" id="months-toggle" type="button">Table view</button>
+    </div>
+    <div class="chart" id="months-chart">
+      <div class="plot" id="months-plot"></div>
+      <div class="axis" id="months-axis"></div>
+    </div>
+    <div class="scrollx" id="months-table" style="display:none"></div>
+  </section>
+
+  <div class="cards">
+    <section class="card">
+      <div class="cardhead"><h2>Top routes</h2><span class="muted-note">legs flown</span></div>
+      <div class="hbars" id="routes"></div>
+    </section>
+    <section class="card">
+      <div class="cardhead"><h2>Aircraft</h2><span class="muted-note">block hours</span></div>
+      <div class="hbars" id="aircraft"></div>
+    </section>
+  </div>
+
+  <div class="cards">
+    <section class="card">
+      <div class="cardhead"><h2>Busiest airports</h2><span class="muted-note">visits</span></div>
+      <div class="hbars" id="airports"></div>
+    </section>
+    <section class="card">
+      <div class="cardhead"><h2>Most-flown tails</h2><span class="muted-note">legs</span></div>
+      <div class="hbars" id="tails"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="cardhead"><h2>Flown with most</h2><span class="muted-note">captains and flight attendants</span></div>
+    <div class="scrollx" id="crew"></div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>Recent legs</h2><span class="muted-note" id="recent-note"></span></div>
+    <div class="scrollx" id="recent"></div>
+  </section>
+</main>
+
+<div id="tip" role="tooltip"></div>
+
+<script>
+var token = localStorage.getItem("logbook-token") || null;
+var allLegs = [];
+var year = "all";
+
+function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+
+/* Block minutes for one leg — actual preferred, scheduled fallback, then
+   derive from OOOI/scheduled timestamps. Same rule the logbook panel uses. */
+function legBlockMin(l) {
+  if (l.block_min_actual > 0) return l.block_min_actual;
+  if (l.block_min_scheduled > 0) return l.block_min_scheduled;
+  var pairs = [[l.actual_out, l.actual_in], [l.scheduled_out, l.scheduled_in]];
+  for (var i = 0; i < pairs.length; i++) {
+    if (pairs[i][0] && pairs[i][1]) {
+      var m = Math.round((new Date(pairs[i][1]) - new Date(pairs[i][0])) / 60000);
+      if (m > 0 && m < 20 * 60) return m;
+    }
+  }
+  return 0;
+}
+function stripSeat(n) { return String(n).replace(/^[A-Z0-9]{1,3}\s*·\s*/, "").trim(); }
+function seatOf(n) { var m = /^([A-Z]{1,3}\d?)\s*·/.exec(String(n)); return m ? m[1] : ""; }
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function(c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+function hrs(min) { return (min / 60).toFixed(1); }
+function commas(n) { return Number(n).toLocaleString("en-US"); }
+/* A21N is the ICAO type for the A321neo — spell it the way it's spoken. */
+function acName(t) { return t === "A21N" ? "A321neo" : t; }
+function monthLabel(m) {
+  var d = new Date(m + "-15T00:00:00Z");
+  return d.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase()
+    + " " + String(d.getUTCFullYear()).slice(2);
+}
+
+/* ---- tooltip ---- */
+var tip = document.getElementById("tip");
+function showTip(e, html) {
+  tip.innerHTML = html;
+  tip.style.opacity = "1";
+  moveTip(e);
+}
+function moveTip(e) {
+  var pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+  var x = e.clientX + pad, y = e.clientY - h - pad;
+  if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+  if (y < 8) y = e.clientY + pad;
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+}
+function hideTip() { tip.style.opacity = "0"; }
+/* Hit targets are the full column, not just the painted bar. */
+function bindTip(el, html) {
+  el.addEventListener("mouseenter", function(e) { showTip(e, html); });
+  el.addEventListener("mousemove", moveTip);
+  el.addEventListener("mouseleave", hideTip);
+}
+
+/* ---- data ---- */
+function flownLegs() {
+  var today = new Date().toISOString().slice(0, 10);
+  return allLegs.filter(function(l) {
+    if (l.isDH || l._removed_at) return false;
+    if (String(l.date || "") > today) return false;
+    if (year !== "all" && String(l.date || "").slice(0, 4) !== year) return false;
+    return true;
+  });
+}
+
+function aggregate(legs) {
+  var a = {
+    min: 0, legs: legs.length, distance: 0, pax: 0,
+    byMonth: {}, routes: {}, aircraft: {}, airports: {}, tails: {}, crew: {},
+    longest: null
+  };
+  legs.forEach(function(l) {
+    var min = legBlockMin(l);
+    a.min += min;
+    a.distance += Number(l.distance) || 0;
+    a.pax += Number(l.passengers) || 0;
+    if (!a.longest || min > legBlockMin(a.longest)) a.longest = l;
+
+    var mo = String(l.date || "").slice(0, 7);
+    if (mo) {
+      if (!a.byMonth[mo]) a.byMonth[mo] = { min: 0, legs: 0 };
+      a.byMonth[mo].min += min; a.byMonth[mo].legs++;
+    }
+    if (l.dep && l.arr) {
+      /* Routes are undirected: ORD–PHL and PHL–ORD are the same pair of cities. */
+      var pair = [l.dep, l.arr].sort().join("–");
+      if (!a.routes[pair]) a.routes[pair] = { v: 0, min: 0 };
+      a.routes[pair].v++; a.routes[pair].min += min;
+      a.airports[l.dep] = (a.airports[l.dep] || 0) + 1;
+      a.airports[l.arr] = (a.airports[l.arr] || 0) + 1;
+    }
+    var ac = l.aircraft_type || "";
+    if (ac && !/^N\d/.test(ac)) {
+      if (!a.aircraft[ac]) a.aircraft[ac] = { v: 0, legs: 0 };
+      a.aircraft[ac].v += min; a.aircraft[ac].legs++;
+    }
+    var reg = l.registration || l.tail;
+    if (reg) {
+      if (!a.tails[reg]) a.tails[reg] = { v: 0, min: 0 };
+      a.tails[reg].v++; a.tails[reg].min += min;
+    }
+    (l.crew || []).forEach(function(raw) {
+      var name = stripSeat(typeof raw === "string" ? raw : (raw && raw.name) || "");
+      if (!name || /goebel/i.test(name) || /^emp:/i.test(name) || name === "OPEN") return;
+      if (!a.crew[name]) a.crew[name] = { v: 0, seat: seatOf(raw), first: "9999", last: "" };
+      var c = a.crew[name];
+      c.v++;
+      if (String(l.date) < c.first) c.first = String(l.date);
+      if (String(l.date) > c.last) c.last = String(l.date);
+    });
+  });
+  return a;
+}
+
+function topN(obj, n, key) {
+  return Object.keys(obj)
+    .map(function(k) { return [k, obj[k]]; })
+    .sort(function(x, y) { return (y[1][key || "v"]) - (x[1][key || "v"]); })
+    .slice(0, n);
+}
+
+/* ---- renderers ---- */
+function renderTiles(a) {
+  var avg = a.legs ? a.min / a.legs : 0;
+  var tiles = [
+    { label: "Block hours", big: commas(Math.round(a.min / 60)), unit: "h" },
+    { label: "Legs flown", big: commas(a.legs) },
+    { label: "Distance", big: commas(Math.round(a.distance)), unit: "nm" },
+    { label: "Airports", mid: Object.keys(a.airports).length },
+    { label: "Tails", mid: Object.keys(a.tails).length },
+    { label: "Crew flown with", mid: Object.keys(a.crew).length },
+    { label: "Avg leg", mid: hrs(avg) + "h" }
+  ];
+  document.getElementById("tiles").innerHTML = tiles.map(function(t) {
+    var val = t.big != null
+      ? '<span class="stat-big">' + t.big + (t.unit ? '<span class="unit">' + t.unit + "</span>" : "") + "</span>"
+      : '<span class="stat-mid">' + t.mid + "</span>";
+    return '<div class="stat"><span class="stat-label">' + esc(t.label) + "</span>" + val + "</div>";
+  }).join("");
+}
+
+function renderMonths(a) {
+  var months = Object.keys(a.byMonth).sort();
+  var plot = document.getElementById("months-plot");
+  var axis = document.getElementById("months-axis");
+  if (!months.length) {
+    plot.innerHTML = ''; axis.innerHTML = '';
+    document.getElementById("months-table").innerHTML = '<p class="muted-note">No legs in this range.</p>';
+    return;
+  }
+  var maxMin = Math.max.apply(null, months.map(function(m) { return a.byMonth[m].min; }));
+  var maxH = maxMin / 60;
+  /* Round the top gridline up to a clean value so the scale reads honestly. */
+  var step = maxH > 160 ? 50 : maxH > 80 ? 25 : maxH > 40 ? 20 : 10;
+  var top = Math.max(step, Math.ceil(maxH / step) * step);
+
+  /* Gridlines behind the bars: solid hairlines, one shade off the surface. */
+  var lines = "";
+  for (var g = step; g <= top; g += step) {
+    lines += '<div class="gridline" style="bottom:' + (100 * g / top).toFixed(2) + '%">' +
+             '<span>' + g + "h</span></div>";
+  }
+  plot.innerHTML = lines + months.map(function(m) {
+    var rec = a.byMonth[m];
+    var pct = 100 * (rec.min / 60) / top;
+    var isMax = rec.min === maxMin;
+    /* Only the peak is direct-labeled; the axis and tooltip carry the rest. */
+    var peak = isMax ? '<span class="peak" style="bottom:calc(' + pct.toFixed(2) + '% + 4px)">' + hrs(rec.min) + "h</span>" : "";
+    return '<div class="col' + (isMax ? " is-max" : "") + '" data-m="' + m + '">' + peak +
+           '<div class="bar" style="height:' + pct.toFixed(2) + '%"></div></div>';
+  }).join("");
+
+  /* Label every 3rd month so ticks never collide; all months stay hoverable. */
+  var every = months.length > 24 ? 3 : months.length > 12 ? 2 : 1;
+  axis.innerHTML = months.map(function(m, i) {
+    return '<div class="tick">' + (i % every === 0 ? monthLabel(m) : "") + "</div>";
+  }).join("");
+
+  Array.prototype.forEach.call(plot.querySelectorAll(".col"), function(col) {
+    var m = col.getAttribute("data-m"), rec = a.byMonth[m];
+    bindTip(col, "<b>" + monthLabel(m) + "</b><br>" +
+      '<span class="t-key">block</span> <b>' + hrs(rec.min) + "h</b><br>" +
+      '<span class="t-key">legs</span> <b>' + rec.legs + "</b>");
+  });
+
+  document.getElementById("months-table").innerHTML =
+    '<table class="grid"><thead><tr><th>Month</th><th class="r">Block</th><th class="r">Legs</th></tr></thead><tbody>' +
+    months.slice().reverse().map(function(m) {
+      return "<tr><td class='num'>" + monthLabel(m) + "</td><td class='num r'>" + hrs(a.byMonth[m].min) +
+             "h</td><td class='num r'>" + a.byMonth[m].legs + "</td></tr>";
+    }).join("") + "</tbody></table>";
+}
+
+function renderHbars(elId, entries, fmt) {
+  var el = document.getElementById(elId);
+  if (!entries.length) { el.innerHTML = '<p class="muted-note">No data.</p>'; return; }
+  var max = entries[0][1].v || 1;
+  el.innerHTML = entries.map(function(e) {
+    var pct = Math.max(1.5, 100 * e[1].v / max);
+    return '<div class="hb"><span class="lbl" title="' + esc(e[0]) + '">' + esc(e[0]) + "</span>" +
+      '<span class="track"><span class="fill" style="width:' + pct.toFixed(1) + '%"></span></span>' +
+      '<span class="n">' + esc(fmt(e[1])) + "</span></div>";
+  }).join("");
+  Array.prototype.forEach.call(el.querySelectorAll(".hb"), function(row, i) {
+    var e = entries[i];
+    bindTip(row, "<b>" + esc(e[0]) + "</b><br>" + esc(fmt(e[1], true)));
+  });
+}
+
+function renderCrew(a) {
+  var top = topN(a.crew, 12);
+  document.getElementById("crew").innerHTML = !top.length
+    ? '<p class="muted-note">No crew recorded in this range.</p>'
+    : '<table class="grid"><thead><tr><th>Name</th><th>Seat</th><th class="r">Legs</th>' +
+      "<th class='r'>First</th><th class='r'>Last</th></tr></thead><tbody>" +
+      top.map(function(e) {
+        return "<tr><td>" + esc(e[0]) + "</td><td class='muted-note'>" + esc(e[1].seat || "—") +
+          "</td><td class='num r'>" + e[1].v + "</td><td class='num r muted-note'>" + esc(e[1].first) +
+          "</td><td class='num r muted-note'>" + esc(e[1].last) + "</td></tr>";
+      }).join("") + "</tbody></table>";
+}
+
+function renderRecent(legs) {
+  var rows = legs.slice().sort(function(x, y) {
+    return String(y.date).localeCompare(String(x.date));
+  }).slice(0, 12);
+  document.getElementById("recent-note").textContent = rows.length ? "last " + rows.length : "";
+  document.getElementById("recent").innerHTML = !rows.length
+    ? '<p class="muted-note">Nothing here yet.</p>'
+    : '<table class="grid"><thead><tr><th>Date</th><th>Flight</th><th>Route</th><th>Aircraft</th>' +
+      "<th>Tail</th><th class='r'>Block</th></tr></thead><tbody>" +
+      rows.map(function(l) {
+        return "<tr><td class='num'>" + esc(l.date) + "</td><td>" + esc(l.flight) + "</td>" +
+          "<td>" + esc(l.dep) + " → " + esc(l.arr) + "</td>" +
+          "<td class='muted-note'>" + esc(acName(l.aircraft_type) || "—") + "</td>" +
+          "<td class='num muted-note'>" + esc(l.registration || l.tail || "—") + "</td>" +
+          "<td class='num r'>" + hrs(legBlockMin(l)) + "h</td></tr>";
+      }).join("") + "</tbody></table>";
+}
+
+function render() {
+  var legs = flownLegs();
+  var a = aggregate(legs);
+
+  var dates = legs.map(function(l) { return String(l.date); }).sort();
+  document.getElementById("lede").innerHTML = legs.length
+    ? "Flown legs" + (year === "all" ? "" : " in " + year) + " from <strong>" + esc(dates[0]) +
+      "</strong> to <strong>" + esc(dates[dates.length - 1]) + "</strong>. Deadheads and removed legs excluded." +
+      (a.longest ? " Longest leg: <strong>" + esc(a.longest.dep) + "→" + esc(a.longest.arr) + "</strong> at " +
+        hrs(legBlockMin(a.longest)) + "h." : "")
+    : "No flown legs in this range.";
+
+  renderTiles(a);
+  renderMonths(a);
+  renderHbars("routes", topN(a.routes, 8), function(d, full) {
+    return full ? d.v + " legs · " + hrs(d.min) + "h block" : d.v;
+  });
+  renderHbars("aircraft", topN(a.aircraft, 6).map(function(e) { return [acName(e[0]), e[1]]; }),
+    function(d, full) { return full ? hrs(d.v) + "h over " + d.legs + " legs" : hrs(d.v) + "h"; });
+  renderHbars("airports", Object.keys(a.airports).map(function(k) { return [k, { v: a.airports[k] }]; })
+    .sort(function(x, y) { return y[1].v - x[1].v; }).slice(0, 8),
+    function(d, full) { return full ? d.v + " visits" : d.v; });
+  renderHbars("tails", topN(a.tails, 8), function(d, full) {
+    return full ? d.v + " legs · " + hrs(d.min) + "h block" : d.v;
+  });
+  renderCrew(a);
+  renderRecent(legs);
+}
+
+function renderYearFilters() {
+  var years = {};
+  allLegs.forEach(function(l) {
+    var y = String(l.date || "").slice(0, 4);
+    if (y) years[y] = 1;
+  });
+  var list = ["all"].concat(Object.keys(years).sort().reverse());
+  document.getElementById("year-filters").innerHTML = list.map(function(y) {
+    return '<button class="chip" type="button" data-y="' + y + '" aria-pressed="' +
+      (y === year) + '">' + (y === "all" ? "All time" : y) + "</button>";
+  }).join("");
+  Array.prototype.forEach.call(document.querySelectorAll("#year-filters .chip"), function(b) {
+    b.addEventListener("click", function() {
+      year = b.getAttribute("data-y");
+      Array.prototype.forEach.call(document.querySelectorAll("#year-filters .chip"), function(o) {
+        o.setAttribute("aria-pressed", String(o.getAttribute("data-y") === year));
+      });
+      hideTip();
+      render();
+    });
+  });
+}
+
+document.getElementById("months-toggle").addEventListener("click", function() {
+  var chart = document.getElementById("months-chart"), table = document.getElementById("months-table");
+  var showTable = chart.style.display !== "none";
+  chart.style.display = showTable ? "none" : "";
+  table.style.display = showTable ? "" : "none";
+  this.textContent = showTable ? "Chart view" : "Table view";
+  hideTip();
+});
+
+async function loadAll() {
+  var r = await fetch("/api/logbook/legs", { headers: authHeaders() });
+  if (!r.ok) return false;
+  var d = await r.json();
+  allLegs = d.legs || [];
+  return true;
+}
+
+async function initApp() {
+  var ok = await loadAll();
+  if (!ok) {
+    localStorage.removeItem("logbook-token");
+    token = null;
+    document.getElementById("login").style.display = "block";
+    document.getElementById("app").style.display = "none";
+    document.getElementById("login-err").textContent = "session expired — sign in again";
+    return;
+  }
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  renderYearFilters();
+  render();
+}
+
+document.getElementById("login-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  document.getElementById("login-err").textContent = "";
+  var resp = await fetch("/api/logbook/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: document.getElementById("password").value })
+  });
+  if (!resp.ok) { document.getElementById("login-err").textContent = "incorrect password"; return; }
+  var d = await resp.json();
+  token = d.token;
+  localStorage.setItem("logbook-token", token);
+  initApp();
+});
+
+if (token) initApp();
+</script>
+</body>
+</html>
