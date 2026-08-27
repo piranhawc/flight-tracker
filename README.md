@@ -16,6 +16,42 @@ Personal flight tracker that pulls your AA schedule from Home Assistant's Google
   apa-sabre-service. Cached locally in SQLite; nightly background refresh +
   manual ↻ refresh button per trip.
 
+##### Admin pages (behind the logbook password)
+
+| Page | What |
+|---|---|
+| `/logbook.html` | The logbook itself — legs, crew, imports, reconcile |
+| `/stats.html` | Career stats: block hours by month, routes, aircraft, tails, crew |
+| `/visitors.html` | Who is visiting this site — see below |
+| `/career-me.html` | Retirement & upgrade projection |
+
+All three share `public/league.css`, the design system borrowed from the
+regard-league app so the two projects read as one.
+
+##### Visitor stats
+
+`visitor-log.js` records one row per request (skipping static assets, the
+favicon and robots) into the same SQLite file as the crew cache, and
+`/visitors.html` reads it back: visitors per day, devices, most-requested
+paths, referrers, a live tail and a per-address table.
+
+- The hot path does no I/O — the middleware buffers and a 2s timer writes the
+  batch in one transaction.
+- Client IP comes from **`X-Real-IP`**, not `X-Forwarded-For`. SWAG sets XFF
+  to `$proxy_add_x_forwarded_for`, which appends the peer to whatever the
+  caller sent, so its first hop is caller-supplied and forgeable.
+- Addresses get a reverse-DNS name where one exists, resolved off the request
+  path and cached, so crawlers identify themselves.
+- Friend share-links resolve to friend names. Only an 8-char prefix of the
+  token is stored; the match happens at query time.
+- Bots and LAN addresses are flagged, not dropped — the page defaults to
+  "People only" but the raw picture is one click away.
+- Retention defaults to 120 days (`VISITOR_RETENTION_DAYS`).
+
+**Caveat when reading the numbers:** `whereis.subdomain.conf` in SWAG returns
+404 to non-whitelisted geographies *at nginx*, so those requests never reach
+Express and never appear in these stats.
+
 ## Requirements
 
 - FlightAware AeroAPI key (Personal tier or higher)
