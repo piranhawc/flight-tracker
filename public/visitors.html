@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visitors — whereis.mikegoebel.net</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/league.css?v=1">
+<style>
+/* Page-specific: identity badges. A bot is marked with a WORD, not a colour —
+   the palette here is one hue and identity must never be colour-alone. */
+.tag { display: inline-block; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; padding: 0.1rem 0.38rem; border-radius: 5px;
+  border: 1px solid var(--border-2); color: var(--muted); vertical-align: 1px; }
+.tag.friend { color: var(--series-1); border-color: rgba(78,161,255,0.45); }
+.ipcell { display: flex; flex-direction: column; gap: 0.1rem; }
+.ipcell .host { color: var(--muted); font-size: 0.72rem; word-break: break-all; }
+.mono { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="/"><span class="brand-dot"></span>Flight Tracker</a>
+    <nav class="nav">
+      <a class="navlink" href="/">Tracker</a>
+      <a class="navlink" href="/logbook.html">Logbook</a>
+      <a class="navlink" href="/stats.html">Stats</a>
+      <a class="navlink on" href="/visitors.html">Visitors</a>
+      <a class="navlink" href="/career.html">Career</a>
+    </nav>
+  </div>
+</header>
+
+<div id="login">
+  <h2 style="margin:0 0 0.8rem;font-size:1.1rem">Logbook sign-in</h2>
+  <form id="login-form">
+    <input class="input" type="password" id="password" placeholder="password" autocomplete="current-password">
+    <div class="err" id="login-err"></div>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+</div>
+
+<main class="container" id="app">
+  <h1>Visitors</h1>
+  <p class="lede" id="lede">Loading…</p>
+
+  <div class="filters" role="group" aria-label="Filters">
+    <button class="chip" type="button" data-d="7">7 days</button>
+    <button class="chip" type="button" data-d="30" aria-pressed="true">30 days</button>
+    <button class="chip" type="button" data-d="90">90 days</button>
+    <span style="width:0.6rem"></span>
+    <button class="chip" type="button" id="humans-chip" aria-pressed="true">People only</button>
+  </div>
+
+  <div class="summary" id="tiles"></div>
+
+  <section class="card">
+    <div class="cardhead">
+      <h2>Visitors by day</h2>
+      <button class="linkbtn" id="days-toggle" type="button">Table view</button>
+    </div>
+    <div class="chart" id="days-chart">
+      <div class="plot" id="days-plot"></div>
+      <div class="axis" id="days-axis"></div>
+    </div>
+    <div class="scrollx" id="days-table" style="display:none"></div>
+  </section>
+
+  <div class="cards">
+    <section class="card">
+      <div class="cardhead"><h2>Devices &amp; clients</h2><span class="muted-note">unique visitors</span></div>
+      <div class="hbars" id="clients"></div>
+    </section>
+    <section class="card">
+      <div class="cardhead"><h2>Most-requested paths</h2><span class="muted-note">pages and API</span></div>
+      <div class="hbars" id="paths"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="cardhead"><h2>Who's visiting</h2><span class="muted-note">by address, most active first</span></div>
+    <div class="scrollx" id="top-ips"></div>
+  </section>
+
+  <div class="cards">
+    <section class="card">
+      <div class="cardhead"><h2>Referrers</h2><span class="muted-note">where they came from</span></div>
+      <div class="hbars" id="referrers"></div>
+    </section>
+    <section class="card">
+      <div class="cardhead"><h2>Latest requests</h2><span class="muted-note">live tail</span></div>
+      <div class="scrollx" id="recent"></div>
+    </section>
+  </div>
+</main>
+
+<div id="tip" role="tooltip"></div>
+
+<script>
+var token = localStorage.getItem("logbook-token") || null;
+var days = 30, humansOnly = true, data = null;
+
+function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function(c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+function commas(n) { return Number(n || 0).toLocaleString("en-US"); }
+function shortTime(ts) {
+  var d = new Date(ts);
+  return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+function dayLabel(d) {
+  var dt = new Date(d + "T00:00:00Z");
+  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).toUpperCase();
+}
+function ago(ts) {
+  var s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 172800) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+/* ---- tooltip ---- */
+var tip = document.getElementById("tip");
+function showTip(e, html) { tip.innerHTML = html; tip.style.opacity = "1"; moveTip(e); }
+function moveTip(e) {
+  var pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+  var x = e.clientX + pad, y = e.clientY - h - pad;
+  if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+  if (y < 8) y = e.clientY + pad;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { tip.style.opacity = "0"; }
+function bindTip(el, html) {
+  el.addEventListener("mouseenter", function(e) { showTip(e, html); });
+  el.addEventListener("mousemove", moveTip);
+  el.addEventListener("mouseleave", hideTip);
+}
+
+/* ---- renderers ---- */
+function renderTiles(s) {
+  var tiles = [
+    { label: "Visitors · 24h", big: commas(s.uniq_24h) },
+    { label: "Visitors · 7d", big: commas(s.uniq_7d) },
+    { label: "Page views · 24h", big: commas(s.pages_24h) },
+    { label: "Unique all-time", mid: commas(s.uniq_all) },
+    { label: "Requests · 24h", mid: commas(s.hits_24h) },
+    { label: "Bot hits · 24h", mid: commas(s.bots_24h) },
+    { label: "Logged total", mid: commas(s.total) }
+  ];
+  document.getElementById("tiles").innerHTML = tiles.map(function(t) {
+    var val = t.big != null ? '<span class="stat-big">' + t.big + "</span>"
+                            : '<span class="stat-mid">' + t.mid + "</span>";
+    return '<div class="stat"><span class="stat-label">' + esc(t.label) + "</span>" + val + "</div>";
+  }).join("");
+}
+
+function renderDays(perDay) {
+  var plot = document.getElementById("days-plot"), axis = document.getElementById("days-axis");
+  if (!perDay.length) {
+    plot.innerHTML = ""; axis.innerHTML = "";
+    document.getElementById("days-table").innerHTML = '<p class="muted-note">Nothing logged in this window yet.</p>';
+    return;
+  }
+  var max = Math.max.apply(null, perDay.map(function(d) { return d.visitors; }));
+  var step = max > 160 ? 50 : max > 80 ? 25 : max > 40 ? 10 : max > 12 ? 5 : 1;
+  var top = Math.max(step, Math.ceil(max / step) * step);
+  var lines = "";
+  for (var g = step; g <= top; g += step) {
+    lines += '<div class="gridline" style="bottom:' + (100 * g / top).toFixed(2) + '%"><span>' + g + "</span></div>";
+  }
+  /* At these counts several days tie for the max, and labelling all of them
+     turns "direct-label the extreme" into "a number on every other bar".
+     Label the first one only; the rest are carried by the axis and tooltip. */
+  var labelled = false;
+  plot.innerHTML = lines + perDay.map(function(d) {
+    var pct = 100 * d.visitors / top, isMax = d.visitors === max;
+    var peak = "";
+    if (isMax && !labelled) {
+      labelled = true;
+      peak = '<span class="peak" style="bottom:calc(' + pct.toFixed(2) + '% + 4px)">' + d.visitors + "</span>";
+    }
+    return '<div class="col' + (isMax ? " is-max" : "") + '" data-d="' + d.day + '">' + peak +
+           '<div class="bar" style="height:' + pct.toFixed(2) + '%"></div></div>';
+  }).join("");
+
+  var avail = plot.clientWidth - 38;
+  var every = Math.max(1, Math.ceil(perDay.length / Math.max(1, Math.floor(avail / 52))));
+  axis.innerHTML = perDay.map(function(d, i) {
+    var fromEnd = perDay.length - 1 - i;
+    return '<div class="tick">' + (fromEnd % every === 0 ? dayLabel(d.day) : "") + "</div>";
+  }).join("");
+
+  var byDay = {};
+  perDay.forEach(function(d) { byDay[d.day] = d; });
+  Array.prototype.forEach.call(plot.querySelectorAll(".col"), function(col) {
+    var d = byDay[col.getAttribute("data-d")];
+    bindTip(col, "<b>" + dayLabel(d.day) + "</b><br>" +
+      '<span class="t-key">visitors</span> <b>' + d.visitors + "</b><br>" +
+      '<span class="t-key">page views</span> <b>' + d.pages + "</b><br>" +
+      '<span class="t-key">requests</span> <b>' + d.hits + "</b>");
+  });
+
+  document.getElementById("days-table").innerHTML =
+    '<table class="grid"><thead><tr><th>Day</th><th class="r">Visitors</th><th class="r">Pages</th><th class="r">Requests</th></tr></thead><tbody>' +
+    perDay.slice().reverse().map(function(d) {
+      return "<tr><td class='num'>" + esc(d.day) + "</td><td class='num r'>" + d.visitors +
+        "</td><td class='num r'>" + d.pages + "</td><td class='num r'>" + d.hits + "</td></tr>";
+    }).join("") + "</tbody></table>";
+}
+
+function renderHbars(elId, entries, fmt, tipFmt) {
+  var el = document.getElementById(elId);
+  if (!entries.length) { el.innerHTML = '<p class="muted-note">No data yet.</p>'; return; }
+  var max = entries[0].v || 1;
+  el.innerHTML = entries.map(function(e) {
+    var pct = Math.max(1.5, 100 * e.v / max);
+    return '<div class="hb"><span class="lbl" title="' + esc(e.k) + '">' + esc(e.k) + "</span>" +
+      '<span class="track"><span class="fill" style="width:' + pct.toFixed(1) + '%"></span></span>' +
+      '<span class="n">' + esc(fmt(e)) + "</span></div>";
+  }).join("");
+  Array.prototype.forEach.call(el.querySelectorAll(".hb"), function(row, i) {
+    bindTip(row, "<b>" + esc(entries[i].k) + "</b><br>" + esc(tipFmt(entries[i])));
+  });
+}
+
+function ipCell(r) {
+  var tags = "";
+  if (r.friend) tags += ' <span class="tag friend">' + esc(r.friend) + "</span>";
+  if (r.is_bot) tags += ' <span class="tag">bot</span>';
+  if (r.is_lan) tags += ' <span class="tag">lan</span>';
+  return '<div class="ipcell"><span class="mono">' + esc(r.ip) + tags + "</span>" +
+    (r.host ? '<span class="host">' + esc(r.host) + "</span>" : "") + "</div>";
+}
+
+function renderTopIps(rows) {
+  document.getElementById("top-ips").innerHTML = !rows.length
+    ? '<p class="muted-note">No visitors logged yet.</p>'
+    : '<table class="grid"><thead><tr><th>Address</th><th>Client</th><th class="r">Requests</th>' +
+      "<th class='r'>Pages seen</th><th class='r'>First</th><th class='r'>Last</th></tr></thead><tbody>" +
+      rows.map(function(r) {
+        return "<tr><td>" + ipCell(r) + "</td><td class='muted-note'>" + esc(r.client || "—") + "</td>" +
+          "<td class='num r'>" + commas(r.hits) + "</td><td class='num r'>" + r.paths + "</td>" +
+          "<td class='num r muted-note'>" + esc(String(r.first_seen).slice(0, 10)) + "</td>" +
+          "<td class='num r muted-note' title='" + esc(shortTime(r.last_seen)) + "'>" + esc(ago(r.last_seen)) + "</td></tr>";
+      }).join("") + "</tbody></table>";
+}
+
+function renderRecent(rows) {
+  document.getElementById("recent").innerHTML = !rows.length
+    ? '<p class="muted-note">Nothing yet.</p>'
+    : '<table class="grid"><thead><tr><th>When</th><th>Address</th><th>Path</th></tr></thead><tbody>' +
+      rows.slice(0, 12).map(function(r) {
+        var tag = r.friend ? ' <span class="tag friend">' + esc(r.friend) + "</span>"
+                : r.is_bot ? ' <span class="tag">bot</span>' : "";
+        return "<tr><td class='num muted-note' title='" + esc(shortTime(r.ts)) + "'>" + esc(ago(r.ts)) + "</td>" +
+          "<td class='mono'>" + esc(r.ip) + tag + "</td>" +
+          "<td class='muted-note'>" + esc(r.path) + (r.status >= 400 ? " · " + r.status : "") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+}
+
+function render() {
+  if (!data) return;
+  var s = data.summary;
+  document.getElementById("lede").innerHTML =
+    "Traffic to <strong>whereis.mikegoebel.net</strong> over the last " + data.days + " days" +
+    (data.humans_only ? ", excluding known bots and LAN addresses" : ", including bots and LAN addresses") +
+    ". " + (s.first ? "Logging since <strong>" + esc(String(s.first).slice(0, 10)) + "</strong>."
+                    : "Nothing logged yet — this fills up as people visit.");
+  renderTiles(s);
+  renderDays(data.per_day || []);
+  renderHbars("clients", (data.clients || []).map(function(c) {
+    return { k: c.client + (c.is_bot ? " (bot)" : ""), v: c.visitors, hits: c.hits };
+  }), function(e) { return e.v; }, function(e) { return e.v + " visitors · " + commas(e.hits) + " requests"; });
+  renderHbars("paths", (data.top_paths || []).map(function(p) {
+    return { k: p.path, v: p.hits, visitors: p.visitors };
+  }), function(e) { return commas(e.v); }, function(e) { return commas(e.v) + " requests from " + e.visitors + " visitors"; });
+  renderHbars("referrers", (data.referrers || []).map(function(r) {
+    return { k: r.ref, v: r.hits, visitors: r.visitors };
+  }), function(e) { return commas(e.v); }, function(e) { return commas(e.v) + " requests from " + e.visitors + " visitors"; });
+  renderTopIps(data.top_ips || []);
+  renderRecent(data.recent || []);
+}
+
+async function load() {
+  var r = await fetch("/api/visitors/summary?days=" + days + "&humans=" + (humansOnly ? "1" : "0"),
+                      { headers: authHeaders() });
+  if (!r.ok) return false;
+  data = await r.json();
+  return true;
+}
+
+async function refresh() {
+  var ok = await load();
+  if (!ok) return;
+  hideTip();
+  render();
+}
+
+document.querySelectorAll(".filters .chip[data-d]").forEach(function(b) {
+  b.addEventListener("click", function() {
+    days = Number(b.getAttribute("data-d"));
+    document.querySelectorAll(".filters .chip[data-d]").forEach(function(o) {
+      o.setAttribute("aria-pressed", String(Number(o.getAttribute("data-d")) === days));
+    });
+    refresh();
+  });
+});
+document.getElementById("humans-chip").addEventListener("click", function() {
+  humansOnly = !humansOnly;
+  this.setAttribute("aria-pressed", String(humansOnly));
+  this.textContent = humansOnly ? "People only" : "Everything";
+  refresh();
+});
+document.getElementById("days-toggle").addEventListener("click", function() {
+  var chart = document.getElementById("days-chart"), table = document.getElementById("days-table");
+  var showTable = chart.style.display !== "none";
+  chart.style.display = showTable ? "none" : "";
+  table.style.display = showTable ? "" : "none";
+  this.textContent = showTable ? "Chart view" : "Table view";
+  hideTip();
+});
+
+var resizeTimer = null;
+window.addEventListener("resize", function() {
+  if (!data) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function() { hideTip(); render(); }, 150);
+});
+
+async function initApp() {
+  var ok = await load();
+  if (!ok) {
+    localStorage.removeItem("logbook-token");
+    token = null;
+    document.getElementById("login").style.display = "block";
+    document.getElementById("app").style.display = "none";
+    document.getElementById("login-err").textContent = "session expired — sign in again";
+    return;
+  }
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  render();
+  /* The live tail is only live if it refreshes. Cheap: one indexed query. */
+  setInterval(refresh, 60000);
+}
+
+document.getElementById("login-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  document.getElementById("login-err").textContent = "";
+  var resp = await fetch("/api/logbook/auth", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: document.getElementById("password").value })
+  });
+  if (!resp.ok) { document.getElementById("login-err").textContent = "incorrect password"; return; }
+  var d = await resp.json();
+  token = d.token;
+  localStorage.setItem("logbook-token", token);
+  initApp();
+});
+
+if (token) initApp();
+</script>
+</body>
+</html>

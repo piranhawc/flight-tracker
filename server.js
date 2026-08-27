@@ -52,6 +52,7 @@ const apa = require("./apa-sabre-client");
 const apaLogbook = require("./apa-logbook-client");
 const crewCache = require("./crew-cache");
 const friends = require("./friends-client");
+const visitorLog = require("./visitor-log");
 const agentmail = require("./agentmail-client");
 const signupTracker = require("./signup-tracker");
 let signupTrackerReady = false;
@@ -157,6 +158,17 @@ function saveCache(file, data) {
 // daily commute-week schedule refresh) — Mike toggles it from the logbook
 // page when he isn't commuting, since those calls cost real FA money.
 // (settings block moved above first use — see top of file)
+
+// Request log first, so it sees every route including the static ones it
+// chooses to skip. It records on res.finish and never blocks the response.
+let visitorLogReady = false;
+try {
+  visitorLog.init();
+  visitorLogReady = true;
+  app.use(visitorLog.middleware());
+} catch (e) {
+  console.error(`[visitors] init failed: ${e.message} — visitor stats disabled`);
+}
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
@@ -4290,6 +4302,46 @@ app.post("/api/logbook/refresh-crew-names", logbookAuth, async (req, res) => {
   }
   if (replaced > 0) saveLogbook();
   res.json({ replaced, looked_up: empPlaceholders.size, sabre_pairings_fetched: sabreFetched });
+});
+
+// --- visitor stats -------------------------------------------------------
+// The site is public; these numbers are not. Behind the logbook password.
+// Friend share-links are the one place a visitor has a name: the log keeps
+// only an 8-char prefix of the token, matched back to a friend here so the
+// full secret is never copied into a second store.
+let friendTokenCache = { at: 0, map: new Map() };
+async function friendNameByTokenPrefix() {
+  if (Date.now() - friendTokenCache.at < 10 * 60 * 1000) return friendTokenCache.map;
+  const map = new Map();
+  try {
+    const list = await friends.listFriends();
+    for (const f of (list && list.friends) || list || []) {
+      if (f && f.token) map.set(String(f.token).slice(0, 8), f.name || f.email || "friend");
+    }
+    friendTokenCache = { at: Date.now(), map };
+  } catch (e) {
+    // Service down: fall back to whatever we resolved last, names just go blank.
+    console.log(`[visitors] friend lookup unavailable: ${e.message}`);
+  }
+  return friendTokenCache.map;
+}
+
+app.get("/api/visitors/summary", logbookAuth, async (req, res) => {
+  if (!visitorLogReady) return res.status(503).json({ error: "visitor log not initialized" });
+  try {
+    visitorLog.flush();  // include the last couple of seconds
+    const data = visitorLog.summary({
+      days: req.query.days,
+      humansOnly: req.query.humans === "1" || req.query.humans === "true",
+    });
+    const names = await friendNameByTokenPrefix();
+    const name = (t) => (t ? names.get(String(t)) || null : null);
+    for (const row of data.top_ips) row.friend = name(row.token);
+    for (const row of data.recent) row.friend = name(row.token);
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, "0.0.0.0", () => {

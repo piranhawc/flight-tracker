@@ -1,0 +1,156 @@
+/* Shared design system for the flight-tracker admin pages, lifted from
+   regard-league's static/style.css so the two apps read as one system.
+   Page-specific rules stay in the page. Data hue is the league's chart accent
+   (#4ea1ff); --series-dim is the same hue one step down, validated together as
+   an ordinal ramp against this surface (monotone lightness, light end 3.41:1).
+   Used by: stats.html, visitors.html */
+/* Design tokens lifted from regard-league's style.css so the two apps read as
+   one system. Data hue is the league's chart accent (#4ea1ff); the dim step is
+   the same hue one stop down. Both validated against this surface:
+   ordinal ramp, monotone L, light end 3.41:1 — see scripts/validate_palette.js. */
+:root {
+  --bg: #0a0a0c;
+  --surface: #141518;
+  --surface-2: #1b1c20;
+  --ink: #f5f6f7;
+  --ink-2: #c3c7cd;
+  --muted: #80858d;
+  --border: #232529;
+  --border-2: #2d2f34;
+  --series-1: #4ea1ff;
+  --series-dim: #2f6ea8;
+  --track: #1f2126;
+  --up: #00c805;
+  --down: #ff5b52;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --radius: 12px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  letter-spacing: -0.005em; -webkit-font-smoothing: antialiased;
+}
+a { color: var(--ink); text-decoration: none; }
+
+/* ---- masthead ---- */
+.masthead { position: sticky; top: 0; z-index: 40; background: rgba(10,10,12,0.78);
+  backdrop-filter: saturate(140%) blur(12px); border-bottom: 1px solid var(--border); }
+.masthead-inner { max-width: 1080px; margin: 0 auto; display: flex; align-items: center;
+  gap: 1.25rem; padding: 0.85rem 1.5rem; }
+.brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 1.12rem;
+  letter-spacing: -0.02em; white-space: nowrap; }
+.brand-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--series-1);
+  box-shadow: 0 0 0 3px rgba(78,161,255,0.16); }
+.nav { margin-left: auto; display: flex; align-items: center; gap: 1.4rem; flex-wrap: wrap; }
+.navlink { color: var(--muted); font-size: 0.875rem; font-weight: 500; }
+.navlink:hover, .navlink.on { color: var(--ink); }
+
+/* ---- layout ---- */
+.container { max-width: 1080px; margin: 0 auto; padding: 2.25rem 1.5rem 4rem; }
+h1 { font-weight: 800; letter-spacing: -0.03em; line-height: 1.08; font-size: 2rem; margin: 0 0 0.65rem; }
+.lede { color: var(--ink-2); font-size: 1.05rem; max-width: 60ch; margin: 0; }
+.muted-note { color: var(--muted); font-size: 0.82rem; }
+
+/* ---- filter row (one row, above the charts) ---- */
+.filters { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 1.4rem 0 0; }
+.chip { background: var(--surface); border: 1px solid var(--border-2); color: var(--ink-2);
+  border-radius: 999px; padding: 0.35rem 0.9rem; font: inherit; font-size: 0.85rem;
+  font-weight: 600; cursor: pointer; transition: border-color .14s, color .14s; }
+.chip:hover { color: var(--ink); border-color: var(--muted); }
+.chip[aria-pressed="true"] { background: var(--series-1); border-color: var(--series-1); color: #04203f; }
+
+/* ---- stat tiles ---- */
+.summary { display: flex; flex-wrap: wrap; gap: 2.5rem; margin: 1.4rem 0 1.75rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1.4rem 1.6rem; }
+.stat { display: flex; flex-direction: column; gap: 0.2rem; }
+.stat-label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase;
+  letter-spacing: 0.05em; font-weight: 600; }
+/* Proportional figures on the hero numbers — tabular-nums makes a 3-digit
+   value look loose at display size. Tabular is kept for table/axis columns. */
+.stat-big { font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; }
+.stat-big .unit { font-size: 1rem; font-weight: 600; color: var(--muted); margin-left: 0.15rem; }
+.stat-mid { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
+
+/* ---- cards ---- */
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; align-items: start; }
+@media (max-width: 760px) { .cards { grid-template-columns: 1fr; } }
+/* min-width:0 because a grid item defaults to min-width:auto — without it a
+   wide table inside a card stretches its grid track and the whole page
+   scrolls sideways on a phone, instead of the table scrolling in its card. */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1.15rem 1.3rem 1.3rem; margin-bottom: 1.25rem; min-width: 0; }
+.cardhead { display: flex; align-items: baseline; justify-content: space-between;
+  gap: 1rem; margin-bottom: 0.9rem; }
+.cardhead h2 { font-size: 1.02rem; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+.linkbtn { background: none; border: none; padding: 0; cursor: pointer; color: var(--series-1);
+  font: inherit; font-size: 0.8rem; font-weight: 600; }
+
+/* ---- month bar chart (CSS bars: container grows to include the axis band) ---- */
+.chart { position: relative; }
+/* The right gutter is where the gridline values live, so a value can never
+   land on top of a bar — layering them would just trade collision for
+   occlusion. Bars and ticks share the same content box, so they stay aligned. */
+.plot { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 190px;
+  padding-right: 38px; }
+.gridline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border);
+  pointer-events: none; }
+.gridline span { position: absolute; right: 0; top: -0.95em; font-size: 0.65rem;
+  color: var(--muted); font-variant-numeric: tabular-nums; }
+.col { flex: 1 1 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end;
+  position: relative; cursor: default; min-width: 0; }
+.bar { background: var(--series-dim); border-radius: 4px 4px 0 0; min-height: 2px;
+  transition: background .12s; }
+.col.is-max .bar { background: var(--series-1); }
+.col:hover .bar { background: var(--series-1); }
+.col .peak { position: absolute; left: 50%; transform: translateX(-50%); font-size: 0.65rem;
+  font-weight: 700; color: var(--series-1); white-space: nowrap; }
+.axis { display: flex; gap: 2px; margin-top: 0.4rem; padding-right: 38px; }
+.axis .tick { flex: 1 1 0; text-align: center; font-size: 0.62rem; color: var(--muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 0; }
+
+/* ---- ranked horizontal bars ---- */
+.hbars { display: flex; flex-direction: column; gap: 0.5rem; }
+.hb { display: grid; grid-template-columns: minmax(74px, auto) 1fr auto; align-items: center;
+  gap: 0.7rem; font-size: 0.85rem; }
+.hb .lbl { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hb .track { background: var(--track); border-radius: 4px; height: 9px; overflow: hidden; }
+.hb .fill { display: block; height: 100%; background: var(--series-dim); border-radius: 4px; }
+.hb:first-child .fill { background: var(--series-1); }
+.hb .n { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums;
+  font-size: 0.8rem; white-space: nowrap; }
+
+/* ---- tables ---- */
+.scrollx { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+/* Let a wide table scroll inside its card instead of squeezing columns until
+   the dates wrap to three lines on a phone. */
+.scrollx .grid { min-width: 540px; }
+.grid { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.grid thead th { text-align: left; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted); padding: 0.5rem; border-bottom: 1px solid var(--border);
+  white-space: nowrap; }
+.grid tbody td { padding: 0.62rem 0.5rem; border-bottom: 1px solid var(--border); }
+.grid tbody tr:last-child td { border-bottom: none; }
+.grid .num { font-variant-numeric: tabular-nums; }
+.grid td.r, .grid th.r { text-align: right; }
+
+/* ---- tooltip ---- */
+#tip { position: fixed; z-index: 60; pointer-events: none; opacity: 0;
+  transition: opacity .1s; background: var(--surface-2); border: 1px solid var(--border-2);
+  border-radius: 8px; padding: 0.45rem 0.6rem; font-size: 0.78rem; line-height: 1.35;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.45); white-space: nowrap; }
+#tip .t-key { color: var(--muted); }
+#tip b { color: var(--ink); }
+
+/* ---- login ---- */
+#login { max-width: 340px; margin: 4rem auto; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; }
+.input { width: 100%; background: var(--bg); border: 1px solid var(--border-2); border-radius: 10px;
+  color: var(--ink); padding: 0.7rem 0.85rem; font-size: 0.95rem; font-family: inherit; }
+.input:focus { outline: none; border-color: var(--series-1); box-shadow: 0 0 0 3px rgba(78,161,255,0.16); }
+.btn { display: inline-block; background: var(--series-1); color: #04203f; font-weight: 700;
+  font-size: 0.95rem; padding: 0.65rem 1.3rem; border: none; border-radius: 999px; cursor: pointer;
+  font-family: inherit; margin-top: 0.8rem; }
+.err { color: var(--down); font-size: 0.85rem; min-height: 1.2em; }
+#app { display: none; }
