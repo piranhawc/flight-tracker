@@ -90,12 +90,15 @@ h1 { font-weight: 800; letter-spacing: -0.03em; line-height: 1.08; font-size: 2r
 
 /* ---- month bar chart (CSS bars: container grows to include the axis band) ---- */
 .chart { position: relative; }
-.plot { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 190px; }
+/* The right gutter is where the gridline values live, so a value can never
+   land on top of a bar — layering them would just trade collision for
+   occlusion. Bars and ticks share the same content box, so they stay aligned. */
+.plot { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 190px;
+  padding-right: 38px; }
 .gridline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border);
   pointer-events: none; }
 .gridline span { position: absolute; right: 0; top: -0.95em; font-size: 0.65rem;
-  color: var(--muted); font-variant-numeric: tabular-nums; background: var(--surface);
-  padding-left: 0.35rem; }
+  color: var(--muted); font-variant-numeric: tabular-nums; }
 .col { flex: 1 1 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end;
   position: relative; cursor: default; min-width: 0; }
 .bar { background: var(--series-dim); border-radius: 4px 4px 0 0; min-height: 2px;
@@ -104,7 +107,7 @@ h1 { font-weight: 800; letter-spacing: -0.03em; line-height: 1.08; font-size: 2r
 .col:hover .bar { background: var(--series-1); }
 .col .peak { position: absolute; left: 50%; transform: translateX(-50%); font-size: 0.65rem;
   font-weight: 700; color: var(--series-1); white-space: nowrap; }
-.axis { display: flex; gap: 2px; margin-top: 0.4rem; }
+.axis { display: flex; gap: 2px; margin-top: 0.4rem; padding-right: 38px; }
 .axis .tick { flex: 1 1 0; text-align: center; font-size: 0.62rem; color: var(--muted);
   font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 0; }
 
@@ -121,6 +124,9 @@ h1 { font-weight: 800; letter-spacing: -0.03em; line-height: 1.08; font-size: 2r
 
 /* ---- tables ---- */
 .scrollx { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+/* Let a wide table scroll inside its card instead of squeezing columns until
+   the dates wrap to three lines on a phone. */
+.scrollx .grid { min-width: 540px; }
 .grid { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 .grid thead th { text-align: left; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em;
   text-transform: uppercase; color: var(--muted); padding: 0.5rem; border-bottom: 1px solid var(--border);
@@ -408,10 +414,17 @@ function renderMonths(a) {
            '<div class="bar" style="height:' + pct.toFixed(2) + '%"></div></div>';
   }).join("");
 
-  /* Label every 3rd month so ticks never collide; all months stay hoverable. */
-  var every = months.length > 24 ? 3 : months.length > 12 ? 2 : 1;
+  /* Label frequency comes from the measured width, not the month count — at
+     390px a "label every 3rd" rule still overlaps. A tick needs ~48px. All
+     months stay hoverable regardless of whether they carry a label. */
+  var avail = plot.clientWidth - 38;
+  var perLabel = 48;
+  var room = Math.max(1, Math.floor(avail / perLabel));
+  var every = Math.max(1, Math.ceil(months.length / room));
   axis.innerHTML = months.map(function(m, i) {
-    return '<div class="tick">' + (i % every === 0 ? monthLabel(m) : "") + "</div>";
+    /* Count back from the newest month so the most recent one is always labeled. */
+    var fromEnd = months.length - 1 - i;
+    return '<div class="tick">' + (fromEnd % every === 0 ? monthLabel(m) : "") + "</div>";
   }).join("");
 
   Array.prototype.forEach.call(plot.querySelectorAll(".col"), function(col) {
@@ -574,6 +587,14 @@ document.getElementById("login-form").addEventListener("submit", async function(
   token = d.token;
   localStorage.setItem("logbook-token", token);
   initApp();
+});
+
+/* Axis label density is width-derived, so a resize has to recompute it. */
+var resizeTimer = null;
+window.addEventListener("resize", function() {
+  if (!allLegs.length) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function() { hideTip(); render(); }, 150);
 });
 
 if (token) initApp();
