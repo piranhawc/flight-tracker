@@ -122,7 +122,8 @@ const NAMED_BOTS = [
   [/bytespider/i, "Bytespider"], [/censys/i, "Censys"], [/expanse|paloalto/i, "Expanse"],
 ];
 const TOOLS = [
-  [/^curl\//i, "curl"], [/wget/i, "wget"], [/python-requests|python-httpx|aiohttp/i, "python"],
+  [/^curl\//i, "curl"], [/wget/i, "wget"],
+  [/python-requests|python-httpx|python-urllib|aiohttp|urllib/i, "python"],
   [/go-http-client/i, "Go"], [/okhttp/i, "OkHttp"], [/java\//i, "Java"], [/postman/i, "Postman"],
   [/node-fetch|undici/i, "Node"], [/uptime|monitor|pingdom|statuscake/i, "uptime check"],
 ];
@@ -294,8 +295,14 @@ function summary(opts) {
     clients: q(`SELECT client, COUNT(DISTINCT ip) visitors, COUNT(*) hits, MAX(is_bot) is_bot
                 FROM request_log WHERE ts >= ?${botFilter}
                 GROUP BY client ORDER BY hits DESC LIMIT 14`, since),
+    // is_bot here is the DOMINANT client's verdict, not MAX(is_bot): one curl
+    // from a laptop should not brand that address a bot forever, and the flag
+    // sits next to the client name it has to agree with. Per-row is_bot is
+    // what the People-only filter uses, and that stays exact.
     top_ips: q(`SELECT r.ip, COUNT(*) hits, COUNT(DISTINCT r.path) paths,
-                  MAX(r.ts) last_seen, MIN(r.ts) first_seen, MAX(r.is_bot) is_bot,
+                  MAX(r.ts) last_seen, MIN(r.ts) first_seen,
+                  (SELECT b.is_bot FROM request_log b WHERE b.ip = r.ip
+                     GROUP BY b.client ORDER BY COUNT(*) DESC LIMIT 1) is_bot,
                   MAX(r.is_lan) is_lan, h.host,
                   (SELECT client FROM request_log c WHERE c.ip = r.ip
                      GROUP BY client ORDER BY COUNT(*) DESC LIMIT 1) client,
