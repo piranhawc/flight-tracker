@@ -6,13 +6,22 @@ There are **two independent ways** this system can learn Mike's flying
 schedule. Only one is active at a time, and you can switch between them
 without redeploying. Both are retained on purpose.
 
-| | **A. APA official calendar** (active) | **B. Sabre/APA scraping** (paused) |
+| | **A. APA official calendar** (standby) | **B. Sabre/APA scraping** (ACTIVE) |
 |---|---|---|
 | Source | APA Calendar Sync → Google Calendar → Home Assistant | DECS HI1/HI2/HI3 + OAC pairing API |
 | Credentials | HA long-lived token (already in container) | Mike's APA web + Sabre DECS logins |
-| Logs into alliedpilots.org? | **No** | Yes (Playwright + requests) |
+| Logs into alliedpilots.org? | **No** | Yes (`apa_login_requests.py`, no browser) |
 | Gives | flight legs, times, routes, DH flag, trip SEQ | all of that **plus crew names, reserve days, FTG/OX reconciliation, layover detail** |
-| Status | live since 2026-08-11 | paused since 2026-07-30 |
+| Status | live 2026-08-11 → 08-31, kept as fallback | **restored 2026-08-31** (`calendar_source=ics`) |
+
+> **Current state (2026-08-31):** Mike asked to go back to source B — he's
+> satisfied the login pace is fine. `calendar_source` is `ics`, the hourly ICS
+> rebuild is back on cron, and the session refreshes 4×/day. Source A is
+> untouched and one setting away if B ever gets blocked again.
+>
+> Switching over was a strict gain: the ICS feed carried **16 trips vs the
+> Google calendar's 14** — it also had 31078 (Aug 13) and 9029, the Aug-27
+> reserve assignment that only HI1 ever knew about.
 
 ---
 
@@ -174,16 +183,27 @@ known-good jar. **Do not retry a rejected login** — ADFS Extranet Smart
 Lockout trips around 3–5 failures. Diagnose with
 `~/.openclaw/scripts/check_apa_creds.py`, which prints no secrets.
 
-**Five pause layers** (all must be lifted to resume) — see
-`memory/apa-sync-paused-2026-07.md` for the authoritative list:
+**The five pause layers — all now lifted** (2026-08-31). Kept here because
+this is the checklist to re-pause against if AA ever objects again:
 
-1. Sentinel file `~/.openclaw/APA_SYNC_PAUSED` — scripts exit immediately.
-2. Guards at the top of `apa_login_capture.py` and `apa_trips_to_ics.py`.
-3. **Root LaunchDaemon `com.mikeg.apa-login-capture.plist` still fires hourly**
-   — the sentinel is what stops it. Commenting cron alone did NOT.
-4. Crontab lines for the ICS build + login capture are commented out.
-5. `apa_sync_enabled: false` in the tracker's settings — gates every poller
-   and manual endpoint (409).
+| # | Layer | State |
+|---|---|---|
+| 1 | Sentinel `~/.openclaw/APA_SYNC_PAUSED` | removed |
+| 2 | Guards in `apa_login_capture.py` / `apa_trips_to_ics.py` | still present, sentinel-driven |
+| 3 | Root LaunchDaemon `com.mikeg.apa-login-capture.plist` | **disabled on disk** (`.disabled-20260821-161949`) — Playwright is dead, see below |
+| 4 | Crontab: ICS build + session refresh | **live** (`7 * * * *` and `35 2,8,14,20 * * *`) |
+| 5 | `apa_sync_enabled` in tracker settings | `true` |
+
+To re-pause everything in one move: `touch ~/.openclaw/APA_SYNC_PAUSED`. That
+alone stops the ICS build, the login, the sync scheduler and the service's
+auto-recovery, because every one of them checks it. The crontab lines can stay
+as they are.
+
+**The login cron runs `apa_login_requests.py`, never `apa_login_capture.py`.**
+The Playwright capture is what APA's 2026-07-29 edge rule refuses; it must not
+go back on a timer. The 4×/day cadence exists because ADFS sessions last hours
+— without it the hourly ICS build would start failing `rc=2 cookies expired`
+partway through each day, since the builder does not log in for itself.
 
 ---
 
@@ -265,13 +285,29 @@ Sabre access at all) and only reaches Sabre inside two narrow windows:
 
 | Trigger | When | What runs |
 |---|---|---|
+| **ICS rebuild** | hourly (`7 * * * *`) | `apa_trips_to_ics.py --scp` — the schedule feed itself |
+| **Session refresh** | 4×/day (`35 2,8,14,20`) | `apa_login_requests.py` |
 | **New trip** | a trip appears in the calendar we've never seen | logbook import (fills crew immediately) |
 | Pre-trip | first leg departure **− 2h** | logbook import (fills crew for the trip) |
 | Post-trip | last leg arrival **+ 1h** | logbook import **+** reconcile (catches FTG / drops / trades) |
 | HI1/HI2 | every **3–4 days**, randomized time of day | `/schedule/current` refresh |
 
-Roughly **2–3 syncs per trip** plus ~8–10 HI refreshes a month — an order of
-magnitude below the old hourly polling, and irregular by design.
+**Request budget in steady state** (measured 2026-08-31, not estimated):
+
+- ICS rebuild: **1 OAC POST** (`/HSS/GetHeaders`, the pairing list) per run.
+  The 132 historical pairings are served from `~/.openclaw/cache/ics-trip-events.json`
+  — a full rebuild of all of them completed in **one second**, so only genuinely
+  new trips cost a `/Pairing/GetPairingsDataTable` fetch. HI1/HI2/HI3 come from
+  the service's own 30–60 min cache.
+- So hourly ≈ **24 pairing-list POSTs/day** plus a handful of pairing fetches
+  when the schedule actually changes, plus **4 logins/day**.
+- Trip-driven logbook work is unchanged: ~2–3 syncs per trip.
+
+That is the same shape as the pre-pause design and stays inside the hourly cap
+in `memory/apa-polling-rate-limits.md`. What made the old setup expensive was
+never the ICS build — it was the *hourly Playwright login* (a full browser SSO
+round-trip every hour) and the tracker's own sub-hourly pollers, both of which
+stay off. `apa_auto_pollers` must remain `false`.
 
 - Cron: every 20 min (`9,29,49`) — almost always a no-op; it reads the
   calendar, compares to its state file, exits.
