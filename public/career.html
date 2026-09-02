@@ -198,11 +198,53 @@ async function doLogin() {
   var d = await r.json();
   if (!r.ok) { document.getElementById("login-err").textContent = d.error || "login failed"; return; }
   token = d.token; PILOT = d.pilot;
+  // Remember it, so a reload doesn't send them back to the login form.
+  try { localStorage.setItem(PUBLIC_TOKEN_KEY, token); } catch(e) {}
   document.getElementById("login").style.display = "none";
   boot();
 }
 ["code","emp"].forEach(function(id){ document.getElementById(id).addEventListener("keydown", function(e){ if(e.key==="Enter") doLogin(); }); });
-function logout() { token=null; PILOT=null; document.getElementById("login").style.display="flex"; document.getElementById("login-err").textContent=""; }
+function logout() {
+  token=null; PILOT=null;
+  try { localStorage.removeItem(PUBLIC_TOKEN_KEY); } catch(e) {}
+  document.getElementById("login").style.display="flex";
+  document.getElementById("login-err").textContent="";
+}
+
+// --- share links -----------------------------------------------------------
+// A link of the form /career.html?k=<token> carries a session Mike minted for
+// one specific pilot, so a friend never types a code or an employee number.
+// The token is remembered, and stripped from the address bar immediately: it
+// is the credential, and leaving it in the URL puts it in screenshots, browser
+// history and anything they paste the link into.
+var PUBLIC_TOKEN_KEY = "career-public-token";
+
+function adoptShareToken() {
+  var k = null;
+  try { k = new URLSearchParams(location.search).get("k"); } catch (e) {}
+  if (k) {
+    try { localStorage.setItem(PUBLIC_TOKEN_KEY, k); } catch (e) {}
+    try { history.replaceState({}, "", location.pathname); } catch (e) {}
+    return k;
+  }
+  try { return localStorage.getItem(PUBLIC_TOKEN_KEY); } catch (e) { return null; }
+}
+
+async function tryStoredSession() {
+  var k = adoptShareToken();
+  if (!k) return false;
+  token = k;
+  var r = await fetch("/api/career/public/summary", { headers: authHeaders() });
+  if (!r.ok) {                       // revoked or expired — fall back to the form
+    token = null;
+    try { localStorage.removeItem(PUBLIC_TOKEN_KEY); } catch (e) {}
+    return false;
+  }
+  document.getElementById("login").style.display = "none";
+  await boot();
+  return true;
+}
+tryStoredSession();
 
 async function boot() {
   var r = await fetch("/api/career/public/summary", { headers: authHeaders() });

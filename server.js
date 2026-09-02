@@ -2421,6 +2421,25 @@ app.post("/api/career/public/login", express.json(), async (req, res) => {
   res.json({ token, pilot: v.pilot });
 });
 
+// Mint a career share link for one pilot. Mike-only (logbook auth). The token
+// IS the credential — anyone holding the link sees that pilot's standing — so
+// it's bound to a single employee number at creation and nothing else.
+app.post("/api/career/share", logbookAuth, express.json(), (req, res) => {
+  if (!careerReady) return res.status(503).json({ error: "career not initialized" });
+  const emp = String((req.body && req.body.emp) || "").trim();
+  const pilot = career.getPilot(emp);
+  if (!pilot) return res.status(422).json({ error: `employee number ${emp || "(blank)"} is not in the seniority list` });
+  const token = crypto.randomBytes(24).toString("hex");
+  const sess = { emp: pilot.emp, name: `${pilot.last}, ${pilot.initial}`, aa_sen: pilot.aa_sen };
+  try { career.savePublicSession(token, sess); }
+  catch (e) { return res.status(500).json({ error: `could not persist share session: ${e.message}` }); }
+  const base = process.env.PUBLIC_BASE_URL || "https://whereis.mikegoebel.net";
+  res.json({
+    url: `${base}/career.html?k=${token}`,
+    pilot: { emp: pilot.emp, name: sess.name, aa_sen: pilot.aa_sen, hire: pilot.hire, retire: pilot.retire },
+  });
+});
+
 app.get("/api/career/public/summary", publicAuth, (req, res) => {
   if (!careerGuard(res)) return;
   try {
