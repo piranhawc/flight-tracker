@@ -2185,7 +2185,9 @@ app.post("/api/career/config", careerAuth, express.json(), (req, res) => {
 
 app.post("/api/career/roster/refresh", careerAuth, async (req, res) => {
   if (!careerGuard(res)) return;
-  try { res.json(await career.refreshRoster(true)); }
+  // Default: re-import from the service (cheap, uses its cache). Pass
+  // {"deep":true} to also make the service re-download the PDF from APA.
+  try { res.json(await career.refreshRoster(true, !!(req.body && req.body.deep))); }
   catch (e) { res.status(502).json({ error: e.message }); }
 });
 

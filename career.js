@@ -162,12 +162,15 @@ function setConfig(patch) {
 // --- roster --------------------------------------------------------------
 function rosterCount() { try { return db.prepare("SELECT COUNT(*) n FROM career_roster").get().n; } catch (e) { return 0; } }
 
-async function refreshRoster(force = false) {
-  const last = Number(metaGet("roster_fetched_ms") || 0);
-  if (!force && rosterCount() > 1000 && Date.now() - last < ROSTER_TTL_MS) {
+// `force` bypasses OUR cache and re-imports from the service. `forceUpstream`
+// additionally tells the service to re-download the PDF from APA — that is the
+// expensive one, so it is opt-in and not what the refresh button sends.
+async function refreshRoster(force = false, forceUpstream = false) {
+  const nextCheck = Number(metaGet("roster_next_check_ms") || 0);
+  if (!force && rosterCount() > 1000 && Date.now() < nextCheck) {
     return { refreshed: false, count: rosterCount(), updated_label: metaGet("roster_updated_label") };
   }
-  const url = `${APA_SABRE_BASE}/career/seniority${force ? "?force=true" : ""}`;
+  const url = `${APA_SABRE_BASE}/career/seniority${forceUpstream ? "?force=true" : ""}`;
   const r = await fetch(url, { signal: AbortSignal.timeout(180000) });
   if (!r.ok) throw new Error(`seniority fetch failed: ${r.status}`);
   const data = await r.json();
@@ -184,10 +187,24 @@ async function refreshRoster(force = false) {
     }
   });
   tx(pilots);
+  const label = data.updated_label || "";
+  const prevLabel = metaGet("roster_updated_label") || "";
   metaSet("roster_fetched_ms", Date.now());
-  metaSet("roster_updated_label", data.updated_label || "");
+  metaSet("roster_updated_label", label);
   metaSet("roster_count", pilots.length);
-  return { refreshed: true, count: pilots.length, updated_label: data.updated_label || "" };
+  // If the list EDITION didn't move, the service handed back the same
+  // publication it had before — which is what happens when its own PDF fetch
+  // is failing and it falls back to serving stale. Stamping a fresh monthly
+  // TTL in that case is how Mike's standing sat on the July list for six weeks
+  // while a refresh ran every 6h and "succeeded" each time. Same edition means
+  // check back tomorrow, not next month; it costs nothing, because the service
+  // answers from its own cache unless ITS ttl has lapsed.
+  const moved = label && label !== prevLabel;
+  metaSet("roster_next_check_ms", Date.now() + (moved ? ROSTER_TTL_MS : 24 * 60 * 60 * 1000));
+  if (!moved) {
+    console.log(`[career] roster edition unchanged (${label || "unlabelled"}) — re-checking in 24h`);
+  }
+  return { refreshed: true, count: pilots.length, updated_label: label, edition_moved: !!moved };
 }
 
 function toInt(x) { const n = parseInt(x, 10); return Number.isFinite(n) ? n : null; }
