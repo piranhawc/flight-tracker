@@ -1078,19 +1078,41 @@ console.log(`Loaded ${Object.keys(photoCache).length} cached photos`);
 
 function savePhotoCache() { saveCache(PHOTO_CACHE_FILE, photoCache); }
 
+// Planespotters began enforcing a contact URL in the User-Agent (403 with
+// "Server User-Agent strings must include a contact URL or email"). The bare
+// "FlightTracker/1.0" was refused — and because a refusal was cached forever
+// with no timestamp, 105 of 133 registrations went permanently blank and the
+// aircraft thumbnails disappeared from the tracker.
+//
+// The site URL is the contact, deliberately not Mike's email address: this is
+// a header sent to a third party on every lookup.
+const PHOTO_UA = "FlightTracker/1.1 (+https://whereis.mikegoebel.net)";
+// A registration with no photo is worth re-asking about occasionally — new
+// photos get uploaded. An upstream REFUSAL is never cached at all: it says
+// nothing about whether a photo exists, and caching it is what turned a
+// change in their policy into a permanent outage here.
+const PHOTO_MISS_TTL = 7 * 24 * 60 * 60 * 1000;
+
+function photoCacheHit(reg) {
+  const c = photoCache[reg];
+  if (!c) return null;
+  if (c.thumbnail) return c;          // a real photo doesn't go stale
+  if (!c._missAt) return null;        // legacy negative from the outage → re-fetch
+  return (Date.now() - c._missAt < PHOTO_MISS_TTL) ? c : null;
+}
+
 app.get("/api/photo/:reg", async (req, res) => {
   const { reg } = req.params;
-  if (photoCache[reg]) return res.json(photoCache[reg]);
+  const hit = photoCacheHit(reg);
+  if (hit) return res.json(hit);
 
   try {
-    const resp = await fetch(`https://api.planespotters.net/pub/photos/reg/${reg}`, {
-      headers: { "User-Agent": "FlightTracker/1.0" }
+    const resp = await fetch(`https://api.planespotters.net/pub/photos/reg/${encodeURIComponent(reg)}`, {
+      headers: { "User-Agent": PHOTO_UA }
     });
     if (!resp.ok) {
-      const result = { thumbnail: null, full: null };
-      photoCache[reg] = result;
-      savePhotoCache();
-      return res.json(result);
+      console.log(`[photo] planespotters ${resp.status} for ${reg} — not caching`);
+      return res.json({ thumbnail: null, full: null });
     }
     const data = await resp.json();
     const photo = data.photos && data.photos[0];
@@ -1100,10 +1122,12 @@ app.get("/api/photo/:reg", async (req, res) => {
       photographer: photo ? photo.photographer : null,
       link: photo ? photo.link : null,
     };
+    if (!result.thumbnail) result._missAt = Date.now();
     photoCache[reg] = result;
     savePhotoCache();
     res.json(result);
   } catch (e) {
+    console.log(`[photo] lookup failed for ${reg}: ${e.message} — not caching`);
     res.json({ thumbnail: null, full: null });
   }
 });
