@@ -8,7 +8,13 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 
-const DB_PATH = process.env.CREW_DB_PATH || "/data/flight-tracker.db";
+// /app/data is the bind-mounted (persistent) volume; /data is inside the
+// container's ephemeral layer. This defaulted to /data, so the record of every
+// paid FlightAware call was destroyed on each deploy — the same bug crew-cache
+// had (fixed 2026-07-06, 918e794) and this file was missed. Spend tracking that
+// resets to zero whenever you ship is spend tracking that cannot answer "is
+// someone abusing this?".
+const DB_PATH = process.env.CREW_DB_PATH || "/app/data/flight-tracker.db";
 
 let db = null;
 
