@@ -170,6 +170,27 @@ try {
   console.error(`[visitors] init failed: ${e.message} — visitor stats disabled`);
 }
 
+// index.html carries the CARTO basemap key, and THIS REPO IS PUBLIC on GitHub
+// — so the file on disk holds a __CARTO_KEY__ placeholder and the real key is
+// substituted here, from the environment, on the way out. Rendered once and
+// cached; falls through to the static file if anything goes wrong, which just
+// means the map renders with CARTO's watermark rather than not at all.
+const CARTO_KEY = process.env.CARTO_KEY || "";
+let indexHtmlCache = null;
+app.get(["/", "/index.html"], (req, res, next) => {
+  try {
+    if (indexHtmlCache === null) {
+      const raw = fs.readFileSync(path.join(__dirname, "public", "index.html"), "utf8");
+      indexHtmlCache = raw.split("__CARTO_KEY__").join(CARTO_KEY);
+      if (!CARTO_KEY) console.log("[map] CARTO_KEY not set — basemap will show the watermark");
+    }
+    res.type("html").send(indexHtmlCache);
+  } catch (e) {
+    console.error(`[map] index render failed: ${e.message} — serving static`);
+    next();
+  }
+});
+
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
 

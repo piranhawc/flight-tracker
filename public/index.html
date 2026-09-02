@@ -613,9 +613,29 @@ function showPhoto(thumbUrl, fullUrl, reg, photographer) {
   document.body.appendChild(overlay);
 }
 
+// Substituted by the server from the CARTO_KEY env var (see server.js). It
+// stays a placeholder in the repo, which is public. Without a key CARTO still
+// serves tiles, just watermarked — so an unsubstituted placeholder degrades
+// rather than breaking the map.
+var CARTO_KEY = "__CARTO_KEY__";
+function cartoTileUrl() {
+  var url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+  var placeholder = "__" + "CARTO_KEY" + "__";   // split so it isn't substituted here
+  return (CARTO_KEY && CARTO_KEY !== placeholder) ? url + "?key=" + CARTO_KEY : url;
+}
+
 function initMap() {
+  // Attribution is ON deliberately: keeping the CARTO + OpenStreetMap credit
+  // visible is the condition of the free basemap tier. Don't turn it off.
+  // attributionControl:false here only suppresses Leaflet's DEFAULT control at
+  // bottom-right, where it would sit under the zoom buttons; the explicit one
+  // below puts the same credit at bottom-left. The credit is not optional.
   map = L.map("map", { center:[39.8,-98.5], zoom:4, zoomControl:false, attributionControl:false });
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {maxZoom:19}).addTo(map);
+  L.tileLayer(cartoTileUrl(), {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
+  }).addTo(map);
+  L.control.attribution({ position: "bottomleft", prefix: false }).addTo(map);
   L.control.zoom({position:"bottomright"}).addTo(map);
   layerGroup = L.layerGroup().addTo(map);
 }
