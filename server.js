@@ -2088,14 +2088,45 @@ const crypto = require("crypto");
 let logbook = loadCache(LOGBOOK_FILE);
 if (!logbook || !logbook.legs) logbook = { legs: {} };
 let crew = loadCache(CREW_FILE) || {};
-const logbookSessions = new Set();
+// Sessions used to be Sets in memory, so EVERY deploy signed Mike out of the
+// logbook, stats, visitors and career pages — a dozen times in a busy day.
+// Tokens are now signed instead of stored: the server keeps no session state,
+// so a restart can't invalidate anything. The key is derived from the logbook
+// password, which means changing that password still revokes every token
+// everywhere, on purpose.
+const SESSION_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+const sessionKey = crypto.createHash("sha256")
+  .update("flight-tracker/session/v1:" + LOGBOOK_PASSWORD).digest();
+
+function issueToken(surface) {
+  const body = Buffer.from(JSON.stringify({ s: surface, exp: Date.now() + SESSION_TTL_MS }))
+    .toString("base64url");
+  const sig = crypto.createHmac("sha256", sessionKey).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+function verifyToken(token, surfaces) {
+  const [body, sig] = String(token || "").split(".");
+  if (!body || !sig) return false;
+  const want = crypto.createHmac("sha256", sessionKey).update(body).digest("base64url");
+  // Constant-time compare; Buffers must match in length or timingSafeEqual throws.
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  try {
+    const p = JSON.parse(Buffer.from(body, "base64url").toString());
+    if (!p || typeof p.exp !== "number" || Date.now() > p.exp) return false;
+    return surfaces.includes(p.s);
+  } catch (e) { return false; }
+}
+
+const logbookSessions = new Set();   // legacy tokens, still honoured until restart
 function saveLogbook() { saveCache(LOGBOOK_FILE, logbook); }
 function saveCrew() { saveCache(CREW_FILE, crew); }
 
 function logbookAuth(req, res, next) {
   const auth = req.headers.authorization || "";
   const token = auth.replace(/^Bearer /, "");
-  if (token && logbookSessions.has(token)) return next();
+  if (token && (verifyToken(token, ["logbook"]) || logbookSessions.has(token))) return next();
   res.status(401).json({ error: "unauthorized" });
 }
 
@@ -2104,8 +2135,7 @@ app.post("/api/logbook/auth", express.json(), (req, res) => {
   if (!password || password !== LOGBOOK_PASSWORD) {
     return res.status(401).json({ error: "bad password" });
   }
-  const token = crypto.randomBytes(24).toString("hex");
-  logbookSessions.add(token);
+  const token = issueToken("logbook");
   loginLog.record({ surface: "logbook", identity: "Mike (owner)", ip: getClientIp(req), user_agent: req.headers["user-agent"] });
   res.json({ token });
 });
@@ -2117,7 +2147,8 @@ const friendsSessions = new Set();
 function friendsAuth(req, res, next) {
   const auth = req.headers.authorization || "";
   const token = auth.replace(/^Bearer /, "");
-  if (token && (friendsSessions.has(token) || logbookSessions.has(token))) return next();
+  if (token && (verifyToken(token, ["friends", "logbook"]) ||
+      friendsSessions.has(token) || logbookSessions.has(token))) return next();
   res.status(401).json({ error: "unauthorized" });
 }
 app.post("/api/friends/auth", express.json(), (req, res) => {
@@ -2125,8 +2156,7 @@ app.post("/api/friends/auth", express.json(), (req, res) => {
   if (!password || password !== FRIENDS_PASSWORD) {
     return res.status(401).json({ error: "bad password" });
   }
-  const token = crypto.randomBytes(24).toString("hex");
-  friendsSessions.add(token);
+  const token = issueToken("friends");
   loginLog.record({ surface: "friends", identity: "friend (shared pw)", ip: getClientIp(req), user_agent: req.headers["user-agent"] });
   res.json({ token });
 });
@@ -2137,14 +2167,14 @@ app.post("/api/friends/auth", express.json(), (req, res) => {
 const careerSessions = new Set();
 function careerAuth(req, res, next) {
   const token = (req.headers.authorization || "").replace(/^Bearer /, "");
-  if (token && (careerSessions.has(token) || logbookSessions.has(token))) return next();
+  if (token && (verifyToken(token, ["career", "logbook"]) ||
+      careerSessions.has(token) || logbookSessions.has(token))) return next();
   res.status(401).json({ error: "unauthorized" });
 }
 app.post("/api/career/auth", express.json(), (req, res) => {
   const { password } = req.body || {};
   if (!password || password !== CAREER_PASSWORD) return res.status(401).json({ error: "bad password" });
-  const token = crypto.randomBytes(24).toString("hex");
-  careerSessions.add(token);
+  const token = issueToken("career");
   loginLog.record({ surface: "career", identity: "Mike (owner)", ip: getClientIp(req), user_agent: req.headers["user-agent"] });
   res.json({ token });
 });
