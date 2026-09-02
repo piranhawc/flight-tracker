@@ -2421,6 +2421,16 @@ app.post("/api/career/public/login", express.json(), async (req, res) => {
   res.json({ token, pilot: v.pilot });
 });
 
+// A bookmarkable link to Mike's OWN retirement page. The token is scoped to
+// the career surface, not the logbook: a bookmark can end up in synced
+// browser data, a screenshot or shared history, and this way the worst case
+// is the retirement page rather than the logbook, stats, visitors and the
+// FlightAware rate-limit exemption.
+app.post("/api/career/me-link", logbookAuth, (req, res) => {
+  const base = process.env.PUBLIC_BASE_URL || "https://whereis.mikegoebel.net";
+  res.json({ url: `${base}/career-me.html?k=${issueToken("career")}`, expires_days: SESSION_TTL_MS / 864e5 });
+});
+
 // Mint a career share link for one pilot. Mike-only (logbook auth). The token
 // IS the credential — anyone holding the link sees that pilot's standing — so
 // it's bound to a single employee number at creation and nothing else.

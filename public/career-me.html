@@ -211,7 +211,25 @@
 </div>
 
 <script>
-var token = localStorage.getItem("logbook-token") || null;
+// Three ways in, in order:
+//   1. ?k=<token> from a bookmark link — a CAREER-SCOPED token, so a leaked
+//      bookmark opens the retirement page and nothing else. Kept under its own
+//      key, never written over the logbook token, and stripped from the URL.
+//   2. A career token remembered from a previous visit through that link.
+//   3. The logbook session, shared with the logbook/stats/visitors pages.
+var CAREER_TOKEN_KEY = "career-me-token";
+(function adoptCareerLink() {
+  try {
+    var k = new URLSearchParams(location.search).get("k");
+    if (k) {
+      localStorage.setItem(CAREER_TOKEN_KEY, k);
+      history.replaceState({}, "", location.pathname);
+    }
+  } catch (e) {}
+})();
+var token = null;
+try { token = localStorage.getItem(CAREER_TOKEN_KEY); } catch (e) {}
+if (!token) token = localStorage.getItem("logbook-token") || null;
 function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
 var SUMMARY = null, CONFIG = null, BASE_FLEETS = {}, TARGETS = [], AWARDS = null;
 
@@ -247,7 +265,13 @@ async function loadSeniority() {
   var s = d.series || [];
   lineChart("chartSeno", s.map(function(p){return p.year;}), s.map(function(p){return p.pilots_ahead;}), "#118ab2", "ahead");
 }
-function logout() { localStorage.removeItem("logbook-token"); token=null; document.getElementById("login").style.display="flex"; }
+function logout() {
+  // Clear BOTH, or a stale career-scoped token would sign you straight
+  // back in and "log out" would look broken.
+  try { localStorage.removeItem(CAREER_TOKEN_KEY); } catch(e) {}
+  localStorage.removeItem("logbook-token"); token=null;
+  document.getElementById("login").style.display="flex";
+}
 
 function fmtPeriod(p) { if (!p) return "?"; p = String(p); return p.slice(0,4) + "-" + p.slice(4,6); }
 function renderMeta() {
