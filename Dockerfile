@@ -14,6 +14,7 @@ COPY signup-tracker.js .
 COPY career.js .
 COPY login-log.js .
 COPY visitor-log.js .
+COPY abuse-guard.js .
 COPY pay-scales.json .
 COPY gates-seed.json .
 COPY public/ public/

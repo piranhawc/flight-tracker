@@ -53,6 +53,7 @@ const apaLogbook = require("./apa-logbook-client");
 const crewCache = require("./crew-cache");
 const friends = require("./friends-client");
 const visitorLog = require("./visitor-log");
+const abuseGuard = require("./abuse-guard");
 const agentmail = require("./agentmail-client");
 const signupTracker = require("./signup-tracker");
 let signupTrackerReady = false;
@@ -168,6 +169,59 @@ try {
   app.use(visitorLog.middleware());
 } catch (e) {
   console.error(`[visitors] init failed: ${e.message} — visitor stats disabled`);
+}
+
+// Scanner blocking. Deliberately AFTER the request log above, so a blocked
+// request still appears on the visitors page as a 403 — the point is to see
+// what's being turned away, not to make it invisible.
+let guardReady = false;
+try {
+  abuseGuard.init();
+  guardReady = true;
+  // visitorLog.clientIp, NOT getClientIp: bans and rate limits key on this
+  // value, and getClientIp reads X-Forwarded-For first, whose leading hop is
+  // caller-supplied through SWAG. Trusting it would let an attacker evade a
+  // ban by rotating a header, or forge someone else's address into one.
+  app.use(abuseGuard.middleware(visitorLog.clientIp));
+} catch (e) {
+  console.error(`[guard] init failed: ${e.message} — scanner blocking disabled`);
+}
+
+// FlightAware spend caps. Every one of these routes reaches a paid API with no
+// authentication, and /api/test-track takes a caller-supplied ident.
+// - faRequestLimiter bounds total calls per IP. One tracking session polls
+//   every 30s (120/h) and a page load costs ~10, so 400/h leaves room for a
+//   few tabs while stopping a script cold.
+// - faIdentLimiter bounds DISTINCT idents, which is where the money goes: each
+//   test-track call fans out to as many as 3 AeroAPI requests, so enumerating
+//   idents is the expensive attack. Re-polling an ident you already asked for
+//   is always allowed, so tracking a flight never breaks.
+const faRequestLimiter = abuseGuard.makeLimiter({ max: 400, windowMs: 3600e3 });
+const faIdentLimiter = abuseGuard.makeIdentLimiter({ maxIdents: 5, windowMs: 3600e3 });
+
+// Signed in to the logbook = it's Mike, so no cap. Reads logbookSessions,
+// which is declared further down; only ever called during a request, long
+// after module evaluation, so there's no TDZ hazard.
+function isLogbookAuthed(req) {
+  const token = String(req.headers.authorization || "").replace(/^Bearer /, "");
+  return !!(token && logbookSessions.has(token));
+}
+
+function faGuard(req, res, next) {
+  if (!guardReady) return next();
+  const ip = visitorLog.clientIp(req);   // same reasoning as the guard above
+  if (abuseGuard.isPrivate(ip) || isLogbookAuthed(req)) return next();
+  if (!faRequestLimiter(ip)) {
+    return res.status(429).json({ error: "rate_limited", detail: "too many flight-data requests from this address" });
+  }
+  const ident = req.params && req.params.ident;
+  if (ident && !faIdentLimiter(ip, String(ident).toUpperCase())) {
+    return res.status(429).json({
+      error: "rate_limited",
+      detail: "too many different flights looked up from this address; sign in to the logbook to lift the cap",
+    });
+  }
+  next();
 }
 
 // index.html carries the CARTO basemap key, and THIS REPO IS PUBLIC on GitHub
@@ -515,7 +569,7 @@ app.get("/api/friends/list", friendsAuth, async (req, res) => {
 });
 
 // --- AeroAPI: lookup flight by ident (ICAO like AAL1582) ---
-app.get("/api/fa/flights/:ident", async (req, res) => {
+app.get("/api/fa/flights/:ident", faGuard, async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
     const resp = await faFetch("live-flight", `${FA_BASE}/flights/${req.params.ident}`);
@@ -527,7 +581,7 @@ app.get("/api/fa/flights/:ident", async (req, res) => {
 });
 
 // --- AeroAPI: get position by fa_flight_id ---
-app.get("/api/fa/position/:id", async (req, res) => {
+app.get("/api/fa/position/:id", faGuard, async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
     const resp = await faFetch("live-flight", `${FA_BASE}/flights/${req.params.id}/position`);
@@ -539,7 +593,7 @@ app.get("/api/fa/position/:id", async (req, res) => {
 });
 
 // --- AeroAPI: get track by fa_flight_id ---
-app.get("/api/fa/track/:id", async (req, res) => {
+app.get("/api/fa/track/:id", faGuard, async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
     const resp = await faFetch("live-flight", `${FA_BASE}/flights/${req.params.id}/track`);
@@ -552,7 +606,7 @@ app.get("/api/fa/track/:id", async (req, res) => {
 
 // --- Convenience: find active flight and return position ---
 // Takes AA flight number like 1582, finds today's instance, returns position
-app.get("/api/track/:flightNum", async (req, res) => {
+app.get("/api/track/:flightNum", faGuard, async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
     const ident = `AAL${req.params.flightNum}`;
@@ -730,7 +784,7 @@ app.get("/api/track/:flightNum", async (req, res) => {
 // without paying the full /api/track cost (which also fetches target
 // position+track). Relies on the already-cached registration from the
 // frontend to skip the /flights/{ident} call entirely.
-app.get("/api/inbound", async (req, res) => {
+app.get("/api/inbound", faGuard, async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   const reg = req.query.reg;
   const dest = (req.query.dest || "").toUpperCase(); // = our leg's origin
@@ -854,7 +908,7 @@ async function fetchAircraftInbound(registration, ownFaFlightId, ownOriginCode) 
 }
 
 // --- Test endpoint: track any ICAO ident ---
-app.get("/api/test-track/:ident", async (req, res) => {
+app.get("/api/test-track/:ident", faGuard, async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   try {
     const ident = req.params.ident;
@@ -918,7 +972,7 @@ function shouldRefreshReg(cached, dateParam) {
 }
 
 // Lookup registration for a flight number on a specific date
-app.get("/api/fa/registration/:flightNum/:date", async (req, res) => {
+app.get("/api/fa/registration/:flightNum/:date", faGuard, async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   const { flightNum, date } = req.params;
   const cacheKey = `AAL${flightNum}-${date}`;
@@ -1502,7 +1556,7 @@ async function fetchAirportFlights(airport, endpoint, startStr, endStr) {
   return await promise;
 }
 
-app.get("/api/commute/:from/:to/:date", async (req, res) => {
+app.get("/api/commute/:from/:to/:date", faGuard, async (req, res) => {
   if (!appSettings.commute_enabled) return res.json({ disabled: true, flights: [] });
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
   const { from, to, date } = req.params;
