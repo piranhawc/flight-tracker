@@ -3211,7 +3211,7 @@ function isCompleted(parsed) {
 // since older trips return 404. Soft-delete = set _removed_at +
 // _removed_reason; preserves audit trail and the UI can toggle them back.
 let reconcileRunning = false;
-async function reconcileExistingLogbook() {
+async function reconcileExistingLogbook(lookbackDays = 14) {
   if (apaSyncPaused()) { console.log("[reconcile-cleanup] APA sync paused — skipping"); return { removed: 0, kept: 0, restored: 0, trips: 0 }; }
   if (reconcileRunning) {
     console.log("[reconcile-cleanup] already running, skipping");
@@ -3279,7 +3279,12 @@ async function reconcileExistingLogbook() {
     // 14-day lookback (was 60): FTG/OX/drops surface within days, flown legs
     // are protected by the actuals-guard anyway, and the old window re-fetched
     // dozens of stable pairings every 6h (Sabre access reduction, 2026-07-21).
-    const cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    // Default 14 days. An outage can leave stale legs older than that — the
+    // Sep 1-3 PIT legs survived because the scheduler was dead for six days
+    // and by the time anyone looked they were outside the window — so the
+    // endpoint can widen it for a one-off repair. Each extra trip in range
+    // costs one pairing fetch, so the automatic path keeps 14.
+    const cutoffMs = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
     // Grouped by trip INSTANCE — a multiply-flown pairing's occurrences
     // reconcile independently. Instance start comes from the leg's UID
     // (date-carrying shape); '' for singletons, where the service's default
@@ -4388,7 +4393,7 @@ app.post("/api/logbook/purge-deadheads", logbookAuth, (req, res) => {
 // previously soft-deleted but now reported as operated.
 app.post("/api/logbook/reconcile", logbookAuth, async (req, res) => {
   try {
-    const result = await reconcileExistingLogbook();
+    const result = await reconcileExistingLogbook(Math.min(Math.max(Number((req.body && req.body.days) || 14), 1), 400));
     res.json({ ok: true, ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });

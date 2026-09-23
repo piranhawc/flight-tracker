@@ -113,8 +113,19 @@ function upsertPairing(pairing) {
       arr_apt = excluded.arr_apt,
       arr_time = excluded.arr_time,
       flight_date = excluded.flight_date,
-      crew_json = excluded.crew_json,
-      open_seats_json = excluded.open_seats_json,
+      -- An EMPTY crew for a leg means "this fetch learned nothing about that
+      -- leg", not "this leg has no crew". Sabre's NS lookups are per-leg and
+      -- fail independently, so a refresh routinely comes back with crew for
+      -- some legs and nothing for others. Writing the empties over good rows
+      -- destroys data: on 2026-09-23 a refresh of trip 9157 returned crew for
+      -- 1 leg of 6 and blanked the other 5, after which the logbook kept the
+      -- stale captain because the sync then had nothing to replace it with.
+      -- A non-empty crew still replaces wholesale, so a genuine crew change
+      -- (a captain swapped mid-trip) overwrites as it should.
+      crew_json = CASE WHEN excluded.crew_json <> '[]'
+                       THEN excluded.crew_json ELSE crew_cache.crew_json END,
+      open_seats_json = CASE WHEN excluded.crew_json <> '[]'
+                       THEN excluded.open_seats_json ELSE crew_cache.open_seats_json END,
       fetched_at = excluded.fetched_at
   `);
   const tx = db.transaction((legs) => {
