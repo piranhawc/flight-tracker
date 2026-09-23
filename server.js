@@ -3383,10 +3383,18 @@ async function reconcileExistingLogbook(lookbackDays = 14) {
           // EXCEPT: manual removals stay sticky. The user used the UI to say
           // "this is gone" (e.g. OX code that apa-sabre doesn't yet read);
           // we trust the human until they explicitly restore.
-          if (leg._removed_at && !leg._removed_manual) {
+          //
+          // Only POSITIVE evidence restores: actual_status "flown" means HI's
+          // day row lists this flight. "unknown" and "future" also arrive as
+          // actually_operated=true, but they mean "HI has no record" — and a
+          // trip you were pulled off has no HI record precisely BECAUSE you
+          // were pulled off it. Treating that as "operated" resurrected all
+          // ten legs of trip 9020 on 2026-09-23, the first time a reconcile
+          // window reached back far enough to see them.
+          if (leg._removed_at && !leg._removed_manual && reconInfo.actual_status === "flown") {
             delete leg._removed_at;
             delete leg._removed_reason;
-            console.log(`[reconcile-cleanup] restored ${leg.flight} ${leg.date} — now reported as operated`);
+            console.log(`[reconcile-cleanup] restored ${leg.flight} ${leg.date} — HI lists it as flown`);
             restored++; changedAny = true;
           }
           leg._reconciliation_status = reconInfo.actual_status;
