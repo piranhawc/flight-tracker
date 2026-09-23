@@ -278,6 +278,13 @@ async function loadAll() {
   if (legsResp.status === 401 || crewResp.status === 401) return false;
   var legsBody = await legsResp.json();
   legsData = legsBody.legs || [];
+  // Newest first: by date, then by actual (else scheduled) pushback within
+  // the day. Same rule as the server; repeated here so the table is right
+  // regardless of what order an endpoint happens to return.
+  var depMs = function(l) { var t = Date.parse(l.actual_out || l.scheduled_out || ""); return isFinite(t) ? t : 0; };
+  legsData.sort(function(a, b) {
+    return (b.date || "").localeCompare(a.date || "") || (depMs(b) - depMs(a));
+  });
   removedCount = legsBody.removed_hidden || 0;
   crewData = (await crewResp.json()).crew || [];
   buildCrewIndex();

@@ -2801,10 +2801,23 @@ function getApaCrewForLogbookLeg(leg) {
   return pilots.concat(fas);
 }
 
+// Newest first. Sorting on `date` alone left same-day legs in insertion
+// order, so a three-leg day could read out of sequence — 186 days were
+// scrambled. Date stays the primary key so a late departure whose UTC time
+// crosses midnight stays on the day it's listed under; within a day, the
+// actual pushback time decides, falling back to scheduled.
+function legDepartureMs(l) {
+  const t = Date.parse(l.actual_out || l.scheduled_out || "");
+  return Number.isFinite(t) ? t : 0;
+}
+function newestLegFirst(a, b) {
+  const byDate = (b.date || "").localeCompare(a.date || "");
+  return byDate || (legDepartureMs(b) - legDepartureMs(a));
+}
+
 app.get("/api/logbook/legs", logbookAuth, (req, res) => {
   const includeRemoved = req.query.include_removed === "1" || req.query.include_removed === "true";
-  const all = Object.values(logbook.legs).sort((a, b) =>
-    (b.date || "").localeCompare(a.date || ""));
+  const all = Object.values(logbook.legs).sort(newestLegFirst);
   const legs = includeRemoved ? all : all.filter(l => !l._removed_at);
   // Read-only APA enrichment: any leg without crew gets pilots injected from
   // the apa-sabre cache. Doesn't persist — that's what /sync-apa-crew is for.
