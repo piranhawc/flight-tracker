@@ -2815,7 +2815,26 @@ function newestLegFirst(a, b) {
   return byDate || (legDepartureMs(b) - legDepartureMs(a));
 }
 
+// "Upcoming" is a fact about time, so time decides it. The import used to be
+// the only thing that cleared the flag, and only for a leg it could match by
+// calendar UID — but the Aug 31 switch from the Google calendar to the ICS
+// feed changed every UID, so legs imported before then were never matched
+// again and read UPCOMING forever (17 flown legs, back to June). Anything that
+// has pushed back is no longer upcoming, whichever feed created it.
+function clearStaleUpcoming() {
+  const now = Date.now();
+  let changed = 0;
+  for (const l of Object.values(logbook.legs)) {
+    if (!l || !l._upcoming) continue;
+    const dep = legDepartureMs(l);
+    if (dep && dep < now) { l._upcoming = false; changed++; }
+  }
+  if (changed) { saveLogbook(); console.log(`[logbook] cleared UPCOMING on ${changed} flown leg(s)`); }
+  return changed;
+}
+
 app.get("/api/logbook/legs", logbookAuth, (req, res) => {
+  clearStaleUpcoming();
   const includeRemoved = req.query.include_removed === "1" || req.query.include_removed === "true";
   const all = Object.values(logbook.legs).sort(newestLegFirst);
   const legs = includeRemoved ? all : all.filter(l => !l._removed_at);
