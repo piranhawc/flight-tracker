@@ -5,7 +5,9 @@
 const APA_SABRE_BASE = process.env.APA_SABRE_BASE || "http://192.168.128.115:8765";
 
 async function getCurrentSchedule() {
-  const r = await fetch(`${APA_SABRE_BASE}/schedule/current`, { signal: AbortSignal.timeout(15000) });
+  // 15s was too tight for a COLD HI1+HI2 fetch (a restart empties the
+  // service's in-memory cache), so the first call after a deploy failed.
+  const r = await fetch(`${APA_SABRE_BASE}/schedule/current`, { signal: AbortSignal.timeout(60000) });
   if (!r.ok) throw new Error(`schedule fetch failed: ${r.status}`);
   return r.json();
 }
@@ -15,7 +17,9 @@ async function getCurrentSchedule() {
 // anchor leg dates (and thus crew lookups) to the wrong occurrence.
 async function getPairingCrew(ep, seq, start) {
   const qs = start ? `?start=${encodeURIComponent(start)}` : "";
-  const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}/crew${qs}`, { signal: AbortSignal.timeout(20000) });
+  // One NS lookup per leg, sequentially: a 6-leg trip needs well over 20s
+  // from cold. At 20s this returned 502 and the caller kept the stale crew.
+  const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}/crew${qs}`, { signal: AbortSignal.timeout(180000) });
   if (!r.ok) throw new Error(`crew fetch failed: ${r.status}`);
   return r.json();
 }
@@ -31,7 +35,10 @@ async function getPairingCrew(ep, seq, start) {
 async function getPairingReconciliation(ep, seq, start) {
   try {
     const qs = start ? `?start=${encodeURIComponent(start)}` : "";
-    const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}${qs}`, { signal: AbortSignal.timeout(15000) });
+    // Pairing detail + HI day-row reconciliation. At 15s a cold call timed
+    // out and returned an EMPTY map, which reads as "no reconciliation data"
+    // and silently keeps legs that should have been removed.
+    const r = await fetch(`${APA_SABRE_BASE}/pairing/${ep}/${seq}${qs}`, { signal: AbortSignal.timeout(90000) });
     if (!r.ok) {
       console.log(`[reconciliation] ${ep}/${seq} returned ${r.status}`);
       return new Map();
