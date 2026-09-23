@@ -285,12 +285,26 @@ Sabre access at all) and only reaches Sabre inside two narrow windows:
 
 | Trigger | When | What runs |
 |---|---|---|
-| **ICS rebuild** | hourly (`7 * * * *`) | `apa_trips_to_ics.py --scp` — the schedule feed itself |
+| **ICS rebuild** | 4×/day (`40 2,8,14,20`), 5 min after each login | `apa_trips_to_ics.py --scp` — the schedule feed itself |
 | **Session refresh** | 4×/day (`35 2,8,14,20`) | `apa_login_requests.py` |
 | **New trip** | a trip appears in the calendar we've never seen | logbook import (fills crew immediately) |
 | Pre-trip | first leg departure **− 2h** | logbook import (fills crew for the trip) |
-| Post-trip | last leg arrival **+ 1h** | logbook import **+** reconcile (catches FTG / drops / trades) |
+| Post-trip | last leg arrival **+ 1h** | **crew re-pull for that trip** + logbook import + reconcile |
 | HI1/HI2 | every **3–4 days**, randomized time of day | `/schedule/current` refresh |
+
+**2026-09-23 — three changes after a six-day silent outage.**
+
+- **The scheduler now reaches the tracker over the LAN** (`http://192.168.128.175:3099`).
+  On 2026-09-17 the mini's egress IP became non-US and SWAG's geo-whitelist
+  answered every tick with a bare 404 — which looks exactly like a missing
+  route, so nothing said "blocked". 434 dead ticks: no post-trip sync for trip
+  9157, no reconcile, and removed legs stayed in the logbook.
+- **The ICS rebuild dropped from hourly to 4×/day.** Measured Sep 20–22: 24
+  runs/day, 20 bounced to ADFS as the OAC app cookie lapsed. Only the runs
+  right after a login ever worked, so moving to 4×/day costs no freshness.
+- **Post-trip now re-pulls the trip's crew.** Crew was a T−2h snapshot that
+  nothing corrected; trip 9157 showed one captain on six legs when three
+  different captains flew them.
 
 **Request budget in steady state** (measured 2026-08-31, not estimated):
 
@@ -299,8 +313,9 @@ Sabre access at all) and only reaches Sabre inside two narrow windows:
   — a full rebuild of all of them completed in **one second**, so only genuinely
   new trips cost a `/Pairing/GetPairingsDataTable` fetch. HI1/HI2/HI3 come from
   the service's own 30–60 min cache.
-- So hourly ≈ **24 pairing-list POSTs/day** plus a handful of pairing fetches
-  when the schedule actually changes, plus **4 logins/day**.
+- So **4 pairing-list POSTs/day** plus a handful of pairing fetches when the
+  schedule actually changes, plus **4 logins/day**, plus one crew fetch per
+  completed trip.
 - Trip-driven logbook work is unchanged: ~2–3 syncs per trip.
 
 That is the same shape as the pre-pause design and stays inside the hourly cap
