@@ -4538,6 +4538,57 @@ app.get("/api/reserve/snapshots/:id", logbookAuth, (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Sequence detail for the reserve page, fetched only when Mike clicks a trip.
+// Each one costs an OAC pairing request, so:
+//   * results are saved to disk forever — a past bid month's pairings can't
+//     change, so a second click (by anyone, after any restart) is free;
+//   * at most RESERVE_SEQ_DAILY_CAP new upstream fetches a day, so clicking
+//     around the page can never turn into a crawl of OAC.
+// The service's reconciliation fields are dropped: they compare the pairing
+// against MIKE's HI schedule, which means nothing for another pilot's trip.
+const RESERVE_SEQ_DIR = path.join(RESERVE_DIR, "seqs");
+const RESERVE_SEQ_DAILY_CAP = Number(process.env.RESERVE_SEQ_DAILY_CAP || 40);
+let reserveSeqFetches = { day: "", n: 0 };
+app.get("/api/reserve/seq", logbookAuth, async (req, res) => {
+  const q = req.query || {};
+  const ep = String(q.ep || ""), seq = String(parseInt(q.seq, 10) || "");
+  const base = String(q.base || "").toUpperCase(), eq = String(q.eq || "").toUpperCase();
+  const seat = String(q.seat || "").toUpperCase(), start = String(q.start || "");
+  if (!/^\d{6}$/.test(ep) || !/^\d{1,5}$/.test(seq) || !/^[A-Z]{3}$/.test(base) ||
+      !/^[A-Z0-9]{3}$/.test(eq) || !/^[A-Z]{2}$/.test(seat) || (start && !/^\d{4}-\d{2}-\d{2}$/.test(start))) {
+    return res.status(400).json({ error: "bad parameters" });
+  }
+  const file = path.join(RESERVE_SEQ_DIR, `${ep}-${base}-${eq}-${seat}-${seq}-${start || "x"}.json`);
+  try {
+    if (fs.existsSync(file)) return res.json(Object.assign(JSON.parse(fs.readFileSync(file, "utf8")), { cached: true }));
+  } catch (e) { /* unreadable cache → fall through and refetch */ }
+  const today = new Date().toISOString().slice(0, 10);
+  if (reserveSeqFetches.day !== today) reserveSeqFetches = { day: today, n: 0 };
+  if (reserveSeqFetches.n >= RESERVE_SEQ_DAILY_CAP) {
+    return res.status(429).json({ error: `daily limit of ${RESERVE_SEQ_DAILY_CAP} new sequence lookups reached — already-opened trips still work` });
+  }
+  reserveSeqFetches.n++;
+  try {
+    const qs = new URLSearchParams({ base, eq, seat });
+    if (start) qs.set("start", start);
+    const r = await fetch(`${apa.APA_SABRE_BASE}/pairing/${ep}/${seq}?${qs}`, { signal: AbortSignal.timeout(90000) });
+    if (r.status === 404) return res.status(404).json({ error: "OAC has no pairing detail for this sequence" });
+    if (!r.ok) return res.status(502).json({ error: `pairing lookup failed (${r.status})` });
+    const d = await r.json();
+    const legs = (d.legs || []).map(l => ({ date: l.date, flight: l.flight, dep: l.dep_apt, dep_time: l.dep_time,
+                                             arr: l.arr_apt, arr_time: l.arr_time, meal: l.meal || "" }));
+    const out = { ep, seq, base, eq, seat, start: start || null, fetched_at: new Date().toISOString(),
+                  effective_date: d.effective_date || null, tafb: d.tafb ?? null, total_credit: d.total_credit ?? null,
+                  total_flying: d.total_flying ?? null, nbr_days: d.nbr_days ?? null, nbr_legs: d.nbr_legs ?? legs.length,
+                  layovers: d.layovers || [], legs };
+    fs.mkdirSync(RESERVE_SEQ_DIR, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(out));
+    res.json(Object.assign(out, { cached: false, lookups_left_today: RESERVE_SEQ_DAILY_CAP - reserveSeqFetches.n }));
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
 // --- visitor stats -------------------------------------------------------
 // The site is public; these numbers are not. Behind the logbook password.
 // Friend share-links are the one place a visitor has a name: the log keeps

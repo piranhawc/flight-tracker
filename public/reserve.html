@@ -24,6 +24,27 @@ tr.me td { background: rgba(78,161,255,0.08); }
 /* league.css gives bars a 2px floor so tiny values stay visible; a true zero
    must read as empty, not as a small number. */
 .col.zero .bar { min-height: 0; }
+.seqlink { background:none; border:0; padding:0; font:inherit; color:var(--series-1);
+  font-variant-numeric: tabular-nums; cursor:pointer; text-decoration: underline;
+  text-decoration-color: rgba(78,161,255,0.35); text-underline-offset: 3px; }
+.seqlink:hover { text-decoration-color: var(--series-1); }
+#seqpanel { position:fixed; inset:0; z-index:80; display:none; }
+#seqpanel.open { display:block; }
+#seqpanel .scrim { position:absolute; inset:0; background:rgba(0,0,0,0.55); }
+#seqpanel .sheet { position:absolute; top:0; right:0; bottom:0; width:min(560px,100%); overflow:auto;
+  background:var(--surface); border-left:1px solid var(--border); padding:1.4rem 1.4rem 2rem;
+  box-shadow:-12px 0 40px rgba(0,0,0,0.5); }
+#seqpanel h2 { margin:0; font-size:1.35rem; letter-spacing:-0.02em; }
+#seqpanel .route { color:var(--ink-2); margin:0.35rem 0 1rem; font-size:0.95rem; }
+#seqpanel .close { position:absolute; top:1rem; right:1rem; background:none; border:1px solid var(--border-2);
+  color:var(--ink-2); border-radius:999px; width:2rem; height:2rem; cursor:pointer; font-size:1rem; }
+#seqpanel .kv { display:grid; grid-template-columns:repeat(4,1fr); gap:0.6rem; margin:0 0 1.2rem; }
+#seqpanel .kv div { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.5rem 0.6rem; }
+#seqpanel .kv b { display:block; font-size:1.05rem; }
+#seqpanel .kv span { color:var(--muted); font-size:0.66rem; text-transform:uppercase; letter-spacing:0.05em; font-weight:600; }
+#seqpanel h3 { font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin:1.3rem 0 0.5rem; }
+.lay td { color:var(--muted); font-size:0.78rem; font-style:italic; }
+@media (max-width:560px) { #seqpanel .kv { grid-template-columns:repeat(2,1fr); } }
 pre.raw { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.8rem;
   font-size:0.72rem; line-height:1.35; color:var(--ink-2); overflow:auto; max-height:420px; }
 </style>
@@ -106,6 +127,7 @@ pre.raw { background:var(--bg); border:1px solid var(--border); border-radius:8p
   </section>
 </main>
 
+<div id="seqpanel" aria-hidden="true"><div class="scrim"></div><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="seq-h"><button class="close" type="button" aria-label="Close">✕</button><div id="seqbody"></div></div></div>
 <div id="tip" role="tooltip"></div>
 
 <script>
@@ -253,7 +275,7 @@ function renderList(list) {
     "<th class='r'>TIME</th><th class='r'>Starts</th><th class='r'>Ends</th><th class='r'>Notified</th><th>Code</th></tr></thead><tbody>" +
     rows.map(function(a) {
       return "<tr" + (a.emp === MY_EMP ? " class='me'" : "") + "><td class='num'>" + dayLabel(a.date) + "</td>" +
-        "<td class='num'>" + esc(a.seq) + "</td>" +
+        "<td>" + seqBtn(a.seq, a.date) + "</td>" +
         "<td>" + esc(pilotName(a.pilot)) + (a.flag ? "<span class='flag'>" + esc(a.flag) + "</span>" : "") + "</td>" +
         "<td class='num r'>" + a.sen + "</td><td class='num muted-note'>" + esc(a.emp) + "</td>" +
         "<td class='num r'>" + esc(a.time) + "</td><td class='num r'>" + esc(a.starts) + "</td>" +
@@ -261,6 +283,68 @@ function renderList(list) {
         "<td><span class='code" + (a.code === "RF" ? " rf" : "") + "'>" + esc(a.code) + "</span></td></tr>";
     }).join("") + "</tbody></table>";
 }
+
+function seqBtn(seq, date) {
+  return '<button class="seqlink" type="button" data-seq="' + esc(seq) + '" data-date="' + esc(date) + '">' + esc(seq) + "</button>";
+}
+function hhmm(t) { t = String(t || ""); return t.length === 4 ? t.slice(0, 2) + ":" + t.slice(2) : (t || "—"); }
+function dur(h) {
+  if (h == null || h === "") return "—";
+  var s = String(h); if (s.indexOf(".") < 0) return s + ":00";
+  var p = s.split("."); return p[0] + ":" + (p[1] + "0").slice(0, 2);
+}
+function closeSeq() { var p = document.getElementById("seqpanel"); p.classList.remove("open"); p.setAttribute("aria-hidden", "true"); }
+async function openSeq(seq, date) {
+  var panel = document.getElementById("seqpanel"), body = document.getElementById("seqbody");
+  panel.classList.add("open"); panel.setAttribute("aria-hidden", "false");
+  var awarded = (SNAP.awards || []).filter(function(a) { return a.seq === seq; })
+    .sort(function(a, b) { return a.date.localeCompare(b.date); });
+  var whoHtml = "<h3>Awarded in " + esc(SNAP.period) + "</h3><table class='grid'><thead><tr><th>Day</th><th>Pilot</th><th class='r'>Sen</th><th>Code</th></tr></thead><tbody>" +
+    awarded.map(function(a) {
+      return "<tr" + (a.emp === MY_EMP ? " class='me'" : "") + "><td class='num'>" + dayLabel(a.date) + "</td><td>" +
+        esc(pilotName(a.pilot)) + (a.flag ? "<span class='flag'>" + esc(a.flag) + "</span>" : "") +
+        "</td><td class='num r'>" + a.sen + "</td><td><span class='code" + (a.code === "RF" ? " rf" : "") + "'>" + esc(a.code) + "</span></td></tr>";
+    }).join("") + "</tbody></table>";
+  body.innerHTML = "<h2 id='seq-h'>Seq " + esc(seq) + "</h2><p class='route'>Loading trip detail…</p>" + whoHtml;
+  var qs = new URLSearchParams({ ep: String(SNAP.period).replace("-", ""), seq: seq, base: SNAP.base,
+                                 eq: SNAP.eq, seat: SNAP.seat, start: date });
+  var r, d;
+  try { r = await fetch("/api/reserve/seq?" + qs, { headers: authHeaders() }); d = await r.json(); }
+  catch (e) { d = { error: e.message }; r = { ok: false }; }
+  if (!panel.classList.contains("open")) return;
+  if (!r.ok) {
+    body.innerHTML = "<h2 id='seq-h'>Seq " + esc(seq) + "</h2><p class='route'>Couldn't load trip detail: " + esc(d.error || "error") + "</p>" + whoHtml;
+    return;
+  }
+  var legs = d.legs || [], lay = {};
+  (d.layovers || []).forEach(function(l) { lay[l.after_leg] = l; });
+  var chain = legs.length ? [legs[0].dep].concat(legs.map(function(l) { return l.arr; })).join(" → ") : "—";
+  var rows = legs.map(function(l, i) {
+    var row = "<tr><td class='num'>" + (l.date ? dayLabel(l.date) : "—") + "</td><td class='num'>AA" + esc(l.flight) + "</td><td>" +
+      esc(l.dep) + " → " + esc(l.arr) + "</td><td class='num r'>" + hhmm(l.dep_time) + "</td><td class='num r'>" + hhmm(l.arr_time) + "</td></tr>";
+    var L = lay[i];
+    if (L) row += "<tr class='lay'><td></td><td colspan='4'>Layover " + esc(l.arr) + " · " + L.hours + "h " + String(L.minutes).padStart(2, "0") + "m</td></tr>";
+    return row;
+  }).join("");
+  body.innerHTML = "<h2 id='seq-h'>Seq " + esc(seq) + "</h2><p class='route'>" + esc(chain) + "</p>" +
+    "<div class='kv'>" +
+      "<div><span>Days</span><b>" + esc(d.nbr_days ?? "—") + "</b></div>" +
+      "<div><span>Legs</span><b>" + esc(d.nbr_legs ?? legs.length) + "</b></div>" +
+      "<div><span>Credit</span><b>" + dur(d.total_credit) + "</b></div>" +
+      "<div><span>TAFB</span><b>" + dur(d.tafb) + "</b></div>" +
+    "</div>" +
+    "<h3>Legs</h3><div class='scrollx'><table class='grid'><thead><tr><th>Day</th><th>Flight</th><th>Route</th><th class='r'>Dep (local)</th><th class='r'>Arr (local)</th></tr></thead><tbody>" +
+    (rows || "<tr><td colspan='5' class='muted-note'>No legs returned</td></tr>") + "</tbody></table></div>" +
+    whoHtml +
+    "<p class='muted-note' style='margin-top:1rem'>Pairing detail from OAC, " + (d.cached ? "saved " : "fetched ") +
+      esc(String(d.fetched_at || "").slice(0, 10)) + ". Times are as OAC publishes them.</p>";
+}
+document.addEventListener("click", function(e) {
+  var b = e.target.closest && e.target.closest(".seqlink");
+  if (b) { hideTip(); openSeq(b.getAttribute("data-seq"), b.getAttribute("data-date")); return; }
+  if (e.target.closest && (e.target.closest("#seqpanel .close") || e.target.classList.contains("scrim"))) closeSeq();
+});
+document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeSeq(); });
 
 function render() {
   if (!SNAP) return;
@@ -275,7 +359,7 @@ function render() {
   renderTiles(list); renderDays(list); renderPilots(list); renderCodes(); renderList(list);
   document.getElementById("transfers").innerHTML = (SNAP.transfers || []).length
     ? "<table class='grid'><thead><tr><th>Day</th><th>Seq</th><th>To</th></tr></thead><tbody>" +
-      SNAP.transfers.map(function(t) { return "<tr><td class='num'>" + dayLabel(t.date) + "</td><td class='num'>" + esc(t.seq) + "</td><td>" + esc(t.to) + "</td></tr>"; }).join("") +
+      SNAP.transfers.map(function(t) { return "<tr><td class='num'>" + dayLabel(t.date) + "</td><td>" + seqBtn(t.seq, t.date) + "</td><td>" + esc(t.to) + "</td></tr>"; }).join("") +
       "</tbody></table>"
     : '<p class="muted-note">None.</p>';
   document.getElementById("raw").textContent = SNAP.raw || "";
