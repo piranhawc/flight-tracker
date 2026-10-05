@@ -306,14 +306,16 @@ async function openSeq(seq, date) {
         "</td><td class='num r'>" + a.sen + "</td><td><span class='code" + (a.code === "RF" ? " rf" : "") + "'>" + esc(a.code) + "</span></td></tr>";
     }).join("") + "</tbody></table>";
   body.innerHTML = "<h2 id='seq-h'>Seq " + esc(seq) + "</h2><p class='route'>Loading trip detail…</p>" + whoHtml;
-  var qs = new URLSearchParams({ ep: String(SNAP.period).replace("-", ""), seq: seq, base: SNAP.base,
-                                 eq: SNAP.eq, seat: SNAP.seat, start: date });
+  var qs = new URLSearchParams({ snapshot: SNAP.id, seq: seq, start: date });
   var r, d;
   try { r = await fetch("/api/reserve/seq?" + qs, { headers: authHeaders() }); d = await r.json(); }
   catch (e) { d = { error: e.message }; r = { ok: false }; }
   if (!panel.classList.contains("open")) return;
   if (!r.ok) {
-    body.innerHTML = "<h2 id='seq-h'>Seq " + esc(seq) + "</h2><p class='route'>Couldn't load trip detail: " + esc(d.error || "error") + "</p>" + whoHtml;
+    var a0 = awarded.filter(function(a) { return a.date === date; })[0] || awarded[0] || {};
+    body.innerHTML = "<h2 id='seq-h'>Seq " + esc(seq) + "</h2><p class='route'>No leg detail: " + esc(d.error || "error") + "</p>" +
+      "<div class='kv'><div><span>TIME</span><b>" + esc(a0.time || "—") + "</b></div><div><span>Starts</span><b>" + hhmm(a0.starts) +
+      "</b></div><div><span>Ends</span><b>" + esc(a0.ends || "—") + "</b></div><div><span>Awards</span><b>" + awarded.length + "</b></div></div>" + whoHtml;
     return;
   }
   var legs = d.legs || [], lay = {};
@@ -336,8 +338,8 @@ async function openSeq(seq, date) {
     "<h3>Legs</h3><div class='scrollx'><table class='grid'><thead><tr><th>Day</th><th>Flight</th><th>Route</th><th class='r'>Dep (local)</th><th class='r'>Arr (local)</th></tr></thead><tbody>" +
     (rows || "<tr><td colspan='5' class='muted-note'>No legs returned</td></tr>") + "</tbody></table></div>" +
     whoHtml +
-    "<p class='muted-note' style='margin-top:1rem'>Pairing detail from OAC, " + (d.cached ? "saved " : "fetched ") +
-      esc(String(d.fetched_at || "").slice(0, 10)) + ". Times are as OAC publishes them.</p>";
+    "<p class='muted-note' style='margin-top:1rem'>From the monthly snapshot pulled " +
+      esc(String(d.fetched_at || "").slice(0, 10)) + ". Times are local, as OAC publishes them.</p>";
 }
 document.addEventListener("click", function(e) {
   var b = e.target.closest && e.target.closest(".seqlink");
