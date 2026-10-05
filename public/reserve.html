@@ -318,6 +318,36 @@ async function openSeq(seq, date) {
       "</b></div><div><span>Ends</span><b>" + esc(a0.ends || "—") + "</b></div><div><span>Awards</span><b>" + awarded.length + "</b></div></div>" + whoHtml;
     return;
   }
+  if (d.source === "decs") {
+    var dl = d.legs || [];
+    var kindName = { SKD: "Scheduled", RSK: "Rescheduled", ACT: "Flown" };
+    var chainParts = [];
+    dl.forEach(function(l, i) {
+      if (i === 0) chainParts.push(l.dep);
+      else if (dl[i - 1].arr !== l.dep) chainParts.push("… " + l.dep);
+      chainParts.push(l.arr);
+    });
+    var drows = dl.map(function(l) {
+      return "<tr><td>" + esc(kindName[l.kind] || l.kind) + "</td><td class='num'>" + String(l.day).padStart(2, "0") +
+        "</td><td class='num'>AA" + esc(l.flight) + "</td><td>" + esc(l.dep) + " → " + esc(l.arr) +
+        "</td><td class='num r'>" + hhmm(l.dep_time) + "</td><td class='num r'>" + hhmm(l.arr_time) + (l.changed ? " *" : "") +
+        "</td><td class='muted-note'>" + esc(l.flags) + "</td></tr>";
+    }).join("");
+    body.innerHTML = "<h2 id='seq-h'>Seq " + esc(seq) + (d.status ? " <span class='code'>" + esc(d.status) + "</span>" : "") + "</h2>" +
+      "<p class='route'>" + (dl.length ? esc(chainParts.join(" → ").replace(/ → … /g, " … ")) : (d.supv ? "Supervisor sequence — no flight legs" : "—")) +
+      " · built after the bid</p>" +
+      "<div class='kv'><div><span>Total (TL)</span><b>" + dur(d.total) + "</b></div>" +
+      "<div><span>Flying</span><b>" + dur(d.flying) + "</b></div><div><span>Pay credit</span><b>" + dur(d.pay_credit) + "</b></div>" +
+      "<div><span>TAFB</span><b>" + dur(d.tafb) + "</b></div></div>" +
+      (dl.length ? "<h3>As flown</h3><div class='scrollx'><table class='grid'><thead><tr><th>Line</th><th>Day</th><th>Flight</th><th>Route</th>" +
+        "<th class='r'>Dep</th><th class='r'>Arr</th><th>DECS flags</th></tr></thead><tbody>" + drows + "</tbody></table></div>" +
+        "<p class='muted-note' style='margin:0.5rem 0 0'>Flown = DECS's ACT line; cancelled legs dropped. Where a leg has no ACT line the latest plan is shown. " +
+        "“…” = no flight between the two airports (a ground transfer). * = a time DECS marks as changed. Flags are DECS's own codes, unedited.</p>" : "") +
+      whoHtml +
+      "<h3>DECS sequence display</h3><pre class='raw'>" + esc(d.text) + "</pre>" +
+      "<p class='muted-note'>Includes every scheduled, rescheduled and actual line. From the monthly snapshot pulled " + esc(String(d.fetched_at || "").slice(0, 10)) + ".</p>";
+    return;
+  }
   var legs = d.legs || [], lay = {};
   (d.layovers || []).forEach(function(l) { lay[l.after_leg] = l; });
   var chain = legs.length ? [legs[0].dep].concat(legs.map(function(l) { return l.arr; })).join(" → ") : "—";

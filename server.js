@@ -4556,7 +4556,21 @@ app.get("/api/reserve/seq", logbookAuth, (req, res) => {
     const snap = JSON.parse(fs.readFileSync(f, "utf8"));
     const p = (snap.sequences || {})[seq];
     if (!p) {
-      return res.status(404).json({ error: "not in the published pairings for this month — built after the bid, so OAC has no leg detail for it" });
+      // Built after the bid: detail came from a DECS sequence display, keyed
+      // by the awarded instance (seq@date), since these are one-offs.
+      const h = (snap.hss || {})[`${seq}@${start}`];
+      if (h && h.found) {
+        return res.json({ source: "decs", seq, start: start || null, fetched_at: snap.fetched_at, cached: true,
+          header: h.header || "", status: h.status || "", supv: !!h.supv,
+          flying: h.flying ?? null, pay_credit: h.pay_credit ?? null, total: h.total ?? null, tafb: h.tafb ?? null,
+          text: h.text || "",
+          // "final" = the trip as flown (ACT where it exists, cancelled legs
+          // dropped); the full SKD/RSK/ACT history is in `text`.
+          legs: (h.final || []).map(l => ({ kind: l.kind, day: l.day, eq: l.eq, flight: l.flight, dep: l.dep_apt,
+            dep_time: l.dep_time, arr: l.arr_apt, arr_time: l.arr_time, changed: !!l.changed, flags: l.flags || "" })) });
+      }
+      return res.status(404).json({ error: h && h.error ? `DECS lookup failed: ${h.error}`
+        : "no detail in this snapshot — not in the published pairings and no DECS display was saved for this date" });
     }
     const legs = ((snap.instances || {})[`${seq}@${start}`] || p.legs || []).map(l => ({
       date: l.date || null, flight: l.flight, dep: l.dep_apt, dep_time: l.dep_time,
