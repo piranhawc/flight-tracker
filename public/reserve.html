@@ -402,7 +402,10 @@ function render() {
 async function loadSnapshot(id) {
   var r = await fetch("/api/reserve/snapshots/" + encodeURIComponent(id), { headers: authHeaders() });
   if (!r.ok) return false;
-  SNAP = await r.json(); hideTip(); render(); return true;
+  SNAP = await r.json(); hideTip(); render();
+  var m = /^(\d{4})-(\d{2})/.exec(SNAP.period || "");
+  if (m) document.title = "Reserve " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+m[2] - 1] + " " + m[1];
+  return true;
 }
 
 async function initApp() {
@@ -422,8 +425,14 @@ async function initApp() {
   sel.innerHTML = snaps.map(function(s) {
     return '<option value="' + esc(s.id) + '">' + esc(s.report + " · " + s.base + " " + s.eq + " " + s.seat + " · " + s.period) + "</option>";
   }).join("");
-  sel.addEventListener("change", function() { loadSnapshot(sel.value); });
-  await loadSnapshot(snaps[0].id);
+  // Each month has its own address: /reserve.html?id=N3-ORD-787-FO-202608
+  var want = new URLSearchParams(location.search).get("id");
+  var first = snaps.some(function(s) { return s.id === want; }) ? want : snaps[0].id;
+  sel.value = first;
+  sel.addEventListener("change", function() {
+    history.replaceState(null, "", "?id=" + encodeURIComponent(sel.value)); loadSnapshot(sel.value);
+  });
+  await loadSnapshot(first);
 }
 
 document.querySelectorAll(".filters .chip[data-code]").forEach(function(b) {

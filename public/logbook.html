@@ -112,7 +112,7 @@
     <a class="btn" href="/" title="Back to flights">← FLIGHTS</a>
     <a class="btn" href="/career-me.html" title="Retirement & upgrade projection" style="text-decoration:none">📈 RETIREMENT</a>
     <a class="btn" href="/stats.html" title="Full stats page: block hours by month, routes, aircraft, tails, crew" style="text-decoration:none">📊 STATS PAGE</a>
-    <a class="btn" href="/reserve.html" title="Reserve assignments and open-time awards (saved DECS N3 reports)" style="text-decoration:none">🛎 RESERVE</a>
+    <span id="reserve-links"><a class="btn" href="/reserve.html" title="Reserve assignments and open-time awards (saved DECS N3 reports)" style="text-decoration:none">🛎 RESERVE</a></span>
     <a class="btn" href="/visitors.html" title="Who is visiting whereis.mikegoebel.net" style="text-decoration:none">👥 VISITORS</a>
     <span class="meta" id="apa-stats-summary" style="display:none"></span>
     <button class="btn" id="apa-backfill-btn" onclick="runBackfillFromApa()" style="display:none" title="Pull ~28 months of completed flight history from APA logbook with real captain names + tails. Takes 1-2 min.">📚 BACKFILL FROM APA</button>
@@ -245,6 +245,22 @@ document.getElementById("login-form").addEventListener("submit", async function(
   initApp();
 });
 
+// One reserve button per saved month (newest first), each its own page.
+async function loadReserveLinks() {
+  try {
+    var r = await fetch("/api/reserve/snapshots", { headers: authHeaders() });
+    if (!r.ok) return;
+    var snaps = (await r.json()).snapshots || [];
+    if (!snaps.length) return;
+    var MON = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+    document.getElementById("reserve-links").innerHTML = snaps.map(function(s) {
+      var m = /^(\d{4})-(\d{2})/.exec(s.period || ""), label = m ? MON[+m[2] - 1] + " " + m[1].slice(2) : s.period;
+      return '<a class="btn" style="text-decoration:none" href="/reserve.html?id=' + encodeURIComponent(s.id) +
+        '" title="' + s.base + ' ' + s.eq + ' ' + s.seat + ' reserve and open-time awards">🛎 RESERVE ' + label + '</a>';
+    }).join(" ");
+  } catch (e) {}
+}
+
 async function initApp() {
   var ok = await loadAll();
   if (!ok) {
@@ -260,6 +276,7 @@ async function initApp() {
   document.getElementById("import-force-btn").style.display = "";
   document.getElementById("apa-backfill-btn").style.display = "";
   document.getElementById("apa-sync-current-btn").style.display = "";
+  loadReserveLinks();
   document.getElementById("reconcile-btn").style.display = "";
   document.getElementById("commute-data-btn").style.display = "";
   document.getElementById("stats-btn").style.display = "";
