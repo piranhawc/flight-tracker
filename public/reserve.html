@@ -21,6 +21,9 @@
 select.chip { appearance:none; padding-right:1.4rem; }
 .mono { font-variant-numeric: tabular-nums; }
 tr.me td { background: rgba(78,161,255,0.08); }
+/* league.css gives bars a 2px floor so tiny values stay visible; a true zero
+   must read as empty, not as a small number. */
+.col.zero .bar { min-height: 0; }
 pre.raw { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.8rem;
   font-size:0.72rem; line-height:1.35; color:var(--ink-2); overflow:auto; max-height:420px; }
 </style>
@@ -190,7 +193,7 @@ function renderDays(list) {
   plot.innerHTML = lines + days.map(function(d) {
     var v = counts[d] || 0, pct = 100 * v / top, isMax = v === max && v > 0, peak = "";
     if (isMax && !labelled) { labelled = true; peak = '<span class="peak" style="bottom:calc(' + pct.toFixed(2) + '% + 4px)">' + v + "</span>"; }
-    return '<div class="col' + (isMax ? " is-max" : "") + '" data-d="' + d + '">' + peak +
+    return '<div class="col' + (isMax ? " is-max" : "") + (v ? "" : " zero") + '" data-d="' + d + '">' + peak +
            '<div class="bar" style="height:' + pct.toFixed(2) + '%"></div></div>';
   }).join("");
   var avail = plot.clientWidth - 38;
