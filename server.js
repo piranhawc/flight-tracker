@@ -231,6 +231,13 @@ function faGuard(req, res, next) {
 // means the map renders with CARTO's watermark rather than not at all.
 const CARTO_KEY = process.env.CARTO_KEY || "";
 let indexHtmlCache = null;
+const destHtmlCache = {};
+app.get("/destinations.html", (req, res, next) => {
+  try {
+    if (!destHtmlCache.v) destHtmlCache.v = fs.readFileSync(path.join(__dirname, "public", "destinations.html"), "utf8").split("__CARTO_KEY__").join(CARTO_KEY);
+    res.type("html").send(destHtmlCache.v);
+  } catch (e) { next(); }
+});
 app.get(["/", "/index.html"], (req, res, next) => {
   try {
     if (indexHtmlCache === null) {
@@ -4542,6 +4549,66 @@ app.get("/api/reserve/snapshots/:id", logbookAuth, (req, res) => {
 // reserve_monthly.py (Mac mini, 1st of each month, previous month) pulls the
 // whole category's pairings in ONE OAC request and stores them alongside the
 // N3 report. Nothing here contacts OAC or Sabre — Mike's rule is a monthly
+// Trips by destination for /destinations.html, from the saved monthly snapshot
+// (never Sabre). A trip's destination is where it lays over.
+//   lineholder = published pairings x OCCURS, minus the operations that went
+//                to reserves (an estimate: the bid pack's count, not a roster)
+//   reserve    = RF assignments, published or built after the bid (31xxx)
+function hssOvernights(legs, base) {
+  // Overnight = the next leg leaves on a later day. Deadheads (eq XX) still
+  // count, since a layover is a layover; connections the same day don't.
+  const out = new Set();
+  for (let i = 0; i < legs.length - 1; i++) {
+    const a = legs[i], b = legs[i + 1];
+    if (a.arr_apt !== base && Number(b.day) !== Number(a.day)) out.add(a.arr_apt);
+  }
+  if (!out.size) legs.forEach(l => { if (l.arr_apt && l.arr_apt !== base && l.eq !== "XX") out.add(l.arr_apt); });
+  return [...out];
+}
+function pairingStations(p, base) {
+  const lay = [...new Set((p.layovers || []).map(l => l.station).filter(x => x && x !== base))];
+  if (lay.length) return lay;
+  const arr = (p.legs || []).map(l => l.arr_apt).find(a => a && a !== base);
+  return arr ? [arr] : [];
+}
+app.get("/api/reserve/destinations", logbookAuth, (req, res) => {
+  const id = String((req.query && req.query.snapshot) || "");
+  if (!/^[A-Za-z0-9-]+$/.test(id)) return res.status(400).json({ error: "bad id" });
+  const f = path.join(RESERVE_DIR, `${id}.json`);
+  if (!fs.existsSync(f)) return res.status(404).json({ error: "no such snapshot" });
+  try {
+    const snap = JSON.parse(fs.readFileSync(f, "utf8"));
+    const base = snap.base || "ORD";
+    const dest = {};   // station -> {scheduled, reserve, unknownReserve...}
+    const bump = (st, k, n) => { (dest[st] ||= { station: st, scheduled: 0, reserve: 0 })[k] += n; };
+    let scheduled = 0, pairings = 0;
+    for (const p of Object.values(snap.sequences || {})) {
+      const m = /OCCURS\s+(\d+)/.exec(p.text || ""), n = m ? +m[1] : 0;
+      if (!n) continue;
+      pairings++; scheduled += n;
+      for (const st of pairingStations(p, base)) bump(st, "scheduled", n);
+    }
+    let reserve = 0, unplaced = 0;
+    const unplacedSeqs = [];
+    for (const a of (snap.awards || []).filter(a => a.code === "RF")) {
+      reserve++;
+      const seq = String(parseInt(a.seq, 10));
+      const p = (snap.sequences || {})[seq];
+      let sts = p ? pairingStations(p, base) : [];
+      if (!sts.length) {
+        const h = (snap.hss || {})[`${seq}@${a.date}`];
+        if (h && h.final && h.final.length) sts = hssOvernights(h.final, base);
+      }
+      if (!sts.length) { unplaced++; unplacedSeqs.push(`${a.seq} ${a.date}`); continue; }
+      sts.forEach(st => bump(st, "reserve", 1));
+    }
+    const rows = Object.values(dest).map(d => ({ ...d, lineholder: Math.max(0, d.scheduled - d.reserve) }))
+      .sort((a, b) => (b.lineholder + b.reserve) - (a.lineholder + a.reserve) || a.station.localeCompare(b.station));
+    res.json({ id: snap.id, base, eq: snap.eq, seat: snap.seat, period: snap.period, note: snap.note || "",
+               missing_days: snap.missing_days || [], pairings, scheduled, reserve, unplaced, unplacedSeqs, destinations: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // batch, not lookups on click.
 app.get("/api/reserve/seq", logbookAuth, (req, res) => {
   const id = String((req.query && req.query.snapshot) || "");

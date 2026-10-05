@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trip Destinations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/league.css?v=1">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+select.chip { appearance:none; padding-right:1.4rem; }
+#map { height: 520px; border-radius: 10px; border:1px solid var(--border); background:#0e0e11; }
+@media (max-width:640px) { #map { height: 380px; } }
+.leaflet-container { font: inherit; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--ink); border:1px solid var(--border-2); }
+.leaflet-popup-content { margin: 0.7rem 0.9rem; font-size: 0.85rem; line-height: 1.45; }
+.leaflet-popup-content b { font-size: 1rem; }
+.leaflet-bar a { background: var(--surface) !important; color: var(--ink-2) !important; border-bottom:1px solid var(--border) !important; }
+.leaflet-control-attribution { background: rgba(14,14,17,.75) !important; color:#8a8f98 !important; }
+.leaflet-control-attribution a { color:#b9bec7 !important; }
+.lbl { color: var(--ink); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em; text-shadow: 0 0 3px #000, 0 0 6px #000; white-space: nowrap; }
+.legend { display:flex; gap:1.1rem; flex-wrap:wrap; font-size:0.8rem; color:var(--ink-2); margin:0.7rem 0 0; }
+.sw { display:inline-block; width:0.8rem; height:0.8rem; border-radius:3px; vertical-align:-1px; margin-right:0.35rem; }
+.sw.res { background: var(--series-1); }
+.sw.line { background: var(--series-dim); }
+.stack { display:flex; height: 0.9rem; min-width: 2px; border-radius: 3px; overflow: hidden; }
+.stack .line { background: var(--series-dim); }
+.stack .res { background: var(--series-1); }
+td.barcell { width: 45%; }
+.mono { font-variant-numeric: tabular-nums; }
+.dim { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="/"><span class="brand-dot"></span>Flight Tracker</a>
+    <nav class="nav">
+      <a class="navlink" href="/">Tracker</a>
+      <a class="navlink" href="/logbook.html">Logbook</a>
+      <a class="navlink" href="/stats.html">Stats</a>
+      <a class="navlink" href="/reserve.html">Reserve</a>
+      <a class="navlink on" href="/destinations.html">Destinations</a>
+      <a class="navlink" href="/visitors.html">Visitors</a>
+    </nav>
+  </div>
+</header>
+
+<div id="login">
+  <h2 style="margin:0 0 0.8rem;font-size:1.1rem">Logbook sign-in</h2>
+  <form id="login-form">
+    <input class="input" type="password" id="password" placeholder="password" autocomplete="current-password">
+    <div class="err" id="login-err"></div>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+</div>
+
+<main class="container" id="app">
+  <h1>Where the trips go</h1>
+  <p class="lede" id="lede">Loading…</p>
+
+  <div class="filters" role="group" aria-label="Filters">
+    <select class="chip" id="snap" aria-label="Month"></select>
+    <button class="chip" type="button" data-show="all" aria-pressed="true">All trips</button>
+    <button class="chip" type="button" data-show="lineholder" aria-pressed="false">Lineholder</button>
+    <button class="chip" type="button" data-show="reserve" aria-pressed="false">Reserve</button>
+  </div>
+
+  <div class="summary" id="tiles"></div>
+
+  <section class="card">
+    <div class="cardhead"><h2 id="map-title">Destinations</h2><span class="muted-note">circle area = trips · click one for counts</span></div>
+    <div id="map"></div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>By destination</h2><span class="muted-note" id="table-note"></span></div>
+    <div class="scrollx" id="table"></div>
+    <p class="muted-note" style="margin:0.8rem 0 0" id="method"></p>
+  </section>
+</main>
+
+<script>
+var token = localStorage.getItem("logbook-token") || null;
+var DATA = null, show = "all", map = null, layer = null;
+
+// Airport positions, by IATA code. A destination missing here is still
+// counted in the table, just not drawn.
+var APT = {
+  ORD:[41.978,-87.905], LHR:[51.470,-0.454], BCN:[41.297,2.078], FCO:[41.800,12.239], MAD:[40.472,-3.561],
+  NAP:[40.886,14.291], ATH:[37.936,23.947], CDG:[49.010,2.548], DUB:[53.421,-6.270], DFW:[32.897,-97.038],
+  PHL:[39.872,-75.241], MIA:[25.793,-80.291], GRU:[-23.432,-46.469], LAX:[33.942,-118.408], SJC:[37.363,-121.929],
+  TUL:[36.198,-95.888], JFK:[40.640,-73.779], ZRH:[47.458,8.555], PHX:[33.434,-112.012], ICN:[37.460,126.441],
+  NRT:[35.772,140.393], HND:[35.549,139.780], TLV:[32.011,34.887], DEL:[28.556,77.100], BRU:[50.901,4.484],
+  AMS:[52.310,4.768], FRA:[50.038,8.562], MUC:[48.354,11.786], MXP:[45.630,8.723], VCE:[45.505,12.352],
+  LIS:[38.774,-9.134], PRG:[50.101,14.260], BUD:[47.439,19.262], CPH:[55.618,12.656], KEF:[63.985,-22.605],
+  SNN:[52.702,-8.925], EDI:[55.950,-3.373], MAN:[53.354,-2.275], GLA:[55.872,-4.433], NCE:[43.658,7.216],
+  HNL:[21.319,-157.922], OGG:[20.899,-156.430], KOA:[19.739,-156.046], LIH:[21.976,-159.339], EZE:[-34.822,-58.536],
+  SCL:[-33.393,-70.786], GIG:[-22.810,-43.251], BOG:[4.702,-74.147], LIM:[-12.022,-77.114], MEX:[19.436,-99.072],
+  YYZ:[43.678,-79.625], YVR:[49.195,-123.184], YUL:[45.470,-73.741], DOH:[25.273,51.608], BNE:[-27.384,153.117],
+  SYD:[-33.940,151.175], AKL:[-37.008,174.792], CLT:[35.214,-80.943], ATL:[33.640,-84.427], BOS:[42.366,-71.010],
+  SFO:[37.619,-122.375], SEA:[47.450,-122.309], DCA:[38.852,-77.037], IAD:[38.953,-77.456], LGA:[40.777,-73.872],
+  MCO:[28.431,-81.308], DEN:[39.856,-104.674], LAS:[36.084,-115.154], SAN:[32.733,-117.190], AUS:[30.197,-97.666],
+  IAH:[29.990,-95.337], MSP:[44.885,-93.222], DTW:[42.212,-83.353], CMH:[39.998,-82.892], PIT:[40.491,-80.233],
+  ANC:[61.174,-149.996], OKC:[35.393,-97.601], MCI:[39.298,-94.714], STL:[38.749,-90.370], BNA:[36.124,-86.678],
+  TPA:[27.976,-82.533], FLL:[26.072,-80.153], RDU:[35.877,-78.788], SLC:[40.789,-111.978], PDX:[45.589,-122.592],
+  ABQ:[35.040,-106.609], ELP:[31.807,-106.378], SAT:[29.534,-98.470], MSY:[29.993,-90.258], CUN:[21.037,-86.877],
+  SJU:[18.439,-66.002], STT:[18.337,-64.973], MBJ:[18.504,-77.913], NAS:[25.039,-77.466], PUJ:[18.567,-68.363],
+  AUA:[12.501,-70.015], GCM:[19.293,-81.358], LIR:[10.593,-85.544], SJO:[9.994,-84.209], PTY:[9.071,-79.383],
+  BDA:[32.364,-64.679], GUS:[40.648,-86.152]
+};
+
+function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function(c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+function monthName(p) {
+  var m = /^(\d{4})-(\d{2})/.exec(p || "");
+  return m ? ["January","February","March","April","May","June","July","August","September","October","November","December"][+m[2] - 1] + " " + m[1] : p;
+}
+function val(d) { return show === "lineholder" ? d.lineholder : show === "reserve" ? d.reserve : d.lineholder + d.reserve; }
+function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+// Great-circle points between two [lat,lon], so long-haul arcs bend the way the trip flies.
+function arc(a, b, n) {
+  var r = Math.PI / 180, la1 = a[0]*r, lo1 = a[1]*r, la2 = b[0]*r, lo2 = b[1]*r;
+  var d = 2 * Math.asin(Math.sqrt(Math.pow(Math.sin((la2-la1)/2),2) + Math.cos(la1)*Math.cos(la2)*Math.pow(Math.sin((lo2-lo1)/2),2)));
+  if (!d) return [a, b];
+  var pts = [];
+  for (var i = 0; i <= n; i++) {
+    var f = i / n, A = Math.sin((1-f)*d)/Math.sin(d), B = Math.sin(f*d)/Math.sin(d);
+    var x = A*Math.cos(la1)*Math.cos(lo1) + B*Math.cos(la2)*Math.cos(lo2);
+    var y = A*Math.cos(la1)*Math.sin(lo1) + B*Math.cos(la2)*Math.sin(lo2);
+    var z = A*Math.sin(la1) + B*Math.sin(la2);
+    pts.push([Math.atan2(z, Math.sqrt(x*x+y*y))/r, Math.atan2(y, x)/r]);
+  }
+  return pts;
+}
+
+function initMap() {
+  // CARTO key is substituted by the server (the repo is public). The
+  // CARTO + OpenStreetMap credit must stay visible: it's the free tier's condition.
+  var key = "__CARTO_KEY__", ph = "__" + "CARTO_KEY" + "__";
+  var url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" + (key && key !== ph ? "?key=" + key : "");
+  map = L.map("map", { center:[45,-30], zoom:3, worldCopyJump:true, attributionControl:false });
+  L.tileLayer(url, { maxZoom: 12,
+    attribution: '&copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
+  }).addTo(map);
+  L.control.attribution({ position: "bottomleft", prefix: false }).addTo(map);
+  layer = L.layerGroup().addTo(map);
+}
+
+function drawMap() {
+  layer.clearLayers();
+  var base = DATA.base, home = APT[base], hi = cssVar("--series-1") || "#4ea1ff", lo = cssVar("--series-dim") || "#2f6ea8";
+  var rows = DATA.destinations.filter(function(d) { return val(d) > 0 && APT[d.station]; });
+  var max = Math.max.apply(null, rows.map(val).concat([1]));
+  var bounds = home ? [home] : [];
+  rows.slice().sort(function(a, b) { return val(b) - val(a); }).forEach(function(d) {
+    var p = APT[d.station], v = val(d);
+    // Area is proportional to trips. In "All", the outer circle is every trip
+    // and the bright inner one is the reserve share of it.
+    var col = show === "reserve" ? hi : lo;
+    if (home) L.polyline(arc(home, p, 48), { color: col, weight: 1 + 3 * v / max, opacity: 0.55 }).addTo(layer);
+    var R = 26, radius = R * Math.sqrt(v / max);
+    if (show === "all" && d.reserve) {
+      L.circleMarker(p, { radius: R * Math.sqrt(d.reserve / max), color: hi, weight: 0, fillColor: hi, fillOpacity: 0.9, interactive: false }).addTo(layer);
+    }
+    L.circleMarker(p, { radius: Math.max(radius, 3), color: col, weight: 1.5, fillColor: col, fillOpacity: show === "all" ? 0.25 : 0.4 })
+      .bindPopup("<b>" + esc(d.station) + "</b><br>" + (d.lineholder + d.reserve) + " trips<br>" +
+        "<span style='color:" + lo + "'>■</span> lineholder ~" + d.lineholder + "<br>" +
+        "<span style='color:" + hi + "'>■</span> reserve (RF) " + d.reserve)
+      .addTo(layer);
+    L.marker(p, { interactive: false, icon: L.divIcon({ className: "lbl", html: esc(d.station) + " " + v, iconSize: null, iconAnchor: [-radius - 3, 7] }) }).addTo(layer);
+    bounds.push(p);
+  });
+  if (home) L.circleMarker(home, { radius: 5, color: "#fff", weight: 2, fillColor: "#fff", fillOpacity: 1 }).bindPopup("<b>" + esc(base) + "</b> base").addTo(layer);
+  if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 5 });
+  document.getElementById("legend").innerHTML =
+    (show === "all" ? "<span><span class='sw line'></span>All trips (outer circle)</span><span><span class='sw res'></span>Reserve share (inner circle)</span>"
+      : show === "reserve" ? "<span><span class='sw res'></span>Reserve assignments (RF)</span>" : "<span><span class='sw line'></span>Lineholder trips (est.)</span>");
+}
+
+function render() {
+  var D = DATA;
+  document.title = "Trip Destinations " + monthName(D.period).replace(/^(\w{3})\w*/, "$1");
+  document.getElementById("lede").innerHTML = "<strong>" + esc(D.base + " " + D.eq + " " + D.seat) + "</strong>, " + esc(monthName(D.period)) +
+    ". From the saved monthly snapshot: this page never queries Sabre." +
+    ((D.missing_days || []).length ? " <strong>Missing day " + esc(D.missing_days.join(", ")) + ".</strong>" : "") +
+    (D.note ? " <strong>" + esc(D.note) + "</strong>" : "");
+  var line = D.destinations.reduce(function(s, d) { return s + d.lineholder; }, 0);
+  var shown = D.destinations.filter(function(d) { return val(d) > 0; });
+  var tiles = [
+    { label: "Trips scheduled (bid pack)", big: D.scheduled },
+    { label: "Lineholder (est.)", big: line },
+    { label: "Reserve assignments", big: D.reserve },
+    { label: "Destinations", mid: shown.length },
+    { label: "Top destination", mid: shown.length ? shown.slice().sort(function(a, b) { return val(b) - val(a); })[0].station : "—" }
+  ];
+  document.getElementById("tiles").innerHTML = tiles.map(function(t) {
+    var v = t.big != null ? '<span class="stat-big">' + t.big + "</span>" : '<span class="stat-mid">' + esc(t.mid) + "</span>";
+    return '<div class="stat"><span class="stat-label">' + esc(t.label) + "</span>" + v + "</div>";
+  }).join("");
+  document.getElementById("map-title").textContent =
+    show === "reserve" ? "Reserve destinations" : show === "lineholder" ? "Lineholder destinations" : "All destinations";
+  drawMap();
+
+  var rows = shown.slice().sort(function(a, b) { return val(b) - val(a) || a.station.localeCompare(b.station); });
+  var max = Math.max.apply(null, rows.map(function(d) { return d.lineholder + d.reserve; }).concat([1]));
+  document.getElementById("table-note").textContent = rows.length + " destinations";
+  document.getElementById("table").innerHTML = !rows.length ? '<p class="muted-note">Nothing in this view.</p>' :
+    "<table class='grid'><thead><tr><th>Destination</th><th class='r'>Lineholder</th><th class='r'>Reserve</th><th class='r'>Total</th><th></th></tr></thead><tbody>" +
+    rows.map(function(d) {
+      var t = d.lineholder + d.reserve;
+      return "<tr><td><b>" + esc(d.station) + "</b>" + (APT[d.station] ? "" : " <span class='dim'>(not on map)</span>") + "</td>" +
+        "<td class='num r'>" + d.lineholder + "</td><td class='num r'>" + d.reserve + "</td><td class='num r'><b>" + t + "</b></td>" +
+        "<td class='barcell'><div class='stack' style='width:" + (100 * t / max).toFixed(1) + "%'>" +
+        "<div class='line' style='flex:" + d.lineholder + "'></div><div class='res' style='flex:" + d.reserve + "'></div></div></td></tr>";
+    }).join("") + "</tbody></table>";
+  document.getElementById("method").innerHTML =
+    "A trip counts at each city it lays over in. <b>Scheduled</b> is the bid pack: every published pairing times the number of days it operates (" + D.pairings + " pairings). " +
+    "<b>Lineholder</b> is that minus the ones that went to reserves, so it's an estimate, not a roster. " +
+    "<b>Reserve</b> is the RF assignments, including trips built after the bid (31xxx)." +
+    (D.unplaced ? " " + D.unplaced + " reserve assignment" + (D.unplaced > 1 ? "s have" : " has") + " no trip detail saved, so no destination: " + esc(D.unplacedSeqs.join(", ")) + "." : "");
+}
+
+async function load(id) {
+  var r = await fetch("/api/reserve/destinations?snapshot=" + encodeURIComponent(id), { headers: authHeaders() });
+  if (!r.ok) { document.getElementById("lede").textContent = "Couldn't load that month."; return; }
+  DATA = await r.json(); render();
+}
+
+async function initApp() {
+  var r = await fetch("/api/reserve/snapshots", { headers: authHeaders() });
+  if (r.status === 401) {
+    localStorage.removeItem("logbook-token"); token = null;
+    document.getElementById("login").style.display = "block";
+    document.getElementById("app").style.display = "none";
+    document.getElementById("login-err").textContent = "sign in again";
+    return;
+  }
+  var snaps = (await r.json()).snapshots || [];
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  if (!snaps.length) { document.getElementById("lede").textContent = "No saved months yet."; return; }
+  if (!map) initMap();
+  var sel = document.getElementById("snap");
+  sel.innerHTML = snaps.map(function(s) { return '<option value="' + esc(s.id) + '">' + esc(monthName(s.period) + " · " + s.base + " " + s.eq + " " + s.seat) + "</option>"; }).join("");
+  var want = new URLSearchParams(location.search).get("id");
+  sel.value = snaps.some(function(s) { return s.id === want; }) ? want : snaps[0].id;
+  sel.addEventListener("change", function() { history.replaceState(null, "", "?id=" + encodeURIComponent(sel.value)); load(sel.value); });
+  await load(sel.value);
+  setTimeout(function() { map.invalidateSize(); }, 50);
+}
+
+document.querySelectorAll(".filters .chip[data-show]").forEach(function(b) {
+  b.addEventListener("click", function() {
+    show = b.getAttribute("data-show");
+    document.querySelectorAll(".filters .chip[data-show]").forEach(function(o) { o.setAttribute("aria-pressed", String(o === b)); });
+    if (DATA) render();
+  });
+});
+document.getElementById("login-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  var resp = await fetch("/api/logbook/auth", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: document.getElementById("password").value }) });
+  if (!resp.ok) { document.getElementById("login-err").textContent = "incorrect password"; return; }
+  token = (await resp.json()).token; localStorage.setItem("logbook-token", token); initApp();
+});
+if (token) initApp();
+</script>
+</body>
+</html>
