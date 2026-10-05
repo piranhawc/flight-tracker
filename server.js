@@ -4551,8 +4551,8 @@ app.get("/api/reserve/snapshots/:id", logbookAuth, (req, res) => {
 // N3 report. Nothing here contacts OAC or Sabre — Mike's rule is a monthly
 // Trips by destination for /destinations.html, from the saved monthly snapshot
 // (never Sabre). A trip's destination is where it lays over.
-//   lineholder = published pairings x OCCURS, minus the operations that went
-//                to reserves (an estimate: the bid pack's count, not a roster)
+//   lineholder = the PBS-awarded lines (every LH pilot's trips, as awarded);
+//                without lines, the bid pack's OCCURS minus reserve pickups
 //   reserve    = RF assignments, published or built after the bid (31xxx)
 function hssOvernights(legs, base) {
   // Overnight = the next leg leaves on a later day. Deadheads (eq XX) still
@@ -4579,8 +4579,21 @@ app.get("/api/reserve/destinations", logbookAuth, (req, res) => {
   try {
     const snap = JSON.parse(fs.readFileSync(f, "utf8"));
     const base = snap.base || "ORD";
-    const dest = {};   // station -> {scheduled, reserve, unknownReserve...}
-    const bump = (st, k, n) => { (dest[st] ||= { station: st, scheduled: 0, reserve: 0 })[k] += n; };
+    const dest = {};   // station -> {scheduled, reserve, line}
+    const bump = (st, k, n) => { (dest[st] ||= { station: st, scheduled: 0, reserve: 0, line: 0 })[k] += n; };
+    const hasLines = Array.isArray(snap.lines) && snap.lines.length > 0;
+    const stationsOf = {};
+    const seqStations = q => (stationsOf[q] ||= (snap.sequences || {})[q] ? pairingStations(snap.sequences[q], base) : []);
+    const lines = [];
+    if (hasLines) {
+      for (const l of snap.lines) {
+        const trips = (l.trips || []).map(t => ({ seq: t.seq, date: t.date, pos: t.pos, stations: seqStations(String(t.seq)),
+          credit: ((snap.sequences || {})[String(t.seq)] || {}).total_credit || null }));
+        if (l.status === "LH") trips.forEach(t => t.stations.forEach(st => bump(st, "line", 1)));
+        const rsv = Object.values(l.days || {}).filter(c => /^(SC|LC)$/.test(c)).length;
+        lines.push({ emp: l.emp, seno: l.seno, status: l.status, pay: l.pay, tafb: l.tafb, trips, reserveDays: rsv });
+      }
+    }
     let scheduled = 0, pairings = 0;
     for (const p of Object.values(snap.sequences || {})) {
       const m = /OCCURS\s+(\d+)/.exec(p.text || ""), n = m ? +m[1] : 0;
@@ -4602,10 +4615,11 @@ app.get("/api/reserve/destinations", logbookAuth, (req, res) => {
       if (!sts.length) { unplaced++; unplacedSeqs.push(`${a.seq} ${a.date}`); continue; }
       sts.forEach(st => bump(st, "reserve", 1));
     }
-    const rows = Object.values(dest).map(d => ({ ...d, lineholder: Math.max(0, d.scheduled - d.reserve) }))
+    const rows = Object.values(dest).map(d => ({ ...d, lineholder: hasLines ? d.line : Math.max(0, d.scheduled - d.reserve) }))
       .sort((a, b) => (b.lineholder + b.reserve) - (a.lineholder + a.reserve) || a.station.localeCompare(b.station));
     res.json({ id: snap.id, base, eq: snap.eq, seat: snap.seat, period: snap.period, note: snap.note || "",
-               missing_days: snap.missing_days || [], pairings, scheduled, reserve, unplaced, unplacedSeqs, destinations: rows });
+               missing_days: snap.missing_days || [], pairings, scheduled, reserve, unplaced, unplacedSeqs, destinations: rows,
+               hasLines, lines });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

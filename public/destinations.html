@@ -31,6 +31,17 @@ select.chip { appearance:none; padding-right:1.4rem; }
 .stack .res { background: var(--series-1); }
 td.barcell { width: 45%; }
 .mono { font-variant-numeric: tabular-nums; }
+.months { display:flex; gap:0.4rem; flex-wrap:wrap; margin:0 0 0.8rem; }
+.trip { display:inline-block; font-size:0.72rem; padding:0.1rem 0.4rem; margin:0.1rem 0.2rem 0.1rem 0; border-radius:5px;
+  border:1px solid var(--border-2); color:var(--ink-2); white-space:nowrap; font-variant-numeric: tabular-nums; }
+.trip b { color: var(--ink); }
+.trip.fb { border-style: dashed; }
+tr.line { cursor:pointer; }
+tr.line:hover td { background: rgba(78,161,255,0.05); }
+tr.line.on td { background: rgba(78,161,255,0.14); }
+tr.me td:first-child { box-shadow: inset 3px 0 0 var(--series-1); }
+.focusbar { display:none; margin:0 0 0.7rem; font-size:0.85rem; color:var(--ink-2); }
+.focusbar.on { display:block; }
 .dim { color: var(--muted); }
 </style>
 </head>
@@ -62,9 +73,9 @@ td.barcell { width: 45%; }
 <main class="container" id="app">
   <h1>Where the trips go</h1>
   <p class="lede" id="lede">Loading…</p>
+  <div class="months" id="months" role="tablist" aria-label="Month"></div>
 
   <div class="filters" role="group" aria-label="Filters">
-    <select class="chip" id="snap" aria-label="Month"></select>
     <button class="chip" type="button" data-show="all" aria-pressed="true">All trips</button>
     <button class="chip" type="button" data-show="lineholder" aria-pressed="false">Lineholder</button>
     <button class="chip" type="button" data-show="reserve" aria-pressed="false">Reserve</button>
@@ -74,6 +85,7 @@ td.barcell { width: 45%; }
 
   <section class="card">
     <div class="cardhead"><h2 id="map-title">Destinations</h2><span class="muted-note">circle area = trips · click one for counts</span></div>
+    <div class="focusbar" id="focusbar"></div>
     <div id="map"></div>
     <div class="legend" id="legend"></div>
   </section>
@@ -83,11 +95,22 @@ td.barcell { width: 45%; }
     <div class="scrollx" id="table"></div>
     <p class="muted-note" style="margin:0.8rem 0 0" id="method"></p>
   </section>
+
+  <section class="card" id="lines-card" style="display:none">
+    <div class="cardhead"><h2>Lines</h2><span class="muted-note" id="lines-note"></span></div>
+    <div class="filters" role="group" aria-label="Line filter" style="margin-bottom:0.7rem">
+      <button class="chip" type="button" data-lines="LH" aria-pressed="true">Lineholders</button>
+      <button class="chip" type="button" data-lines="RSV" aria-pressed="false">Reserves (SC/LC)</button>
+    </div>
+    <div class="scrollx" id="lines"></div>
+    <p class="muted-note" style="margin:0.8rem 0 0">As awarded by PBS, before trades. Click a line to map just its trips. Dashed trips are relief (FB) pairings. Credit and TAFB are the line's totals from the award.</p>
+  </section>
 </main>
 
 <script>
 var token = localStorage.getItem("logbook-token") || null;
-var DATA = null, show = "all", map = null, layer = null;
+var DATA = null, show = "all", map = null, layer = null, FOCUS = null, linesView = "LH", SNAPS = [];
+var MY_EMP = "861307";
 
 // Airport positions, by IATA code. A destination missing here is still
 // counted in the table, just not drawn.
@@ -161,21 +184,28 @@ function drawMap() {
   layer.clearLayers();
   var base = DATA.base, home = APT[base], hi = cssVar("--series-1") || "#4ea1ff", lo = cssVar("--series-dim") || "#2f6ea8";
   var rows = DATA.destinations.filter(function(d) { return val(d) > 0 && APT[d.station]; });
+  var fl = FOCUS && (DATA.lines || []).filter(function(l) { return l.emp === FOCUS; })[0];
+  if (fl) {
+    var c = {};
+    fl.trips.forEach(function(t) { t.stations.forEach(function(st) { c[st] = (c[st] || 0) + 1; }); });
+    rows = Object.keys(c).filter(function(st) { return APT[st]; }).map(function(st) { return { station: st, lineholder: c[st], reserve: 0 }; });
+  }
   var max = Math.max.apply(null, rows.map(val).concat([1]));
   var bounds = home ? [home] : [];
   rows.slice().sort(function(a, b) { return val(b) - val(a); }).forEach(function(d) {
     var p = APT[d.station], v = val(d);
     // Area is proportional to trips. In "All", the outer circle is every trip
     // and the bright inner one is the reserve share of it.
-    var col = show === "reserve" ? hi : lo;
+    var col = (show === "reserve" || fl) ? hi : lo;
     if (home) L.polyline(arc(home, p, 48), { color: col, weight: 1 + 3 * v / max, opacity: 0.55 }).addTo(layer);
     var R = 26, radius = R * Math.sqrt(v / max);
-    if (show === "all" && d.reserve) {
+    if (show === "all" && !fl && d.reserve) {
       L.circleMarker(p, { radius: R * Math.sqrt(d.reserve / max), color: hi, weight: 0, fillColor: hi, fillOpacity: 0.9, interactive: false }).addTo(layer);
     }
     L.circleMarker(p, { radius: Math.max(radius, 3), color: col, weight: 1.5, fillColor: col, fillOpacity: show === "all" ? 0.25 : 0.4 })
-      .bindPopup("<b>" + esc(d.station) + "</b><br>" + (d.lineholder + d.reserve) + " trips<br>" +
-        "<span style='color:" + lo + "'>■</span> lineholder ~" + d.lineholder + "<br>" +
+      .bindPopup(fl ? "<b>" + esc(d.station) + "</b><br>" + d.lineholder + " trip" + (d.lineholder > 1 ? "s" : "") + " on this line" :
+        "<b>" + esc(d.station) + "</b><br>" + (d.lineholder + d.reserve) + " trips<br>" +
+        "<span style='color:" + lo + "'>■</span> lineholder " + (DATA.hasLines ? "" : "~") + d.lineholder + "<br>" +
         "<span style='color:" + hi + "'>■</span> reserve (RF) " + d.reserve)
       .addTo(layer);
     L.marker(p, { interactive: false, icon: L.divIcon({ className: "lbl", html: esc(d.station) + " " + v, iconSize: null, iconAnchor: [-radius - 3, 7] }) }).addTo(layer);
@@ -183,7 +213,12 @@ function drawMap() {
   });
   if (home) L.circleMarker(home, { radius: 5, color: "#fff", weight: 2, fillColor: "#fff", fillOpacity: 1 }).bindPopup("<b>" + esc(base) + "</b> base").addTo(layer);
   if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 5 });
-  document.getElementById("legend").innerHTML =
+  var fb = document.getElementById("focusbar");
+  fb.className = "focusbar" + (fl ? " on" : "");
+  fb.innerHTML = fl ? "Showing one line: seniority <b>" + esc(fl.seno) + "</b>" + (fl.emp === MY_EMP ? " (you)" : "") + ", " + fl.trips.length +
+    " trips. <button class='linkbtn' type='button' id='clearfocus'>Show all</button>" : "";
+  if (fl) document.getElementById("clearfocus").onclick = function() { FOCUS = null; render(); };
+  document.getElementById("legend").innerHTML = fl ? "<span><span class='sw res'></span>This line's layover cities</span>" :
     (show === "all" ? "<span><span class='sw line'></span>All trips (outer circle)</span><span><span class='sw res'></span>Reserve share (inner circle)</span>"
       : show === "reserve" ? "<span><span class='sw res'></span>Reserve assignments (RF)</span>" : "<span><span class='sw line'></span>Lineholder trips (est.)</span>");
 }
@@ -197,7 +232,14 @@ function render() {
     (D.note ? " <strong>" + esc(D.note) + "</strong>" : "");
   var line = D.destinations.reduce(function(s, d) { return s + d.lineholder; }, 0);
   var shown = D.destinations.filter(function(d) { return val(d) > 0; });
-  var tiles = [
+  var L = D.lines || [], lh = L.filter(function(l) { return l.status === "LH"; });
+  var tiles = D.hasLines ? [
+    { label: "Lineholders", big: lh.length },
+    { label: "Lineholder trips", big: lh.reduce(function(s, l) { return s + l.trips.length; }, 0) },
+    { label: "Reserve pilots", big: L.length - lh.length },
+    { label: "Reserve assignments (RF)", big: D.reserve },
+    { label: "Destinations", mid: shown.length }
+  ] : [
     { label: "Trips scheduled (bid pack)", big: D.scheduled },
     { label: "Lineholder (est.)", big: line },
     { label: "Reserve assignments", big: D.reserve },
@@ -211,6 +253,7 @@ function render() {
   document.getElementById("map-title").textContent =
     show === "reserve" ? "Reserve destinations" : show === "lineholder" ? "Lineholder destinations" : "All destinations";
   drawMap();
+  renderLines();
 
   var rows = shown.slice().sort(function(a, b) { return val(b) - val(a) || a.station.localeCompare(b.station); });
   var max = Math.max.apply(null, rows.map(function(d) { return d.lineholder + d.reserve; }).concat([1]));
@@ -225,11 +268,68 @@ function render() {
         "<div class='line' style='flex:" + d.lineholder + "'></div><div class='res' style='flex:" + d.reserve + "'></div></div></td></tr>";
     }).join("") + "</tbody></table>";
   document.getElementById("method").innerHTML =
-    "A trip counts at each city it lays over in. <b>Scheduled</b> is the bid pack: every published pairing times the number of days it operates (" + D.pairings + " pairings). " +
-    "<b>Lineholder</b> is that minus the ones that went to reserves, so it's an estimate, not a roster. " +
+    "A trip counts at each city it lays over in. " + (D.hasLines
+      ? "<b>Lineholder</b> is every trip on the PBS-awarded lines, as awarded (before trades). "
+      : "<b>Lineholder</b> is the bid pack (each published pairing times the days it operates, " + D.pairings + " pairings) minus the ones that went to reserves: an estimate. ") +
     "<b>Reserve</b> is the RF assignments, including trips built after the bid (31xxx)." +
     (D.unplaced ? " " + D.unplaced + " reserve assignment" + (D.unplaced > 1 ? "s have" : " has") + " no trip detail saved, so no destination: " + esc(D.unplacedSeqs.join(", ")) + "." : "");
 }
+
+function renderLines() {
+  var card = document.getElementById("lines-card");
+  if (!DATA.hasLines) { card.style.display = "none"; return; }
+  card.style.display = "";
+  var L = DATA.lines.filter(function(l) { return linesView === "LH" ? l.status === "LH" : l.status !== "LH"; });
+  document.getElementById("lines-note").textContent = L.length + (linesView === "LH" ? " lineholders" : " reserves") + ", by seniority";
+  document.getElementById("lines").innerHTML = !L.length ? '<p class="muted-note">None.</p>' :
+    "<table class='grid'><thead><tr><th class='r'>Sen</th><th>Emp #</th>" + (linesView === "LH" ? "" : "<th>Type</th><th class='r'>Res. days</th>") +
+    "<th>Trips</th><th class='r'>Credit</th><th class='r'>TAFB</th></tr></thead><tbody>" +
+    L.map(function(l) {
+      var trips = l.trips.map(function(t) {
+        return "<span class='trip" + (t.pos === "FB" ? " fb" : "") + "' title='Seq " + esc(t.seq) + (t.pos ? " · " + esc(t.pos) : "") + "'>" +
+          esc(dayShort(t.date)) + " <b>" + esc(t.stations.join("/") || "?") + "</b></span>";
+      }).join("");
+      return "<tr class='line" + (l.emp === MY_EMP ? " me" : "") + (FOCUS === l.emp ? " on" : "") + "' data-emp='" + esc(l.emp) + "'>" +
+        "<td class='num r'>" + esc(l.seno) + "</td><td class='num muted-note'>" + esc(l.emp) + (l.emp === MY_EMP ? " (you)" : "") + "</td>" +
+        (linesView === "LH" ? "" : "<td>" + esc(l.status) + "</td><td class='num r'>" + l.reserveDays + "</td>") +
+        "<td>" + (trips || "<span class='dim'>—</span>") + "</td><td class='num r'>" + esc(l.pay || "—") + "</td><td class='num r'>" + esc(l.tafb || "—") + "</td></tr>";
+    }).join("") + "</tbody></table>";
+  document.querySelectorAll("#lines tr.line").forEach(function(tr) {
+    tr.addEventListener("click", function() {
+      var e = tr.getAttribute("data-emp");
+      FOCUS = FOCUS === e ? null : e; render();
+      if (FOCUS) document.getElementById("map").scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
+}
+function dayShort(d) {
+  var dt = new Date(d + "T00:00:00Z");
+  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+function renderMonths(cur) {
+  document.getElementById("months").innerHTML = SNAPS.slice().sort(function(a, b) { return String(a.period).localeCompare(String(b.period)); })
+    .map(function(s) {
+      return '<button class="chip" type="button" role="tab" data-id="' + esc(s.id) + '" aria-pressed="' + (s.id === cur) + '" aria-selected="' + (s.id === cur) + '">' +
+        esc(monthName(s.period)) + "</button>";
+    }).join("");
+  document.querySelectorAll("#months .chip").forEach(function(b) {
+    b.addEventListener("click", function() {
+      var id = b.getAttribute("data-id");
+      history.replaceState(null, "", "?id=" + encodeURIComponent(id));
+      FOCUS = null; renderMonths(id); load(id);
+    });
+  });
+}
+document.addEventListener("keydown", function(e) {
+  // ← / → step through the months
+  if (!SNAPS.length || /INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) return;
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  var ids = SNAPS.slice().sort(function(a, b) { return String(a.period).localeCompare(String(b.period)); }).map(function(s) { return s.id; });
+  var i = ids.indexOf(DATA && DATA.id), j = i + (e.key === "ArrowRight" ? 1 : -1);
+  if (i < 0 || j < 0 || j >= ids.length) return;
+  history.replaceState(null, "", "?id=" + encodeURIComponent(ids[j]));
+  FOCUS = null; renderMonths(ids[j]); load(ids[j]);
+});
 
 async function load(id) {
   var r = await fetch("/api/reserve/destinations?snapshot=" + encodeURIComponent(id), { headers: authHeaders() });
@@ -251,12 +351,11 @@ async function initApp() {
   document.getElementById("app").style.display = "block";
   if (!snaps.length) { document.getElementById("lede").textContent = "No saved months yet."; return; }
   if (!map) initMap();
-  var sel = document.getElementById("snap");
-  sel.innerHTML = snaps.map(function(s) { return '<option value="' + esc(s.id) + '">' + esc(monthName(s.period) + " · " + s.base + " " + s.eq + " " + s.seat) + "</option>"; }).join("");
+  SNAPS = snaps;
   var want = new URLSearchParams(location.search).get("id");
-  sel.value = snaps.some(function(s) { return s.id === want; }) ? want : snaps[0].id;
-  sel.addEventListener("change", function() { history.replaceState(null, "", "?id=" + encodeURIComponent(sel.value)); load(sel.value); });
-  await load(sel.value);
+  var cur = snaps.some(function(s) { return s.id === want; }) ? want : snaps[0].id;
+  renderMonths(cur);
+  await load(cur);
   setTimeout(function() { map.invalidateSize(); }, 50);
 }
 
@@ -265,6 +364,13 @@ document.querySelectorAll(".filters .chip[data-show]").forEach(function(b) {
     show = b.getAttribute("data-show");
     document.querySelectorAll(".filters .chip[data-show]").forEach(function(o) { o.setAttribute("aria-pressed", String(o === b)); });
     if (DATA) render();
+  });
+});
+document.querySelectorAll("[data-lines]").forEach(function(b) {
+  b.addEventListener("click", function() {
+    linesView = b.getAttribute("data-lines");
+    document.querySelectorAll("[data-lines]").forEach(function(o) { o.setAttribute("aria-pressed", String(o === b)); });
+    renderLines();
   });
 });
 document.getElementById("login-form").addEventListener("submit", async function(e) {
