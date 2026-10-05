@@ -613,8 +613,35 @@ app.get("/api/fa/track/:id", faGuard, async (req, res) => {
 
 // --- Convenience: find active flight and return position ---
 // Takes AA flight number like 1582, finds today's instance, returns position
+// Every open page polls this every 30 s; without a shared cache each viewer
+// cost 2-3 FlightAware calls per poll. 25 s keeps the map live for all of
+// them on one set of calls.
+const trackCache = new Map();          // key -> { ts, body }
+const TRACK_CACHE_MS = 25 * 1000;
+// Filed route (the waypoints the flight plans to fly), once per flight.
+const routeCache = new Map();          // fa_flight_id -> { ts, fixes|null }
+async function filedRoute(faId) {
+  const c = routeCache.get(faId);
+  if (c && (c.fixes || Date.now() - c.ts < 10 * 60 * 1000)) return c.fixes;
+  let fixes = null;
+  try {
+    const r = await faFetch("route", `${FA_BASE}/flights/${faId}/route`);
+    if (r.ok) {
+      const j = await r.json();
+      fixes = (j.fixes || []).filter(f => f.latitude != null && f.longitude != null)
+        .map(f => ({ name: f.name, lat: f.latitude, lon: f.longitude }));
+      if (fixes.length < 2) fixes = null;
+    }
+  } catch (e) { console.log(`[route] ${faId}: ${e.message}`); }
+  routeCache.set(faId, { ts: Date.now(), fixes });
+  if (routeCache.size > 200) routeCache.delete(routeCache.keys().next().value);
+  return fixes;
+}
 app.get("/api/track/:flightNum", faGuard, async (req, res) => {
   if (!FA_API_KEY) return res.status(500).json({ error: "FA_API_KEY not configured" });
+  const cacheKey = [req.params.flightNum, req.query.dep, req.query.arr, req.query.start].join("|");
+  const hit = trackCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < TRACK_CACHE_MS) return res.json(hit.body);
   try {
     const ident = `AAL${req.params.flightNum}`;
     // Get flights for this ident
@@ -775,12 +802,14 @@ app.get("/api/track/:flightNum", faGuard, async (req, res) => {
       if (dk2) sampleHaArrivalFix(dk2, target.gate_destination, faAnchor, target.actual_in).catch(() => {});
     }
 
-    res.json({
-      flight: target,
-      position,
-      track,
-      inbound,
-    });
+    // Planned path for the map: only while there's still flying to show.
+    let route = null;
+    if (!target.cancelled && !target.actual_in) route = await filedRoute(target.fa_flight_id);
+
+    const body = { flight: target, position, track, inbound, route };
+    trackCache.set(cacheKey, { ts: Date.now(), body });
+    if (trackCache.size > 100) trackCache.delete(trackCache.keys().next().value);
+    res.json(body);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
