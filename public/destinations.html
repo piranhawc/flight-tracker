@@ -187,7 +187,7 @@ function drawMap() {
   var fl = FOCUS && (DATA.lines || []).filter(function(l) { return l.emp === FOCUS; })[0];
   if (fl) {
     var c = {};
-    fl.trips.forEach(function(t) { t.stations.forEach(function(st) { c[st] = (c[st] || 0) + 1; }); });
+    (fl.status === "LH" ? fl.trips : fl.rf).forEach(function(t) { t.stations.forEach(function(st) { c[st] = (c[st] || 0) + 1; }); });
     rows = Object.keys(c).filter(function(st) { return APT[st]; }).map(function(st) { return { station: st, lineholder: c[st], reserve: 0 }; });
   }
   var max = Math.max.apply(null, rows.map(val).concat([1]));
@@ -215,8 +215,8 @@ function drawMap() {
   if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 5 });
   var fb = document.getElementById("focusbar");
   fb.className = "focusbar" + (fl ? " on" : "");
-  fb.innerHTML = fl ? "Showing one line: seniority <b>" + esc(fl.seno) + "</b>" + (fl.emp === MY_EMP ? " (you)" : "") + ", " + fl.trips.length +
-    " trips. <button class='linkbtn' type='button' id='clearfocus'>Show all</button>" : "";
+  fb.innerHTML = fl ? "Showing one line: seniority <b>" + esc(fl.seno) + "</b>" + (fl.emp === MY_EMP ? " (you)" : "") + ", " +
+    (fl.status === "LH" ? fl.trips.length + " trips" : fl.rf.length + " reserve assignments, " + hmm(fl.rfMinutes) + " credit") + ". <button class='linkbtn' type='button' id='clearfocus'>Show all</button>" : "";
   if (fl) document.getElementById("clearfocus").onclick = function() { FOCUS = null; render(); };
   document.getElementById("legend").innerHTML = fl ? "<span><span class='sw res'></span>This line's layover cities</span>" :
     (show === "all" ? "<span><span class='sw line'></span>All trips (outer circle)</span><span><span class='sw res'></span>Reserve share (inner circle)</span>"
@@ -280,9 +280,10 @@ function renderLines() {
   if (!DATA.hasLines) { card.style.display = "none"; return; }
   card.style.display = "";
   var L = DATA.lines.filter(function(l) { return linesView === "LH" ? l.status === "LH" : l.status !== "LH"; });
-  document.getElementById("lines-note").textContent = L.length + (linesView === "LH" ? " lineholders" : " reserves") + ", by seniority";
+  if (linesView !== "LH") return renderReserves(L);
+  document.getElementById("lines-note").textContent = L.length + " lineholders, by seniority";
   document.getElementById("lines").innerHTML = !L.length ? '<p class="muted-note">None.</p>' :
-    "<table class='grid'><thead><tr><th class='r'>Sen</th><th>Emp #</th>" + (linesView === "LH" ? "" : "<th>Type</th><th class='r'>Res. days</th>") +
+    "<table class='grid'><thead><tr><th class='r'>Sen</th><th>Emp #</th>" +
     "<th>Trips</th><th class='r'>Credit</th><th class='r'>TAFB</th></tr></thead><tbody>" +
     L.map(function(l) {
       var trips = l.trips.map(function(t) {
@@ -291,9 +292,34 @@ function renderLines() {
       }).join("");
       return "<tr class='line" + (l.emp === MY_EMP ? " me" : "") + (FOCUS === l.emp ? " on" : "") + "' data-emp='" + esc(l.emp) + "'>" +
         "<td class='num r'>" + esc(l.seno) + "</td><td class='num muted-note'>" + esc(l.emp) + (l.emp === MY_EMP ? " (you)" : "") + "</td>" +
-        (linesView === "LH" ? "" : "<td>" + esc(l.status) + "</td><td class='num r'>" + l.reserveDays + "</td>") +
         "<td>" + (trips || "<span class='dim'>—</span>") + "</td><td class='num r'>" + esc(l.pay || "—") + "</td><td class='num r'>" + esc(l.tafb || "—") + "</td></tr>";
     }).join("") + "</tbody></table>";
+  bindLineClicks();
+}
+function hmm(m) { return Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0"); }
+// Reserves: how much each was actually used, from the RF assignments.
+function renderReserves(L) {
+  L = L.slice().sort(function(a, b) { return b.rfMinutes - a.rfMinutes || a.seno - b.seno; });
+  var used = L.filter(function(l) { return l.rf.length; }), tot = L.reduce(function(n, l) { return n + l.rfMinutes; }, 0);
+  var max = Math.max.apply(null, L.map(function(l) { return l.rfMinutes; }).concat([1]));
+  document.getElementById("lines-note").textContent = used.length + " of " + L.length + " reserves used · " + hmm(tot) +
+    " credit assigned · avg " + hmm(Math.round(tot / Math.max(L.length, 1))) + " per reserve";
+  document.getElementById("lines").innerHTML = !L.length ? '<p class="muted-note">None.</p>' :
+    "<table class='grid'><thead><tr><th class='r'>Sen</th><th>Emp #</th><th>Type</th><th class='r'>Res. days</th>" +
+    "<th class='r'>Trips</th><th class='r'>Credit</th><th></th><th>Assigned</th></tr></thead><tbody>" +
+    L.map(function(l) {
+      var trips = l.rf.map(function(t) {
+        return "<span class='trip' title='Seq " + esc(t.seq) + " · " + esc(t.time) + " credit'>" + esc(dayShort(t.date)) + " <b>" + esc(t.stations.join("/") || "?") + "</b></span>";
+      }).join("");
+      return "<tr class='line" + (l.emp === MY_EMP ? " me" : "") + (FOCUS === l.emp ? " on" : "") + "' data-emp='" + esc(l.emp) + "'>" +
+        "<td class='num r'>" + esc(l.seno) + "</td><td class='num muted-note'>" + esc(l.emp) + "</td><td>" + esc(l.status) + "</td>" +
+        "<td class='num r'>" + l.reserveDays + "</td><td class='num r'>" + l.rf.length + "</td><td class='num r'><b>" + (l.rfMinutes ? hmm(l.rfMinutes) : "—") + "</b></td>" +
+        "<td class='barcell' style='width:18%'><div class='stack' style='width:" + (100 * l.rfMinutes / max).toFixed(1) + "%'><div class='res' style='flex:1'></div></div></td>" +
+        "<td>" + (trips || "<span class='dim'>not used</span>") + "</td></tr>";
+    }).join("") + "</tbody></table>";
+  bindLineClicks();
+}
+function bindLineClicks() {
   document.querySelectorAll("#lines tr.line").forEach(function(tr) {
     tr.addEventListener("click", function() {
       var e = tr.getAttribute("data-emp");

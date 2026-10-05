@@ -4614,13 +4614,28 @@ app.get("/api/reserve/destinations", logbookAuth, (req, res) => {
     const stationsOf = {};
     const seqStations = q => (stationsOf[q] ||= (snap.sequences || {})[q] ? pairingStations(snap.sequences[q], base) : []);
     const lines = [];
+    // Reserve utilization: each RF award, keyed to the pilot it went to. The
+    // N3 TIME column is the trip's credit value (H.MM), present on every award.
+    const hm = t => { const m = /^(\d+)\.(\d{2})$/.exec(String(t || "")); return m ? +m[1] * 60 + +m[2] : 0; };
+    const rfByEmp = {};
+    for (const a of (snap.awards || []).filter(a => a.code === "RF")) {
+      const q = String(parseInt(a.seq, 10));
+      let sts = seqStations(q);
+      if (!sts.length) {
+        const h = (snap.hss || {})[`${q}@${a.date}`];
+        if (h && h.final && h.final.length) sts = hssOvernights(h.final, base);
+      }
+      (rfByEmp[a.emp] ||= []).push({ seq: a.seq, date: a.date, stations: sts, time: a.time, minutes: hm(a.time) });
+    }
     if (hasLines) {
       for (const l of snap.lines) {
         const trips = (l.trips || []).map(t => ({ seq: t.seq, date: t.date, pos: t.pos, stations: seqStations(String(t.seq)),
           credit: ((snap.sequences || {})[String(t.seq)] || {}).total_credit || null }));
         if (l.status === "LH") trips.forEach(t => t.stations.forEach(st => bump(st, "line", 1)));
         const rsv = Object.values(l.days || {}).filter(c => /^(SC|LC)$/.test(c)).length;
-        lines.push({ emp: l.emp, seno: l.seno, status: l.status, pay: l.pay, tafb: l.tafb, trips, reserveDays: rsv });
+        const rf = (rfByEmp[l.emp] || []).sort((x, y) => x.date.localeCompare(y.date));
+        lines.push({ emp: l.emp, seno: l.seno, status: l.status, pay: l.pay, tafb: l.tafb, trips, reserveDays: rsv,
+                     rf, rfMinutes: rf.reduce((n, t) => n + t.minutes, 0) });
       }
     }
     let scheduled = 0, pairings = 0;
