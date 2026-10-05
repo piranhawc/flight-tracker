@@ -4559,7 +4559,7 @@ app.get("/api/reserve/seq", logbookAuth, (req, res) => {
       // Built after the bid: detail came from a DECS sequence display, keyed
       // by the awarded instance (seq@date), since these are one-offs.
       const h = (snap.hss || {})[`${seq}@${start}`];
-      if (h && h.found) {
+      if (h && (h.found || h.text)) {   // supervisor sequences have a display but no legs
         return res.json({ source: "decs", seq, start: start || null, fetched_at: snap.fetched_at, cached: true,
           header: h.header || "", status: h.status || "", supv: !!h.supv,
           flying: h.flying ?? null, pay_credit: h.pay_credit ?? null, total: h.total ?? null, tafb: h.tafb ?? null,
