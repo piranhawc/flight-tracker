@@ -4559,6 +4559,11 @@ app.get("/api/reserve/seq", logbookAuth, (req, res) => {
       // Built after the bid: detail came from a DECS sequence display, keyed
       // by the awarded instance (seq@date), since these are one-offs.
       const h = (snap.hss || {})[`${seq}@${start}`];
+      if (h && !h.found && /NOT FOUND/.test(h.text || "")) {
+        // DECS only keeps about five weeks of sequence displays, so a month
+        // pulled on the 1st has already lost its early trips.
+        return res.status(404).json({ error: "Sabre had already purged this trip when the month was pulled (it keeps about five weeks)" });
+      }
       if (h && (h.found || h.text)) {   // supervisor sequences have a display but no legs
         return res.json({ source: "decs", seq, start: start || null, fetched_at: snap.fetched_at, cached: true,
           header: h.header || "", status: h.status || "", supv: !!h.supv,

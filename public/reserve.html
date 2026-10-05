@@ -384,7 +384,9 @@ function render() {
   document.getElementById("lede").innerHTML =
     "<strong>" + esc(SNAP.base + " " + SNAP.eq + " " + SNAP.seat) + "</strong> open sequences, " +
     esc(SNAP.range) + " — DECS " + esc(SNAP.report) + " as of " + esc(SNAP.as_of) +
-    ". A saved snapshot: this page never queries Sabre.";
+    ". A saved snapshot: this page never queries Sabre." +
+    ((SNAP.missing_days || []).length ? " <strong>Missing day" + (SNAP.missing_days.length > 1 ? "s" : "") + " " +
+      esc(SNAP.missing_days.join(", ")) + "</strong>: already past Sabre's lookback when pulled." : "");
   var label = code === "RF" ? "Reserve assignments" : "Awards";
   document.getElementById("days-title").textContent = label + " by day";
   document.getElementById("list-title").textContent = label;
