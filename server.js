@@ -4509,6 +4509,35 @@ app.post("/api/logbook/refresh-crew-names", logbookAuth, async (req, res) => {
   res.json({ replaced, looked_up: empPlaceholders.size, sabre_pairings_fetched: sabreFetched });
 });
 
+// --- reserve / open-time snapshots (DECS N3) -----------------------------
+// Saved DECS N3 reports ("open sequences": who each open trip was awarded
+// to, and how). They name other pilots with employee numbers, so they live
+// in the mounted data volume — never in this repo, which is public — and are
+// served only behind the logbook password. Snapshots are pulled from Sabre
+// deliberately and rarely; this endpoint only reads what's on disk and never
+// contacts Sabre itself.
+const RESERVE_DIR = path.join(process.env.DATA_DIR || "/app/data", "reserve");
+app.get("/api/reserve/snapshots", logbookAuth, (req, res) => {
+  try {
+    const files = fs.existsSync(RESERVE_DIR)
+      ? fs.readdirSync(RESERVE_DIR).filter(f => /^[A-Za-z0-9-]+\.json$/.test(f)) : [];
+    const list = files.map(f => {
+      const d = JSON.parse(fs.readFileSync(path.join(RESERVE_DIR, f), "utf8"));
+      return { id: d.id, report: d.report, base: d.base, eq: d.eq, seat: d.seat,
+               period: d.period, as_of: d.as_of, awards: (d.awards || []).length };
+    }).sort((a, b) => String(b.period).localeCompare(String(a.period)));
+    res.json({ snapshots: list });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/reserve/snapshots/:id", logbookAuth, (req, res) => {
+  const id = String(req.params.id || "");
+  if (!/^[A-Za-z0-9-]+$/.test(id)) return res.status(400).json({ error: "bad id" });
+  const f = path.join(RESERVE_DIR, `${id}.json`);
+  if (!fs.existsSync(f)) return res.status(404).json({ error: "no such snapshot" });
+  try { res.type("json").send(fs.readFileSync(f, "utf8")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // --- visitor stats -------------------------------------------------------
 // The site is public; these numbers are not. Behind the logbook password.
 // Friend share-links are the one place a visitor has a name: the log keeps

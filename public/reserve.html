@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reserve — open time awards</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/league.css?v=1">
+<style>
+/* Codes are identities, not magnitudes: shown as text, never as colour. */
+.code { display:inline-block; font-size:0.68rem; font-weight:700; letter-spacing:0.04em;
+  padding:0.1rem 0.4rem; border-radius:5px; border:1px solid var(--border-2); color:var(--ink-2);
+  font-variant-numeric: tabular-nums; }
+.code.rf { color: var(--series-1); border-color: rgba(78,161,255,0.45); }
+.flag { color: var(--muted); font-size:0.7rem; font-weight:600; margin-left:0.3rem; }
+.search { background:var(--surface); border:1px solid var(--border-2); border-radius:999px;
+  color:var(--ink); padding:0.35rem 0.9rem; font:inherit; font-size:0.85rem; min-width:200px; }
+.search:focus { outline:none; border-color:var(--series-1); }
+select.chip { appearance:none; padding-right:1.4rem; }
+.mono { font-variant-numeric: tabular-nums; }
+tr.me td { background: rgba(78,161,255,0.08); }
+pre.raw { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.8rem;
+  font-size:0.72rem; line-height:1.35; color:var(--ink-2); overflow:auto; max-height:420px; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="/"><span class="brand-dot"></span>Flight Tracker</a>
+    <nav class="nav">
+      <a class="navlink" href="/">Tracker</a>
+      <a class="navlink" href="/logbook.html">Logbook</a>
+      <a class="navlink" href="/stats.html">Stats</a>
+      <a class="navlink on" href="/reserve.html">Reserve</a>
+      <a class="navlink" href="/visitors.html">Visitors</a>
+    </nav>
+  </div>
+</header>
+
+<div id="login">
+  <h2 style="margin:0 0 0.8rem;font-size:1.1rem">Logbook sign-in</h2>
+  <form id="login-form">
+    <input class="input" type="password" id="password" placeholder="password" autocomplete="current-password">
+    <div class="err" id="login-err"></div>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+</div>
+
+<main class="container" id="app">
+  <h1>Reserve &amp; open time</h1>
+  <p class="lede" id="lede">Loading…</p>
+
+  <div class="filters" role="group" aria-label="Filters">
+    <select class="chip" id="snap" aria-label="Report"></select>
+    <button class="chip" type="button" data-code="RF" aria-pressed="true">Reserve (RF)</button>
+    <button class="chip" type="button" data-code="ALL" aria-pressed="false">All awards</button>
+    <input class="search" id="q" type="search" placeholder="Filter pilot, seq or emp #">
+  </div>
+
+  <div class="summary" id="tiles"></div>
+
+  <section class="card">
+    <div class="cardhead">
+      <h2 id="days-title">Assignments by day</h2>
+      <button class="linkbtn" id="days-toggle" type="button">Table view</button>
+    </div>
+    <div class="chart" id="days-chart">
+      <div class="plot" id="days-plot"></div>
+      <div class="axis" id="days-axis"></div>
+    </div>
+    <div class="scrollx" id="days-table" style="display:none"></div>
+  </section>
+
+  <div class="cards">
+    <section class="card">
+      <div class="cardhead"><h2 id="pilots-title">Most assignments</h2><span class="muted-note">per pilot</span></div>
+      <div class="hbars" id="pilots"></div>
+    </section>
+    <section class="card">
+      <div class="cardhead"><h2>Awards by code</h2><span class="muted-note">whole month</span></div>
+      <div class="hbars" id="codes"></div>
+      <p class="muted-note" style="margin:0.9rem 0 0">RF is the code your own reserve assignments carry in HI1. Other codes are shown exactly as DECS prints them.</p>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="cardhead"><h2 id="list-title">Assignments</h2><span class="muted-note" id="list-note"></span></div>
+    <div class="scrollx" id="list"></div>
+    <p class="muted-note" style="margin:0.8rem 0 0">“Starts” and “Ends” are the report's unlabeled time fields; <span class="mono">1658/03</span> reads as 16:58 on the 3rd.</p>
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>Moved out of base</h2><span class="muted-note">sequences transferred</span></div>
+    <div id="transfers"></div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>Raw DECS output</h2><button class="linkbtn" id="raw-toggle" type="button">Show</button></div>
+    <pre class="raw" id="raw" style="display:none"></pre>
+  </section>
+</main>
+
+<div id="tip" role="tooltip"></div>
+
+<script>
+var token = localStorage.getItem("logbook-token") || null;
+var SNAP = null, code = "RF", query = "";
+var MY_EMP = "861307";
+
+function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function(c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+function dayLabel(d) {
+  var dt = new Date(d + "T00:00:00Z");
+  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).toUpperCase();
+}
+function pilotName(p) { return String(p || "").replace(/\s+/g, " ").trim(); }
+
+/* ---- tooltip ---- */
+var tip = document.getElementById("tip");
+function showTip(e, h) { tip.innerHTML = h; tip.style.opacity = "1"; moveTip(e); }
+function moveTip(e) {
+  var pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+  var x = e.clientX + pad, y = e.clientY - h - pad;
+  if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+  if (y < 8) y = e.clientY + pad;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { tip.style.opacity = "0"; }
+function bindTip(el, h) {
+  el.addEventListener("mouseenter", function(e) { showTip(e, h); });
+  el.addEventListener("mousemove", moveTip);
+  el.addEventListener("mouseleave", hideTip);
+}
+
+/* ---- data ---- */
+function awards() {
+  var q = query.toLowerCase();
+  return (SNAP.awards || []).filter(function(a) {
+    if (code !== "ALL" && a.code !== code) return false;
+    if (!q) return true;
+    return pilotName(a.pilot).toLowerCase().indexOf(q) >= 0 || String(a.seq).indexOf(q) >= 0 ||
+           String(a.emp).indexOf(q) >= 0;
+  });
+}
+
+function renderTiles(list) {
+  var pilots = {}, seqs = {}, days = {};
+  list.forEach(function(a) { pilots[a.emp] = 1; seqs[a.seq] = 1; days[a.date] = 1; });
+  var busiest = null, perDay = {};
+  list.forEach(function(a) { perDay[a.date] = (perDay[a.date] || 0) + 1; });
+  Object.keys(perDay).forEach(function(d) { if (!busiest || perDay[d] > perDay[busiest]) busiest = d; });
+  var tiles = [
+    { label: code === "RF" ? "Reserve assignments" : "Awards", big: list.length },
+    { label: "Pilots", big: Object.keys(pilots).length },
+    { label: "Sequences", mid: Object.keys(seqs).length },
+    { label: "Days with one", mid: Object.keys(days).length },
+    { label: "Busiest day", mid: busiest ? dayLabel(busiest) + " · " + perDay[busiest] : "—" },
+    { label: "Month total (all codes)", mid: (SNAP.awards || []).length }
+  ];
+  document.getElementById("tiles").innerHTML = tiles.map(function(t) {
+    var v = t.big != null ? '<span class="stat-big">' + t.big + "</span>" : '<span class="stat-mid">' + esc(t.mid) + "</span>";
+    return '<div class="stat"><span class="stat-label">' + esc(t.label) + "</span>" + v + "</div>";
+  }).join("");
+}
+
+function monthDays() {
+  var p = String(SNAP.period || "").split("-"), y = +p[0], m = +p[1];
+  var n = new Date(Date.UTC(y, m, 0)).getUTCDate(), out = [];
+  for (var i = 1; i <= n; i++) out.push(y + "-" + String(m).padStart(2, "0") + "-" + String(i).padStart(2, "0"));
+  return out;
+}
+
+function renderDays(list) {
+  var days = monthDays(), counts = {};
+  list.forEach(function(a) { counts[a.date] = (counts[a.date] || 0) + 1; });
+  var max = Math.max.apply(null, days.map(function(d) { return counts[d] || 0; }).concat([1]));
+  var step = max > 20 ? 5 : max > 8 ? 2 : 1;
+  var top = Math.max(step, Math.ceil(max / step) * step);
+  var lines = "";
+  for (var g = step; g <= top; g += step)
+    lines += '<div class="gridline" style="bottom:' + (100 * g / top).toFixed(2) + '%"><span>' + g + "</span></div>";
+  var plot = document.getElementById("days-plot"), labelled = false;
+  plot.innerHTML = lines + days.map(function(d) {
+    var v = counts[d] || 0, pct = 100 * v / top, isMax = v === max && v > 0, peak = "";
+    if (isMax && !labelled) { labelled = true; peak = '<span class="peak" style="bottom:calc(' + pct.toFixed(2) + '% + 4px)">' + v + "</span>"; }
+    return '<div class="col' + (isMax ? " is-max" : "") + '" data-d="' + d + '">' + peak +
+           '<div class="bar" style="height:' + pct.toFixed(2) + '%"></div></div>';
+  }).join("");
+  var avail = plot.clientWidth - 38;
+  var every = Math.max(1, Math.ceil(days.length / Math.max(1, Math.floor(avail / 46))));
+  document.getElementById("days-axis").innerHTML = days.map(function(d, i) {
+    return '<div class="tick">' + ((days.length - 1 - i) % every === 0 ? dayLabel(d) : "") + "</div>";
+  }).join("");
+  var byDay = {};
+  list.forEach(function(a) { (byDay[a.date] = byDay[a.date] || []).push(a); });
+  Array.prototype.forEach.call(plot.querySelectorAll(".col"), function(col) {
+    var d = col.getAttribute("data-d"), arr = byDay[d] || [];
+    var names = arr.slice(0, 6).map(function(a) { return esc(pilotName(a.pilot)) + " · " + esc(a.seq); }).join("<br>");
+    bindTip(col, "<b>" + dayLabel(d) + "</b> — " + arr.length + "<br>" + (names || '<span class="t-key">none</span>') +
+      (arr.length > 6 ? "<br><span class='t-key'>+" + (arr.length - 6) + " more</span>" : ""));
+  });
+  document.getElementById("days-table").innerHTML =
+    "<table class='grid'><thead><tr><th>Day</th><th class='r'>Count</th></tr></thead><tbody>" +
+    days.map(function(d) { return "<tr><td class='num'>" + dayLabel(d) + "</td><td class='num r'>" + (counts[d] || 0) + "</td></tr>"; }).join("") +
+    "</tbody></table>";
+}
+
+function hbars(elId, entries, tipFn) {
+  var el = document.getElementById(elId);
+  if (!entries.length) { el.innerHTML = '<p class="muted-note">Nothing matches.</p>'; return; }
+  var max = entries[0].v || 1;
+  el.innerHTML = entries.map(function(e) {
+    return '<div class="hb"><span class="lbl" title="' + esc(e.k) + '">' + esc(e.k) + "</span>" +
+      '<span class="track"><span class="fill" style="width:' + Math.max(2, 100 * e.v / max).toFixed(1) + '%"></span></span>' +
+      '<span class="n">' + e.v + "</span></div>";
+  }).join("");
+  Array.prototype.forEach.call(el.querySelectorAll(".hb"), function(row, i) { bindTip(row, tipFn(entries[i])); });
+}
+
+function renderPilots(list) {
+  var by = {};
+  list.forEach(function(a) {
+    var k = a.emp;
+    if (!by[k]) by[k] = { k: pilotName(a.pilot), v: 0, emp: a.emp, sen: a.sen, dates: [] };
+    by[k].v++; by[k].dates.push(dayLabel(a.date) + " (" + a.seq + ")");
+  });
+  var e = Object.keys(by).map(function(k) { return by[k]; }).sort(function(a, b) { return b.v - a.v || a.sen - b.sen; }).slice(0, 10);
+  hbars("pilots", e, function(p) { return "<b>" + esc(p.k) + "</b> · sen " + p.sen + " · #" + esc(p.emp) + "<br>" + p.dates.map(esc).join("<br>"); });
+}
+
+function renderCodes() {
+  var by = {};
+  (SNAP.awards || []).forEach(function(a) { by[a.code] = (by[a.code] || 0) + 1; });
+  var e = Object.keys(by).map(function(k) { return { k: k, v: by[k] }; }).sort(function(a, b) { return b.v - a.v; });
+  hbars("codes", e, function(c) { return "<b>" + esc(c.k) + "</b> — " + c.v + " awards"; });
+}
+
+function renderList(list) {
+  var rows = list.slice().sort(function(a, b) { return a.date.localeCompare(b.date) || String(a.seq).localeCompare(String(b.seq)); });
+  document.getElementById("list-note").textContent = rows.length + " shown";
+  document.getElementById("list").innerHTML = !rows.length ? '<p class="muted-note">Nothing matches.</p>' :
+    "<table class='grid'><thead><tr><th>Day</th><th>Seq</th><th>Pilot</th><th class='r'>Sen</th><th>Emp #</th>" +
+    "<th class='r'>TIME</th><th class='r'>Starts</th><th class='r'>Ends</th><th class='r'>Notified</th><th>Code</th></tr></thead><tbody>" +
+    rows.map(function(a) {
+      return "<tr" + (a.emp === MY_EMP ? " class='me'" : "") + "><td class='num'>" + dayLabel(a.date) + "</td>" +
+        "<td class='num'>" + esc(a.seq) + "</td>" +
+        "<td>" + esc(pilotName(a.pilot)) + (a.flag ? "<span class='flag'>" + esc(a.flag) + "</span>" : "") + "</td>" +
+        "<td class='num r'>" + a.sen + "</td><td class='num muted-note'>" + esc(a.emp) + "</td>" +
+        "<td class='num r'>" + esc(a.time) + "</td><td class='num r'>" + esc(a.starts) + "</td>" +
+        "<td class='num r'>" + esc(a.ends) + "</td><td class='num r muted-note'>" + esc(a.notified) + "</td>" +
+        "<td><span class='code" + (a.code === "RF" ? " rf" : "") + "'>" + esc(a.code) + "</span></td></tr>";
+    }).join("") + "</tbody></table>";
+}
+
+function render() {
+  if (!SNAP) return;
+  var list = awards();
+  document.getElementById("lede").innerHTML =
+    "<strong>" + esc(SNAP.base + " " + SNAP.eq + " " + SNAP.seat) + "</strong> open sequences, " +
+    esc(SNAP.range) + " — DECS " + esc(SNAP.report) + " as of " + esc(SNAP.as_of) +
+    ". A saved snapshot: this page never queries Sabre.";
+  var label = code === "RF" ? "Reserve assignments" : "Awards";
+  document.getElementById("days-title").textContent = label + " by day";
+  document.getElementById("list-title").textContent = label;
+  renderTiles(list); renderDays(list); renderPilots(list); renderCodes(); renderList(list);
+  document.getElementById("transfers").innerHTML = (SNAP.transfers || []).length
+    ? "<table class='grid'><thead><tr><th>Day</th><th>Seq</th><th>To</th></tr></thead><tbody>" +
+      SNAP.transfers.map(function(t) { return "<tr><td class='num'>" + dayLabel(t.date) + "</td><td class='num'>" + esc(t.seq) + "</td><td>" + esc(t.to) + "</td></tr>"; }).join("") +
+      "</tbody></table>"
+    : '<p class="muted-note">None.</p>';
+  document.getElementById("raw").textContent = SNAP.raw || "";
+}
+
+async function loadSnapshot(id) {
+  var r = await fetch("/api/reserve/snapshots/" + encodeURIComponent(id), { headers: authHeaders() });
+  if (!r.ok) return false;
+  SNAP = await r.json(); hideTip(); render(); return true;
+}
+
+async function initApp() {
+  var r = await fetch("/api/reserve/snapshots", { headers: authHeaders() });
+  if (r.status === 401) {
+    localStorage.removeItem("logbook-token"); token = null;
+    document.getElementById("login").style.display = "block";
+    document.getElementById("app").style.display = "none";
+    document.getElementById("login-err").textContent = "sign in again";
+    return;
+  }
+  var d = await r.json(), snaps = d.snapshots || [];
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  if (!snaps.length) { document.getElementById("lede").textContent = "No saved reports yet."; return; }
+  var sel = document.getElementById("snap");
+  sel.innerHTML = snaps.map(function(s) {
+    return '<option value="' + esc(s.id) + '">' + esc(s.report + " · " + s.base + " " + s.eq + " " + s.seat + " · " + s.period) + "</option>";
+  }).join("");
+  sel.addEventListener("change", function() { loadSnapshot(sel.value); });
+  await loadSnapshot(snaps[0].id);
+}
+
+document.querySelectorAll(".filters .chip[data-code]").forEach(function(b) {
+  b.addEventListener("click", function() {
+    code = b.getAttribute("data-code");
+    document.querySelectorAll(".filters .chip[data-code]").forEach(function(o) {
+      o.setAttribute("aria-pressed", String(o.getAttribute("data-code") === code));
+    });
+    hideTip(); render();
+  });
+});
+document.getElementById("q").addEventListener("input", function() { query = this.value.trim(); render(); });
+document.getElementById("days-toggle").addEventListener("click", function() {
+  var c = document.getElementById("days-chart"), t = document.getElementById("days-table"), show = c.style.display !== "none";
+  c.style.display = show ? "none" : ""; t.style.display = show ? "" : "none";
+  this.textContent = show ? "Chart view" : "Table view"; hideTip();
+});
+document.getElementById("raw-toggle").addEventListener("click", function() {
+  var p = document.getElementById("raw"), show = p.style.display === "none";
+  p.style.display = show ? "" : "none"; this.textContent = show ? "Hide" : "Show";
+});
+var rt = null;
+window.addEventListener("resize", function() { if (!SNAP) return; clearTimeout(rt); rt = setTimeout(function() { hideTip(); render(); }, 150); });
+
+document.getElementById("login-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  var resp = await fetch("/api/logbook/auth", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: document.getElementById("password").value }) });
+  if (!resp.ok) { document.getElementById("login-err").textContent = "incorrect password"; return; }
+  token = (await resp.json()).token; localStorage.setItem("logbook-token", token); initApp();
+});
+
+if (token) initApp();
+</script>
+</body>
+</html>
