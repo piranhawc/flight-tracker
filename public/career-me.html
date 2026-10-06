@@ -76,6 +76,12 @@
     <div class="kpi" id="kpi"></div>
   </div>
 
+  <div class="panel wide" id="vacPanel" style="display:none">
+    <h2 id="vacTitle">VACANCY AWARD</h2>
+    <div class="kpi" id="vacKpi"></div>
+    <div class="hint" id="vacHint"></div>
+  </div>
+
   <div class="panel wide">
     <h2>UPGRADE PROJECTION — WHEN CAN I HOLD</h2>
     <div class="row">
@@ -93,7 +99,7 @@
     <table>
       <thead><tr>
         <th>target</th><th class="num">hold line</th><th class="num">pilots ahead</th>
-        <th class="num">category</th><th>est. hold date</th><th></th>
+        <th class="num">category</th><th>est. hold date</th><th class="num" id="vacCol">last vacancy</th><th></th>
       </tr></thead>
       <tbody id="targetRows"></tbody>
     </table>
@@ -254,7 +260,7 @@ async function boot() {
   var d = await r.json();
   SUMMARY = d.summary; CONFIG = d.config; BASE_FLEETS = d.base_fleets; AWARDS = d.awards;
   renderKpi(); renderMeta(); initSelectors(); loadTargets(); applyConfigToInputs();
-  runProjections(); run401k(); loadSeniority();
+  runProjections(); run401k(); loadSeniority(); loadVacancy();
 }
 
 async function loadSeniority() {
@@ -348,6 +354,7 @@ async function runProjections() {
       + '<td class="num">'+(x.hold_now?"0":fmtNum(x.gap))+'</td>'
       + '<td class="num">'+fmtNum(x.count)+'</td>'
       + '<td class="'+cls+'">'+dateCell+'</td>'
+      + '<td class="num">'+vacCell(x.vacancy)+'</td>'
       + '<td class="del" onclick="event.stopPropagation();removeTarget('+i+')">✕</td></tr>';
   }).join("");
   document.getElementById("targetRows").innerHTML = rows;
@@ -355,6 +362,50 @@ async function runProjections() {
   document.getElementById("projHint").textContent =
     "Hold line = most-junior seniority currently in that seat (" + src + "). You hold when retirements of pilots senior to you close the gap. AA's published award only projects ~3 months out (new award every quarter) — dates beyond that are this model's estimate. Growth slider models seats added/removed per year.";
   if (TARGETS.length) chartTarget(window._chartIdx != null && window._chartIdx < TARGETS.length ? window._chartIdx : 0);
+}
+
+// The latest vacancy run's most junior preference award in that seat, and
+// whether your seniority was inside it. This is what AA actually awarded —
+// stronger evidence than the attrition model for the next run or two.
+function vacCell(v) {
+  if (!v) return "—";
+  if (!v.junior_pre) return '<span style="color:#666" title="no preference awards in this seat">none</span>';
+  var mine = SUMMARY && SUMMARY.me && SUMMARY.me.aa_sen;
+  var ok = mine && mine <= v.junior_pre;
+  return '<span title="' + v.pre + ' preference awards (' + v.awarded + ' total) in the ' + v.run + ' run (' + v.status + ')" style="color:' + (ok ? "#06d6a0" : "#888") + '">' +
+    (ok ? "✓ " : "") + "to " + fmtNum(v.junior_pre) + "</span>";
+}
+
+async function loadVacancy() {
+  var r = await fetch("/api/career/vacancy", { headers: authHeaders() });
+  if (!r.ok) return;
+  var v = await r.json();
+  if (!v.run) return;
+  var mon = function(ym) { if (!ym) return "?"; var p = ym.split("-"); return ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+p[1]-1] + " " + p[0]; };
+  document.getElementById("vacPanel").style.display = "";
+  document.getElementById("vacCol").textContent = mon(v.run).replace(/ 20/, " ’") + " vacancy";
+  document.getElementById("vacTitle").textContent = mon(v.run).toUpperCase() + " VACANCY AWARD — " + String(v.status).toUpperCase();
+  var a = v.my_award, cards = [];
+  var TYPES = { PRE:"preference", ENT:"entitlement", REN:"reinstatement", WTH:"withhold", REL:"withhold release", SID:"stand-in displacement", DIS:"displacement", ASN:"assignment" };
+  if (a) {
+    var c = v.categories[a.to.base + "|" + a.to.eq + "|" + a.to.seat] || {};
+    var margin = c.junior_pre && v.my_seno ? c.junior_pre - v.my_seno : null;
+    cards.push(["awarded", a.to.seat + " " + a.to.eq + " " + a.to.base, "from " + a.from.seat + " " + a.from.eq + " " + a.from.base + " · " + (TYPES[a.type] || a.type)]);
+    cards.push(["in seat by", "end of " + mon(v.in_seat_by), "training done within the award period · pay from " + mon(v.pay_from)]);
+    cards.push(["most junior award", c.junior_pre ? fmtNum(c.junior_pre) : "—", (c.pre || 0) + " preference awards of " + (c.awarded || 0) + " in the seat"]);
+    if (margin != null) cards.push(["your margin", (margin >= 0 ? "+" : "") + fmtNum(margin), margin >= 0 ? "numbers inside the cutoff" : "outside the cutoff"]);
+  } else {
+    cards.push(["your award", "none", "not in the " + mon(v.run) + " run"]);
+  }
+  document.getElementById("vacKpi").innerHTML = cards.map(function(c){
+    return '<div class="card"><div class="label">'+c[0]+'</div><div class="value'+(c[0]=="awarded"?" good":"")+'">'+c[1]+'</div><div class="sub">'+c[2]+'</div></div>';
+  }).join("");
+  var up = (v.steps || []).filter(function(x){ return x.kind === "upgrade"; })[0];
+  var cfgUp = CONFIG && CONFIG.upgrade_enabled !== false && CONFIG.upgrade_date;
+  document.getElementById("vacHint").textContent =
+    "Published " + v.published + ", bid effective " + v.bid_effective + ". The pay and 401(k) projections below switch to the awarded seat from " + mon(v.pay_from) + "." +
+    (cfgUp && !up ? " Your assumed upgrade (" + CONFIG.upgrade_seat + " " + CONFIG.upgrade_eq + " " + CONFIG.upgrade_base + ", " + CONFIG.upgrade_date + ") is before the award, so it's ignored. Set a later date to model a captain upgrade after the 787." : "") +
+    " “Last vacancy” in the table below is the most junior preference award per seat in this run; ✓ means your seniority was inside it.";
 }
 
 async function chartTarget(i) {
@@ -488,10 +539,13 @@ async function run401k() {
     var first = s[0], last = s[s.length-1];
     document.getElementById("incNow").textContent = fmtDollar(first.income) + "/yr";
     document.getElementById("incNowSub").textContent = fmtDollar(first.monthly_income) + "/mo · " + first.seat + " " + first.eq;
-    var up = d.upgrade ? s.find(function(p){ return p.year >= Number(d.upgrade.date.slice(0,4)); }) : null;
-    if (d.upgrade && up) {
+    // First full year after the latest position change (award, then any upgrade).
+    var st = (d.steps || []).slice(-1)[0] || (d.upgrade ? { kind:"upgrade", seat:d.upgrade.seat, eq:d.upgrade.eq, base:d.upgrade.base, date:d.upgrade.date } : null);
+    var up = st ? s.find(function(p){ return p.year > Number(st.date.slice(0,4)) || (p.year == Number(st.date.slice(0,4)) && st.date.slice(5) === "01"); }) : null;
+    document.querySelector("#incUp").previousElementSibling.textContent = st && st.kind === "award" ? "income in awarded seat" : "income after upgrade";
+    if (st && up) {
       document.getElementById("incUp").textContent = fmtDollar(up.income) + "/yr";
-      document.getElementById("incUpSub").textContent = d.upgrade.seat + " " + d.upgrade.eq + " " + d.upgrade.base + " from " + d.upgrade.date;
+      document.getElementById("incUpSub").textContent = up.year + " · " + st.seat + " " + st.eq + " " + st.base + " from " + st.date + (st.kind === "award" ? " (awarded)" : "");
     } else {
       document.getElementById("incUp").textContent = "—";
       document.getElementById("incUpSub").textContent = "no upgrade assumed";
@@ -513,7 +567,9 @@ async function loadMonthly() {
 function renderMonthlyTable(d) {
   var tbl = document.getElementById("monthlyTable");
   if (!d || d.error) { tbl.innerHTML = ""; return; }
-  document.getElementById("monthlyHdr").textContent = d.upgrade ? ("· upgrade " + d.upgrade.seat + " " + d.upgrade.eq + " " + d.upgrade.base + " on " + d.upgrade.date) : "· no upgrade assumed";
+  document.getElementById("monthlyHdr").textContent = (d.steps && d.steps.length)
+    ? "· " + d.steps.map(function(x){ return (x.kind === "award" ? "awarded " : "upgrade ") + x.seat + " " + x.eq + " " + x.base + " from " + x.date; }).join(" · ")
+    : "· no position change assumed";
   var cols = [
     { h:"month", get:function(m){return m.ym;} },
     { h:"seat", get:function(m){return m.seat+" "+m.eq;}, seat:true },

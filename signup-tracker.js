@@ -8,7 +8,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 
-const DB_PATH = process.env.CREW_DB_PATH || "/data/flight-tracker.db";
+const DB_PATH = process.env.CREW_DB_PATH || "/app/data/flight-tracker.db";
 
 let db = null;
 

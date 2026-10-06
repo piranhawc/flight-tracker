@@ -13,7 +13,7 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 
-const DB_PATH = process.env.CREW_DB_PATH || "/data/flight-tracker.db";
+const DB_PATH = process.env.CREW_DB_PATH || "/app/data/flight-tracker.db";
 const APA_SABRE_BASE = process.env.APA_SABRE_BASE || "http://192.168.128.115:8765";
 const USER_EMP = process.env.LOGBOOK_USER_EMP_NUM || "861307";
 const CATEGORY_TTL_MS = 24 * 60 * 60 * 1000; // re-pull a 3XP category at most daily
@@ -35,6 +35,60 @@ const BASE_FLEETS = {
   BOS: ["737"],
 };
 const ACTIVE_STATUSES = new Set(["A", "Recalled"]);
+
+// Vacancy awards (AA's published bid-status runs), parsed from the PDF into
+// DATA_DIR/vacancy/<run>.json. Kept off GitHub: the PDF is fingerprinted
+// and the rows are other pilots' data.
+const VACANCY_DIR = path.join(process.env.DATA_DIR || "/app/data", "vacancy");
+function vacancyRuns() {
+  try {
+    return fs.readdirSync(VACANCY_DIR).filter(f => /\.json$/.test(f))
+      .map(f => JSON.parse(fs.readFileSync(path.join(VACANCY_DIR, f), "utf8")))
+      .sort((a, b) => String(b.run).localeCompare(String(a.run)) || (a.status === "final" ? -1 : 1));
+  } catch (e) { return []; }
+}
+// Latest run: per category, how many were awarded and how junior the
+// seniority-based (PRE, preference) awards went — the real "hold line" for
+// bidding in. ENT/WTH/REN/REL are rights-based, so they don't set it.
+function vacancySummary(emp) {
+  const run = vacancyRuns()[0];
+  if (!run) return null;
+  const cats = {};
+  for (const a of run.awards || []) {
+    const k = `${a.to.base}|${a.to.eq}|${a.to.seat}`;
+    const c = cats[k] ||= { base: a.to.base, eq: a.to.eq, seat: a.to.seat, awarded: 0, pre: 0, junior_pre: null };
+    c.awarded++;
+    if (a.type === "PRE") { c.pre++; if (c.junior_pre == null || a.sen > c.junior_pre) c.junior_pre = a.sen; }
+  }
+  const mine = (run.awards || []).find(a => a.emp === String(emp).padStart(6, "0")) || null;
+  return { run: run.run, status: run.status, published: run.published, bid_effective: run.bid_effective,
+           in_seat_by: run.in_seat_by, pay_from: run.pay_from, my_award: mine, categories: cats };
+}
+function ymToDate(ym) { return ym ? new Date(parseInt(ym.slice(0, 4), 10), parseInt(ym.slice(5, 7), 10) - 1, 1) : null; }
+// Position changes over time: the awarded vacancy (fact, once published)
+// then the manual upgrade assumption — but only if it comes after the award;
+// an upgrade dated before it is superseded by what was actually awarded.
+function positionSteps(cfg) {
+  const steps = [];
+  const v = cfg.award_enabled === false ? null : vacancySummary(cfg.emp);
+  const aw = v && v.my_award;
+  let awardOn = null;
+  if (aw && !(aw.to.base === cfg.current_base && aw.to.eq === cfg.current_eq && aw.to.seat === cfg.current_seat)) {
+    awardOn = ymToDate(cfg.award_pay_from || v.pay_from);
+    if (awardOn) steps.push({ on: awardOn, base: aw.to.base, eq: aw.to.eq, seat: aw.to.seat, kind: "award",
+                              label: `${v.run} vacancy (${v.status})`, ym: cfg.award_pay_from || v.pay_from });
+  }
+  const upOn = (cfg.upgrade_enabled !== false && cfg.upgrade_date) ? ymToDate(cfg.upgrade_date) : null;
+  if (upOn && (!awardOn || upOn > awardOn)) {
+    steps.push({ on: upOn, base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, kind: "upgrade", ym: cfg.upgrade_date });
+  }
+  return steps.sort((a, b) => a.on - b.on);
+}
+function positionAt(cfg, steps, d) {
+  let p = { base: cfg.current_base, eq: cfg.current_eq, seat: cfg.current_seat };
+  for (const st of steps) if (d >= st.on) p = { base: st.base || p.base, eq: st.eq || p.eq, seat: st.seat || p.seat };
+  return p;
+}
 
 let db = null;
 
@@ -417,9 +471,9 @@ function project401k(cfgArg) {
   const irsBase = cfg.irs_dc_limit || 70000;
   const irsGrow = cfg.irs_limit_growth_pct || 0;
 
-  const upOn = (cfg.upgrade_enabled !== false && cfg.upgrade_date)
-    ? new Date(parseInt(cfg.upgrade_date.slice(0, 4), 10), parseInt(cfg.upgrade_date.slice(5, 7), 10) - 1, 1)
-    : null;
+  const steps = positionSteps(cfg);
+  const upStep = steps.find(x => x.kind === "upgrade") || null;
+  const upOn = upStep ? upStep.on : null;
 
   const mkt = cfg.market_return_pct || 0;
   const wr = cfg.withdrawal_rate || 0;               // retirement drawdown rate
@@ -449,8 +503,7 @@ function project401k(cfgArg) {
     const age = y - birthYear;
     const retired = d >= endMonth;
     if (y !== ytdYear) { ytd401k = 0; ytdYear = y; }
-    let seat = cfg.current_seat, eq = cfg.current_eq;
-    if (upOn && d >= upOn) { seat = cfg.upgrade_seat || seat; eq = cfg.upgrade_eq || eq; }
+    const { seat, eq } = positionAt(cfg, steps, d);
     const yos = Math.max(1, y - hireYear + 1);
     const raiseMul = Math.pow(1 + raise, Math.max(0, y - baseYear));
     // Flight pay + employer 18% only while still working.
@@ -515,6 +568,7 @@ function project401k(cfgArg) {
     final_net_worth: Math.round(balAtRetire + reAtRetire + savAtRetire),
     employer,
     upgrade: upOn ? { base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, date: cfg.upgrade_date } : null,
+    steps: steps.map(x => ({ kind: x.kind, base: x.base, eq: x.eq, seat: x.seat, date: x.ym, label: x.label || "" })),
     series,
   };
 }
@@ -615,15 +669,14 @@ function monthlyWageSchedule(cfgArg) {
   let realEstate = cfg.real_estate || 0;
   const hasOther = otherMonthly > 0;
   const hasRE = (cfg.real_estate || 0) > 0;
-  const upOn = (cfg.upgrade_enabled !== false && cfg.upgrade_date)
-    ? new Date(parseInt(cfg.upgrade_date.slice(0, 4), 10), parseInt(cfg.upgrade_date.slice(5, 7), 10) - 1, 1)
-    : null;
+  const steps = positionSteps(cfg);
+  const upStep = steps.find(x => x.kind === "upgrade") || null;
+  const upOn = upStep ? upStep.on : null;
   const rows = [];
   let d = new Date(today.getFullYear(), today.getMonth(), 1);
   while (d <= endMonth) {
     const y = d.getFullYear();
-    let seat = cfg.current_seat, eq = cfg.current_eq;
-    if (upOn && d >= upOn) { seat = cfg.upgrade_seat || seat; eq = cfg.upgrade_eq || eq; }
+    const { seat, eq } = positionAt(cfg, steps, d);
     const yos = Math.max(1, y - hireYear + 1);
     const rate = hourlyRate(eq, seat, yos) * Math.pow(1 + raise, Math.max(0, y - baseYear));
     const wageLH = rate * lhHours;        // lineholder credit
@@ -643,7 +696,8 @@ function monthlyWageSchedule(cfgArg) {
   }
   return { rows, lineholder_hours: lhHours, reserve_hours: rsvHours,
     has_other_income: hasOther, has_real_estate: hasRE,
-    upgrade: upOn ? { base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, date: cfg.upgrade_date } : null };
+    upgrade: upOn ? { base: cfg.upgrade_base, eq: cfg.upgrade_eq, seat: cfg.upgrade_seat, date: cfg.upgrade_date } : null,
+    steps: steps.map(x => ({ kind: x.kind, base: x.base, eq: x.eq, seat: x.seat, date: x.ym, label: x.label || "" })) };
 }
 
 // --- saved scenarios -----------------------------------------------------
@@ -665,7 +719,7 @@ function deleteScenario(name) {
 
 module.exports = {
   init, refreshRoster, rosterCount, rosterSummary, getPilot,
-  getConfig, setConfig, getCategory, getAwards, holdLineFor,
+  getConfig, setConfig, getCategory, getAwards, holdLineFor, vacancySummary, positionSteps,
   projectUpgrade, projectSeniority, project401k, monthlyWageSchedule, listScenarios, saveScenario, deleteScenario,
   pilotStanding, validatePublicPilot, publicDefaults, logPublicLogin, listPublicLogins,
   savePublicSession, getPublicSession,

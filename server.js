@@ -2283,6 +2283,7 @@ app.post("/api/career/projections", careerAuth, express.json(), async (req, res)
   const { targets = [], holdType = "line", growth = 0 } = req.body || {};
   try {
     const out = [];
+    const vac = career.vacancySummary(career.getConfig().emp);
     for (const t of targets) {
       const base = String(t.base).toUpperCase(), eq = String(t.eq), seat = String(t.seat).toUpperCase();
       let cat, proj, err = null;
@@ -2300,11 +2301,25 @@ app.post("/api/career/projections", careerAuth, express.json(), async (req, res)
         hold_now: proj ? !!proj.hold_now : null,
         gap: proj ? proj.gap : null,
         hold_date: proj ? proj.hold_date : null,
+        // What the latest vacancy run actually awarded in this category.
+        vacancy: vac ? Object.assign({ run: vac.run, status: vac.status },
+          vac.categories[`${base}|${eq}|${seat}`] || { awarded: 0, pre: 0, junior_pre: null }) : null,
         error: err,
       });
     }
     res.json({ holdType, growth: Number(growth) || 0, results: out });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Latest vacancy award run: my award + how junior each category went.
+app.get("/api/career/vacancy", careerAuth, (req, res) => {
+  if (!careerGuard(res)) return;
+  const cfg = career.getConfig();
+  const v = career.vacancySummary(cfg.emp);
+  if (!v) return res.json({ run: null });
+  const me = career.getPilot(cfg.emp);
+  const steps = career.positionSteps(cfg).map(x => ({ kind: x.kind, base: x.base, eq: x.eq, seat: x.seat, date: x.ym, label: x.label || "" }));
+  res.json(Object.assign({}, v, { my_seno: me ? me.aa_sen : null, steps }));
 });
 
 // Full projection (with monthly series for charting) for one target.
@@ -2512,6 +2527,7 @@ app.post("/api/career/public/projections", publicAuth, express.json(), async (re
   const pilotCfg = { emp: req.pilot.emp };
   try {
     const out = [];
+    const vac = career.vacancySummary(req.pilot.emp);
     for (const t of targets) {
       const base = String(t.base).toUpperCase(), eq = String(t.eq), seat = String(t.seat).toUpperCase();
       let cat, proj, err = null;
@@ -2529,6 +2545,9 @@ app.post("/api/career/public/projections", publicAuth, express.json(), async (re
         hold_now: proj ? !!proj.hold_now : null,
         gap: proj ? proj.gap : null,
         hold_date: proj ? proj.hold_date : null,
+        // What the latest vacancy run actually awarded in this category.
+        vacancy: vac ? Object.assign({ run: vac.run, status: vac.status },
+          vac.categories[`${base}|${eq}|${seat}`] || { awarded: 0, pre: 0, junior_pre: null }) : null,
         error: err,
       });
     }
