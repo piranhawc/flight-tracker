@@ -391,7 +391,9 @@ async function loadVacancy() {
     var c = v.categories[a.to.base + "|" + a.to.eq + "|" + a.to.seat] || {};
     var margin = c.junior_pre && v.my_seno ? c.junior_pre - v.my_seno : null;
     cards.push(["awarded", a.to.seat + " " + a.to.eq + " " + a.to.base, "from " + a.from.seat + " " + a.from.eq + " " + a.from.base + " · " + (TYPES[a.type] || a.type)]);
-    cards.push(["in seat by", "end of " + mon(v.in_seat_by), "training done within the award period · pay from " + mon(v.pay_from)]);
+    var awardYm = (CONFIG && CONFIG.award_pay_from) || v.pay_from;
+    cards.push(["in seat from", '<input type="month" id="awardDate" value="' + awardYm + '" onchange="saveAwardDate()" style="font:inherit;background:transparent;color:inherit;border:1px solid #333;border-radius:4px;padding:1px 4px">',
+      "latest: " + mon(v.in_seat_by) + " (training done within the award period) · pay switches this month"]);
     cards.push(["most junior award", c.junior_pre ? fmtNum(c.junior_pre) : "—", (c.pre || 0) + " preference awards of " + (c.awarded || 0) + " in the seat"]);
     if (margin != null) cards.push(["your margin", (margin >= 0 ? "+" : "") + fmtNum(margin), margin >= 0 ? "numbers inside the cutoff" : "outside the cutoff"]);
   } else {
@@ -403,9 +405,17 @@ async function loadVacancy() {
   var up = (v.steps || []).filter(function(x){ return x.kind === "upgrade"; })[0];
   var cfgUp = CONFIG && CONFIG.upgrade_enabled !== false && CONFIG.upgrade_date;
   document.getElementById("vacHint").textContent =
-    "Published " + v.published + ", bid effective " + v.bid_effective + ". The pay and 401(k) projections below switch to the awarded seat from " + mon(v.pay_from) + "." +
+    "Published " + v.published + ", bid effective " + v.bid_effective + ". The pay and 401(k) projections below switch to the awarded seat from " + mon(awardYm || v.pay_from) + "; change the month above if training finishes earlier." +
     (cfgUp && !up ? " Your assumed upgrade (" + CONFIG.upgrade_seat + " " + CONFIG.upgrade_eq + " " + CONFIG.upgrade_base + ", " + CONFIG.upgrade_date + ") is before the award, so it's ignored. Set a later date to model a captain upgrade after the 787." : "") +
     " “Last vacancy” in the table below is the most junior preference award per seat in this run; ✓ means your seniority was inside it.";
+}
+
+async function saveAwardDate() {
+  var ym = document.getElementById("awardDate").value;
+  if (!/^\d{4}-\d{2}$/.test(ym)) return;
+  await fetch("/api/career/config", { method:"POST", headers: Object.assign({ "Content-Type":"application/json" }, authHeaders()), body: JSON.stringify({ award_pay_from: ym }) });
+  CONFIG.award_pay_from = ym;
+  run401k(); loadVacancy();
 }
 
 async function chartTarget(i) {
