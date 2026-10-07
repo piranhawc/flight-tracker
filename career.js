@@ -436,6 +436,27 @@ function payScales() {
 }
 
 // $/hr for a given fleet/seat/year-of-service (1-based, capped at top step).
+// Longevity steps on the hire anniversary (Mike: July 26), not on Jan 1.
+// payYear = the pay-scale year (1-based) in effect on date d.
+function parseYMD(iso) { const [y, m, dd] = String(iso).slice(0, 10).split("-").map(Number); return new Date(y, m - 1, dd || 1); }
+function payYear(hire, d) {
+  let n = d.getFullYear() - hire.getFullYear();
+  if (d.getMonth() < hire.getMonth() || (d.getMonth() === hire.getMonth() && d.getDate() < hire.getDate())) n--;
+  return Math.max(1, n + 1);
+}
+// Hourly rate for the calendar month starting at monthStart. In the
+// anniversary month the step lands mid-month, so the rate is weighted by days
+// on each side of it. stepTo = the new pay year when it changes this month.
+function monthRate(eq, seat, hire, monthStart) {
+  const y = monthStart.getFullYear(), m = monthStart.getMonth();
+  const first = payYear(hire, new Date(y, m, 1));
+  if (m !== hire.getMonth()) return { rate: hourlyRate(eq, seat, first), yos: first, stepTo: null };
+  const days = new Date(y, m + 1, 0).getDate(), before = Math.min(days, hire.getDate() - 1);
+  const after = payYear(hire, new Date(y, m, hire.getDate()));
+  const r0 = hourlyRate(eq, seat, first), r1 = hourlyRate(eq, seat, after);
+  return { rate: (r0 * before + r1 * (days - before)) / days, yos: after, stepTo: after !== first ? after : null };
+}
+
 function hourlyRate(eq, seat, yos) {
   const ps = payScales();
   const arr = ((ps.rates || {})[eq] || {})[seat];
@@ -461,7 +482,7 @@ function project401k(cfgArg) {
   const today = new Date();
   const retire = new Date(retireISO);
   const endMonth = new Date(retire.getFullYear(), retire.getMonth(), 1);
-  const hireYear = new Date(hireISO).getFullYear();
+  const hire = parseYMD(hireISO);
   const baseYear = ps.base_year || 2026;
   const monthlyHours = (cfg.annual_hours || 912) / 12;
   const empPct = cfg.k401_employee_pct || 0;
@@ -504,10 +525,9 @@ function project401k(cfgArg) {
     const retired = d >= endMonth;
     if (y !== ytdYear) { ytd401k = 0; ytdYear = y; }
     const { seat, eq } = positionAt(cfg, steps, d);
-    const yos = Math.max(1, y - hireYear + 1);
     const raiseMul = Math.pow(1 + raise, Math.max(0, y - baseYear));
     // Flight pay + employer 18% only while still working.
-    const mIncome = retired ? 0 : hourlyRate(eq, seat, yos) * monthlyHours * raiseMul;
+    const mIncome = retired ? 0 : monthRate(eq, seat, hire, d).rate * monthlyHours * raiseMul;
     const employerM = mIncome * necPct;
     const employeeM = mIncome * empPct;
     const annLimit = irsBase * Math.pow(1 + irsGrow, Math.max(0, y - baseYear));
@@ -656,7 +676,7 @@ function monthlyWageSchedule(cfgArg) {
   const today = new Date();
   const retire = new Date(retireISO);
   const endMonth = new Date(retire.getFullYear(), retire.getMonth(), 1);
-  const hireYear = new Date(hireISO).getFullYear();
+  const hire = parseYMD(hireISO);
   const baseYear = ps.base_year || 2026;
   const raise = cfg.annual_raise_pct || 0;
   const empPct = cfg.k401_employee_pct || 0;
@@ -677,8 +697,8 @@ function monthlyWageSchedule(cfgArg) {
   while (d <= endMonth) {
     const y = d.getFullYear();
     const { seat, eq } = positionAt(cfg, steps, d);
-    const yos = Math.max(1, y - hireYear + 1);
-    const rate = hourlyRate(eq, seat, yos) * Math.pow(1 + raise, Math.max(0, y - baseYear));
+    const mr = monthRate(eq, seat, hire, d);
+    const rate = mr.rate * Math.pow(1 + raise, Math.max(0, y - baseYear));
     const wageLH = rate * lhHours;        // lineholder credit
     const wageRSV = rate * rsvHours;      // reserve credit
     const co18 = wageLH * necPct;         // company discretionary: 18% of the month's pay
@@ -686,7 +706,7 @@ function monthlyWageSchedule(cfgArg) {
     const otherM = otherMonthly * Math.pow(1 + otherGrow, Math.max(0, y - nowYear));
     realEstate = realEstate * (1 + mkt / 12);
     rows.push({
-      ym: `${y}-${String(d.getMonth() + 1).padStart(2, "0")}`, seat, eq,
+      ym: `${y}-${String(d.getMonth() + 1).padStart(2, "0")}`, seat, eq, yos: mr.yos, step_to: mr.stepTo,
       rate: Math.round(rate * 100) / 100,
       wage_lineholder: Math.round(wageLH), wage_reserve: Math.round(wageRSV),
       other_income: Math.round(otherM), real_estate: Math.round(realEstate),

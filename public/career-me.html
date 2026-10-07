@@ -573,7 +573,10 @@ function renderMonthlyTable(d) {
   var cols = [
     { h:"month", get:function(m){return m.ym;} },
     { h:"seat", get:function(m){return m.seat+" "+m.eq;}, seat:true },
-    { h:"$/hr", num:true, get:function(m){return m.rate.toFixed(2);} },
+    { h:"yr", num:true, dim:true, get:function(m){return m.yos != null ? m.yos : "";} },
+    // Anniversary month: the longevity step lands mid-month, so the rate is
+    // a day-weighted blend of the old and new step.
+    { h:"$/hr", num:true, get:function(m){return m.rate.toFixed(2) + (m.step_to ? " <span style='color:#06d6a0' title='longevity step to year "+m.step_to+" on your hire anniversary (this month is prorated by days)'>▲</span>" : "");} },
     { h:"lineholder ("+d.lineholder_hours+"h)", num:true, key:"wage_lineholder", sum:true, get:function(m){return fmtDollar(m.wage_lineholder);} },
     { h:"reserve ("+d.reserve_hours+"h)", num:true, dim:true, key:"wage_reserve", sum:true, get:function(m){return fmtDollar(m.wage_reserve);} },
   ];
@@ -603,7 +606,7 @@ function renderMonthlyTable(d) {
     curYear = y;
     if (!agg) agg = {};
     cols.forEach(function(c){ if (c.sum) agg[c.key]=(agg[c.key]||0)+(m[c.key]||0); if (c.last) agg["_last"]=m[c.key]; });
-    var hl = (m.seat !== prevSeat); prevSeat = m.seat;
+    var hl = (m.seat + m.eq !== prevSeat); prevSeat = m.seat + m.eq;
     var tds = cols.map(function(c){
       var st = c.dim ? " style='color:#888'" : (c.green ? " style='color:#06d6a0'" : "");
       if (c.seat && hl) st = " style='color:#06d6a0;font-weight:700'";
