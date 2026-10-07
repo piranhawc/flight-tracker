@@ -160,7 +160,7 @@ const CONFIG_DEFAULTS = {
   k401_employee_pct: 0.18,       // Mike currently defers 18% himself
   k401_return_pct: 0.07,
   annual_hours: 912,             // 76 pay-hours/month averaged * 12
-  annual_raise_pct: 0.02,        // contract pay raise/yr compounded past the table's base year
+  annual_raise_pct: 0.02,        // assumed raise/yr each Jan 1 AFTER the contract's last pay table (1/1/2027)
   growth_per_year: 0,            // category seats added/yr (slider; +grow=sooner)
   // Manual upgrade assumption that drives income/401k (independent of the
   // attrition projection). Default: CA 320 ORD in Nov 2026.
@@ -450,16 +450,32 @@ function payYear(hire, d) {
 function monthRate(eq, seat, hire, monthStart) {
   const y = monthStart.getFullYear(), m = monthStart.getMonth();
   const first = payYear(hire, new Date(y, m, 1));
-  if (m !== hire.getMonth()) return { rate: hourlyRate(eq, seat, first), yos: first, stepTo: null };
+  if (m !== hire.getMonth()) return { rate: hourlyRate(eq, seat, first, monthStart), yos: first, stepTo: null };
   const days = new Date(y, m + 1, 0).getDate(), before = Math.min(days, hire.getDate() - 1);
   const after = payYear(hire, new Date(y, m, hire.getDate()));
-  const r0 = hourlyRate(eq, seat, first), r1 = hourlyRate(eq, seat, after);
+  const r0 = hourlyRate(eq, seat, first, monthStart), r1 = hourlyRate(eq, seat, after, monthStart);
   return { rate: (r0 * before + r1 * (days - before)) / days, yos: after, stepTo: after !== first ? after : null };
 }
 
-function hourlyRate(eq, seat, yos) {
+// The contract table in effect on date d (latest effective date <= d).
+function payTableFor(d) {
   const ps = payScales();
-  const arr = ((ps.rates || {})[eq] || {})[seat];
+  const t = ps.tables || {};
+  const keys = Object.keys(t).sort();
+  if (!keys.length) return ps.rates || {};
+  const iso = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` : keys[keys.length - 1];
+  let k = keys[0];
+  for (const x of keys) if (x <= iso) k = x;
+  return t[k];
+}
+// Last year the contract sets rates for; the raise % applies after it.
+function lastTableYear() {
+  const keys = Object.keys(payScales().tables || {}).sort();
+  return keys.length ? parseInt(keys[keys.length - 1].slice(0, 4), 10) : (payScales().base_year || 2026);
+}
+
+function hourlyRate(eq, seat, yos, d) {
+  const arr = ((payTableFor(d) || {})[eq] || {})[seat];
   if (!Array.isArray(arr) || !arr.length) return 0;
   const i = Math.min(Math.max(1, yos), arr.length) - 1;
   return arr[i];
@@ -525,7 +541,7 @@ function project401k(cfgArg) {
     const retired = d >= endMonth;
     if (y !== ytdYear) { ytd401k = 0; ytdYear = y; }
     const { seat, eq } = positionAt(cfg, steps, d);
-    const raiseMul = Math.pow(1 + raise, Math.max(0, y - baseYear));
+    const raiseMul = Math.pow(1 + raise, Math.max(0, y - lastTableYear()));
     // Flight pay + employer 18% only while still working.
     const mIncome = retired ? 0 : monthRate(eq, seat, hire, d).rate * monthlyHours * raiseMul;
     const employerM = mIncome * necPct;
@@ -698,7 +714,7 @@ function monthlyWageSchedule(cfgArg) {
     const y = d.getFullYear();
     const { seat, eq } = positionAt(cfg, steps, d);
     const mr = monthRate(eq, seat, hire, d);
-    const rate = mr.rate * Math.pow(1 + raise, Math.max(0, y - baseYear));
+    const rate = mr.rate * Math.pow(1 + raise, Math.max(0, y - lastTableYear()));
     const wageLH = rate * lhHours;        // lineholder credit
     const wageRSV = rate * rsvHours;      // reserve credit
     const co18 = wageLH * necPct;         // company discretionary: 18% of the month's pay
