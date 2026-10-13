@@ -736,7 +736,11 @@ function updateNextChip() {
     });
   });
   if (!nextLeg) { el.style.display = "none"; return; }
-  var days = Math.ceil((new Date(nextLeg.start) - now) / 864e5);
+  // Calendar days in the viewer's time zone, not 24-hour blocks rounded up
+  // (which called a leg later tonight "TOMORROW").
+  var d0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var ls = new Date(nextLeg.start), d1 = new Date(ls.getFullYear(), ls.getMonth(), ls.getDate());
+  var days = Math.round((d1 - d0) / 864e5);
   var when = days > 1 ? "IN " + days + " DAYS" : (days === 1 ? "TOMORROW" : "TODAY");
   el.innerHTML = '<span class="nc-label">NEXT</span> AA' + nextLeg.num + ' ' + nextLeg.dep +
     '<span class="rsep">▸</span>' + nextLeg.arr + ' <span class="nc-when">' + when + ' · ' + nextLeg.depT + 'L</span>';
@@ -826,6 +830,16 @@ function drawGhostInbound() {
   } else if (ghostBounds.length === 1) {
     map.setView(ghostBounds[0], 11);
   }
+}
+
+// Is FA's last fix the plane parked at the gate? After block-in the last
+// fix is often from the runway or taxiway (transponder off before the gate),
+// so only a fix taken at/after actual_in counts. Same rule as the server.
+function isGateFix(lp, f) {
+  if (!lp || !f || !f.actual_in || lp.latitude == null || lp.longitude == null) return false;
+  if (typeof lp.groundspeed === "number" && lp.groundspeed >= 8) return false;
+  var fixMs = new Date(lp.timestamp || 0).getTime();
+  return !!fixMs && fixMs >= new Date(f.actual_in).getTime() - 60000;
 }
 
 // Initial great-circle bearing from a to b, degrees clockwise from north.
@@ -938,14 +952,22 @@ function drawTestFlight() {
     // is where it blocked in — keep showing it parked at the gate.
     var dAp = flight && flight.destination && AP[flight.destination.code_iata];
     var hdg = planeBearing(lp, track, route, dAp ? [dAp.lat, dAp.lon] : null);
-    planeMarker = L.marker([lp.latitude, lp.longitude], {
+    var plat = lp.latitude, plon = lp.longitude;
+    // Arrived but FA's last fix is from before block-in (runway/taxiway):
+    // park the plane at the known gate position instead of where the
+    // transponder last spoke.
+    if (isArrived && !isGateFix(lp, flight) && flight.gate_destination && flight.destination) {
+      var gc = gateCoordCache[flight.destination.code_iata + "-" + flight.gate_destination];
+      if (gc && gc.lat != null) { plat = gc.lat; plon = gc.lon; }
+    }
+    planeMarker = L.marker([plat, plon], {
       icon: L.divIcon({
         className: "",
         html: '<div style="width:26px;height:26px;transform:rotate('+hdg.toFixed(0)+'deg);filter:drop-shadow(0 0 4px rgba(230,57,70,.7))">' + planeSvg("#e63946") + '</div>',
         iconSize: [26,26], iconAnchor: [13,13],
       })
     }).addTo(map);
-    bounds.push([lp.latitude, lp.longitude]);
+    bounds.push([plat, plon]);
   }
   if (lp && lp.latitude && !isArrived) {
     var li = document.getElementById("live-info");
@@ -1078,8 +1100,7 @@ function drawTestFlight() {
         var dLatA = lp.latitude - AP[oCodeForGate].lat;
         var dLonA = lp.longitude - AP[oCodeForGate].lon;
         var distKmA = Math.sqrt(dLatA*dLatA*111*111 + dLonA*dLonA*85*85);
-        var lowSpeed = (typeof lp.groundspeed !== "number") || lp.groundspeed < 8;
-        if (distKmA < 8 && lowSpeed) {
+        if (distKmA < 8 && isGateFix(lp, flight)) {
           gateLat = lp.latitude;
           gateLon = lp.longitude;
           gateChipSource = "live";
@@ -1748,9 +1769,14 @@ function renderTrips() {
       }
       anchorLeg = lastPast || trip.legs[0];
     } else {
-      var legToday = trip.legs.find(function(l) { return new Date(l.start).toDateString() === todayStr; });
+      // File the trip under the day of what's still ahead of it: the leg in
+      // the air now, else the next one to depart. Anchoring to "any leg
+      // today" put a trip under Today after today's flying was done, so its
+      // next leg (tomorrow's PIT-CLT, 2026-10-12) read as today.
+      var legNow = trip.legs.find(function(l) { return new Date(l.start) <= now && new Date(l.end) >= now; });
       var firstFutureLeg = trip.legs.find(function(l) { return new Date(l.start) >= now; });
-      anchorLeg = legToday || firstFutureLeg || trip.legs[0];
+      var legToday = trip.legs.find(function(l) { return new Date(l.start).toDateString() === todayStr; });
+      anchorLeg = legNow || firstFutureLeg || legToday || trip.legs[0];
     }
     var d = new Date(anchorLeg.start);
     var dayKey = d.toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" });

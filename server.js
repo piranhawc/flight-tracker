@@ -767,12 +767,9 @@ app.get("/api/track/:flightNum", faGuard, async (req, res) => {
     // beats anything OSM has.
     if (inbound && inbound.flight && inbound.flight.gate_destination && inbound.position && inbound.position.last_position) {
       const ip = inbound.position.last_position;
-      if (ip.latitude != null && ip.longitude != null) {
-        const isParked = inbound.flight.actual_in || (typeof ip.groundspeed === "number" && ip.groundspeed < 8);
-        if (isParked) {
-          const ak = (target.origin && (target.origin.code_iata || target.origin.code)) || null;
-          if (ak) learnGatePosition(ak, inbound.flight.gate_destination, ip.latitude, ip.longitude);
-        }
+      if (isGateFix(ip, inbound.flight)) {
+        const ak = (target.origin && (target.origin.code_iata || target.origin.code)) || null;
+        if (ak) learnGatePosition(ak, inbound.flight.gate_destination, ip.latitude, ip.longitude, ip.timestamp);
       }
     }
 
@@ -782,12 +779,9 @@ app.get("/api/track/:flightNum", faGuard, async (req, res) => {
     // serves as the second sanity check on top of the speed/airport gates.
     if (target.actual_in && target.gate_destination && position && position.last_position) {
       const lp = position.last_position;
-      if (lp.latitude != null && lp.longitude != null) {
-        const lowSpeed = typeof lp.groundspeed !== "number" || lp.groundspeed < 8;
-        if (lowSpeed) {
-          const dk = target.destination && (target.destination.code_iata || target.destination.code);
-          if (dk) learnGatePosition(dk, target.gate_destination, lp.latitude, lp.longitude);
-        }
+      if (isGateFix(lp, target)) {
+        const dk = target.destination && (target.destination.code_iata || target.destination.code);
+        if (dk) learnGatePosition(dk, target.gate_destination, lp.latitude, lp.longitude, lp.timestamp);
       }
     }
 
@@ -797,8 +791,7 @@ app.get("/api/track/:flightNum", faGuard, async (req, res) => {
     if (target.actual_in && target.gate_destination) {
       const dk2 = target.destination && (target.destination.code_iata || target.destination.code);
       const lp2 = position && position.last_position;
-      const faAnchor = lp2 && lp2.latitude != null &&
-        (typeof lp2.groundspeed !== "number" || lp2.groundspeed < 8) ? lp2 : null;
+      const faAnchor = isGateFix(lp2, target) ? lp2 : null;
       if (dk2) sampleHaArrivalFix(dk2, target.gate_destination, faAnchor, target.actual_in).catch(() => {});
     }
 
@@ -1211,12 +1204,29 @@ try {
 // median so transient outliers (mis-typed gates, taxi-thru data) don't poison
 // the position. Reject samples that are obviously an outlier vs. existing
 // learned data.
-function learnGatePosition(airportKey, gateCode, lat, lon) {
-  if (!airportKey || !gateCode || lat == null || lon == null) return;
+// Is this FA position fix the aircraft parked at its gate? The transponder
+// often goes quiet on the taxiway, so after block-in FA's "last position" can
+// be a fix from the runway minutes earlier — slow and near the airport, but
+// not the gate. On 2026-10-12 that taught ORD/K12 a spot on the north
+// airfield. Only a fix taken at or after block-in counts.
+function isGateFix(lp, flight) {
+  if (!lp || !flight || !flight.actual_in) return false;
+  if (lp.latitude == null || lp.longitude == null || (!lp.latitude && !lp.longitude)) return false;
+  if (typeof lp.groundspeed === "number" && lp.groundspeed >= 8) return false;
+  const fixMs = new Date(lp.timestamp || 0).getTime(), inMs = new Date(flight.actual_in).getTime();
+  return !!fixMs && fixMs >= inMs - 60 * 1000;
+}
+
+function learnGatePosition(airportKey, gateCode, lat, lon, fixKey) {
+  if (!airportKey || !gateCode || lat == null || lon == null || (!lat && !lon)) return;
   const ak = airportKey.toUpperCase();
   const gk = String(gateCode).toUpperCase().trim();
   if (!gateLearned[ak]) gateLearned[ak] = {};
   const entry = gateLearned[ak][gk] || { samples: [] };
+  // One FA fix is one observation: every poll returns the same last fix,
+  // and counting it 8 times made a single (maybe stale) fix the "median".
+  const fk = fixKey ? String(fixKey) : `${lat.toFixed(5)},${lon.toFixed(5)}`;
+  if (entry.samples.some(s => (s.fix || `${s.lat.toFixed(5)},${s.lon.toFixed(5)}`) === fk)) return;
   // Outlier rejection: if we already have data, ignore samples > 250m away
   if (entry.samples.length >= 3) {
     const cur = medianPos(entry.samples);
@@ -1224,7 +1234,7 @@ function learnGatePosition(airportKey, gateCode, lat, lon) {
     const distM = Math.sqrt(dLat*dLat*111000*111000 + dLon*dLon*85000*85000);
     if (distM > 250) return;
   }
-  entry.samples.push({ lat, lon, ts: Date.now() });
+  entry.samples.push({ lat, lon, ts: Date.now(), fix: fk });
   if (entry.samples.length > 8) entry.samples = entry.samples.slice(-8);
   gateLearned[ak][gk] = entry;
   saveGateLearned();
