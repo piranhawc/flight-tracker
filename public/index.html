@@ -835,11 +835,16 @@ function drawGhostInbound() {
 // Is FA's last fix the plane parked at the gate? After block-in the last
 // fix is often from the runway or taxiway (transponder off before the gate),
 // so only a fix taken at/after actual_in counts. Same rule as the server.
-function isGateFix(lp, f) {
+// "V"/"P" fixes are FA estimates (an old fix re-stamped), not reports; and a
+// fix whose coordinates match a pre-arrival track point is that old fix.
+function isGateFix(lp, f, track) {
   if (!lp || !f || !f.actual_in || lp.latitude == null || lp.longitude == null) return false;
+  if (lp.update_type === "V" || lp.update_type === "P") return false;
   if (typeof lp.groundspeed === "number" && lp.groundspeed >= 8) return false;
-  var fixMs = new Date(lp.timestamp || 0).getTime();
-  return !!fixMs && fixMs >= new Date(f.actual_in).getTime() - 60000;
+  var fixMs = new Date(lp.timestamp || 0).getTime(), inMs = new Date(f.actual_in).getTime();
+  if (!fixMs || fixMs < inMs - 60000) return false;
+  var ps = (track && track.positions) || [];
+  return !ps.some(function(p) { return p.latitude === lp.latitude && p.longitude === lp.longitude && new Date(p.timestamp).getTime() < inMs - 60000; });
 }
 
 // Initial great-circle bearing from a to b, degrees clockwise from north.
@@ -956,7 +961,7 @@ function drawTestFlight() {
     // Arrived but FA's last fix is from before block-in (runway/taxiway):
     // park the plane at the known gate position instead of where the
     // transponder last spoke.
-    if (isArrived && !isGateFix(lp, flight) && flight.gate_destination && flight.destination) {
+    if (isArrived && !isGateFix(lp, flight, track) && flight.gate_destination && flight.destination) {
       var gc = gateCoordCache[flight.destination.code_iata + "-" + flight.gate_destination];
       if (gc && gc.lat != null) { plat = gc.lat; plon = gc.lon; }
     }
@@ -1100,7 +1105,7 @@ function drawTestFlight() {
         var dLatA = lp.latitude - AP[oCodeForGate].lat;
         var dLonA = lp.longitude - AP[oCodeForGate].lon;
         var distKmA = Math.sqrt(dLatA*dLatA*111*111 + dLonA*dLonA*85*85);
-        if (distKmA < 8 && isGateFix(lp, flight)) {
+        if (distKmA < 8 && isGateFix(lp, flight, testMode.track)) {
           gateLat = lp.latitude;
           gateLon = lp.longitude;
           gateChipSource = "live";

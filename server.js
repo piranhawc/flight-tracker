@@ -779,7 +779,7 @@ app.get("/api/track/:flightNum", faGuard, async (req, res) => {
     // serves as the second sanity check on top of the speed/airport gates.
     if (target.actual_in && target.gate_destination && position && position.last_position) {
       const lp = position.last_position;
-      if (isGateFix(lp, target)) {
+      if (isGateFix(lp, target, track)) {
         const dk = target.destination && (target.destination.code_iata || target.destination.code);
         if (dk) learnGatePosition(dk, target.gate_destination, lp.latitude, lp.longitude, lp.timestamp);
       }
@@ -791,7 +791,7 @@ app.get("/api/track/:flightNum", faGuard, async (req, res) => {
     if (target.actual_in && target.gate_destination) {
       const dk2 = target.destination && (target.destination.code_iata || target.destination.code);
       const lp2 = position && position.last_position;
-      const faAnchor = isGateFix(lp2, target) ? lp2 : null;
+      const faAnchor = isGateFix(lp2, target, track) ? lp2 : null;
       if (dk2) sampleHaArrivalFix(dk2, target.gate_destination, faAnchor, target.actual_in).catch(() => {});
     }
 
@@ -1209,12 +1209,20 @@ try {
 // be a fix from the runway minutes earlier — slow and near the airport, but
 // not the gate. On 2026-10-12 that taught ORD/K12 a spot on the north
 // airfield. Only a fix taken at or after block-in counts.
-function isGateFix(lp, flight) {
+// FA also re-stamps an old fix with a fresh time: update_type "V" (virtual)
+// / "P" (projected) are estimates, not reports. AA3133 at ORD 2026-10-12 had
+// a "V" fix stamped after block-in that was exactly its 27R touchdown fix.
+function isGateFix(lp, flight, track) {
   if (!lp || !flight || !flight.actual_in) return false;
   if (lp.latitude == null || lp.longitude == null || (!lp.latitude && !lp.longitude)) return false;
+  if (lp.update_type === "V" || lp.update_type === "P") return false;
   if (typeof lp.groundspeed === "number" && lp.groundspeed >= 8) return false;
   const fixMs = new Date(lp.timestamp || 0).getTime(), inMs = new Date(flight.actual_in).getTime();
-  return !!fixMs && fixMs >= inMs - 60 * 1000;
+  if (!fixMs || fixMs < inMs - 60 * 1000) return false;
+  // Same coordinates as a track point from before block-in = the old fix.
+  const ps = (track && track.positions) || [];
+  return !ps.some(p => p.latitude === lp.latitude && p.longitude === lp.longitude &&
+                       new Date(p.timestamp).getTime() < inMs - 60 * 1000);
 }
 
 function learnGatePosition(airportKey, gateCode, lat, lon, fixKey) {
