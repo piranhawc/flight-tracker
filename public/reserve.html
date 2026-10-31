@@ -21,6 +21,12 @@
 select.chip { appearance:none; padding-right:1.4rem; }
 .mono { font-variant-numeric: tabular-nums; }
 tr.me td { background: rgba(78,161,255,0.08); }
+.rtype { display:inline-block; font-size:0.68rem; font-weight:700; letter-spacing:0.04em; padding:0.05rem 0.4rem;
+  border-radius:5px; border:1px solid var(--border-2); color:var(--ink-2); }
+td.barcell { width:22%; min-width:80px; }
+.tbar { height:8px; border-radius:4px; background:var(--series-1); min-width:2px; }
+.typesum { display:flex; flex-wrap:wrap; gap:0.4rem 1.2rem; margin:0 0 0.8rem; font-size:0.82rem; color:var(--ink-2); }
+.typesum b { color:var(--ink); }
 /* league.css gives bars a 2px floor so tiny values stay visible; a true zero
    must read as empty, not as a small number. */
 .col.zero .bar { min-height: 0; }
@@ -98,8 +104,9 @@ pre.raw { background:var(--bg); border:1px solid var(--border); border-radius:8p
   </section>
 
   <section class="card">
-    <div class="cardhead"><h2 id="pilots-title">Most assignments</h2><span class="muted-note">per pilot</span></div>
-    <div class="hbars" id="pilots"></div>
+    <div class="cardhead"><h2 id="pilots-title">Reserve time by pilot</h2><span class="muted-note" id="pilots-note">sum of TIME (credit) of each pilot's RF assignments this month</span></div>
+    <div class="typesum" id="typesum"></div>
+    <div class="scrollx" id="pilots"></div>
   </section>
 
   <section class="card">
@@ -238,28 +245,76 @@ function hbars(elId, entries, tipFn) {
   Array.prototype.forEach.call(el.querySelectorAll(".hb"), function(row, i) { bindTip(row, tipFn(entries[i])); });
 }
 
+// Reserve type per pilot from the month's PBS award (snapshot `lines`):
+// LC = long call, SC = short call, LH = lineholder. Missing if no lines.
+function lineType() {
+  var t = {};
+  (SNAP.lines || []).forEach(function(l) { t[String(l.emp)] = l.status; });
+  return t;
+}
+function typeLabel(c) { return c === "LC" ? "Long call" : c === "SC" ? "Short call" : c === "LH" ? "Lineholder" : "No PBS line"; }
+function mins(t) { var m = /^(\d+)\.(\d{2})$/.exec(String(t || "")); return m ? +m[1] * 60 + +m[2] : 0; }
+function hmm(n) { return Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0"); }
+
 function renderPilots(list) {
-  var by = {};
+  var types = lineType(), hasLines = (SNAP.lines || []).length > 0, by = {};
   list.forEach(function(a) {
-    var k = a.emp;
-    if (!by[k]) by[k] = { k: pilotName(a.pilot), v: 0, emp: a.emp, sen: a.sen, dates: [] };
-    by[k].v++; by[k].dates.push(dayLabel(a.date) + " (" + a.seq + ")");
+    var k = String(a.emp);
+    if (!by[k]) by[k] = { name: pilotName(a.pilot), emp: k, sen: a.sen, type: types[k] || "", n: 0, min: 0, trips: [] };
+    by[k].n++; by[k].min += mins(a.time); by[k].trips.push(a);
   });
-  var e = Object.keys(by).map(function(k) { return by[k]; }).sort(function(a, b) { return b.v - a.v || a.sen - b.sen; }).slice(0, 10);
-  hbars("pilots", e, function(p) { return "<b>" + esc(p.k) + "</b> · sen " + p.sen + " · #" + esc(p.emp) + "<br>" + p.dates.map(esc).join("<br>"); });
+  var rows = Object.keys(by).map(function(k) { return by[k]; })
+    .sort(function(a, b) { return b.min - a.min || b.n - a.n || a.sen - b.sen; });
+  // Per-type totals, counting reserves who got nothing too (only knowable
+  // from the PBS lines, and only when no filter is narrowing the list).
+  var sum = {};
+  if (hasLines && !query) (SNAP.lines || []).forEach(function(l) {
+    if (l.status === "LC" || l.status === "SC") (sum[l.status] = sum[l.status] || { pilots: 0, used: 0, min: 0 }).pilots++;
+  });
+  rows.forEach(function(r) {
+    var t = r.type || "?", o = (sum[t] = sum[t] || { pilots: 0, used: 0, min: 0 });
+    if (query || !hasLines || (t !== "LC" && t !== "SC")) o.pilots++;
+    o.used++; o.min += r.min;
+  });
+  document.getElementById("typesum").innerHTML = !hasLines ? "<span>Long/short call unknown: this month has no PBS award data.</span>" :
+    ["LC", "SC", "LH", "?"].filter(function(t) { return sum[t]; }).map(function(t) {
+      var o = sum[t];
+      return "<span><b>" + typeLabel(t === "?" ? "" : t) + "</b> " + o.used + (t === "LC" || t === "SC" ? " of " + o.pilots : "") +
+        " pilot" + (o.pilots === 1 ? "" : "s") + " used · <b>" + hmm(o.min) + "</b>" +
+        (o.used ? " · avg " + hmm(Math.round(o.min / o.used)) : "") + "</span>";
+    }).join("");
+  var el = document.getElementById("pilots");
+  if (!rows.length) { el.innerHTML = '<p class="muted-note">Nothing matches.</p>'; return; }
+  var max = rows[0].min || 1;
+  el.innerHTML = "<table class='grid'><thead><tr><th>Pilot</th><th class='r'>Sen</th><th>Type</th>" +
+    "<th class='r'>Assignments</th><th class='r'>Total time</th><th></th></tr></thead><tbody>" +
+    rows.map(function(r) {
+      return "<tr" + (r.emp === MY_EMP ? " class='me'" : "") + " data-emp='" + esc(r.emp) + "'><td>" + esc(r.name) + "</td>" +
+        "<td class='num r'>" + r.sen + "</td><td><span class='rtype' title='" + esc(typeLabel(r.type)) + "'>" + esc(r.type || "—") + "</span></td>" +
+        "<td class='num r'>" + r.n + "</td><td class='num r'><b>" + hmm(r.min) + "</b></td>" +
+        "<td class='barcell'><div class='tbar' style='width:" + (100 * r.min / max).toFixed(1) + "%'></div></td></tr>";
+    }).join("") + "</tbody></table>";
+  Array.prototype.forEach.call(el.querySelectorAll("tr[data-emp]"), function(tr) {
+    var r = by[tr.getAttribute("data-emp")];
+    bindTip(tr, "<b>" + esc(r.name) + "</b> · " + esc(typeLabel(r.type)) + " · #" + esc(r.emp) + "<br>" +
+      r.trips.slice().sort(function(a, b) { return a.date.localeCompare(b.date); })
+        .map(function(a) { return esc(dayLabel(a.date)) + " · " + esc(a.seq) + " · " + esc(a.time); }).join("<br>"));
+  });
 }
 
 
 function renderList(list) {
   var rows = list.slice().sort(function(a, b) { return a.date.localeCompare(b.date) || String(a.seq).localeCompare(String(b.seq)); });
+  var types = lineType();
   document.getElementById("list-note").textContent = rows.length + " shown";
   document.getElementById("list").innerHTML = !rows.length ? '<p class="muted-note">Nothing matches.</p>' :
-    "<table class='grid'><thead><tr><th>Day</th><th>Seq</th><th>Pilot</th><th class='r'>Sen</th><th>Emp #</th>" +
+    "<table class='grid'><thead><tr><th>Day</th><th>Seq</th><th>Pilot</th><th>Type</th><th class='r'>Sen</th><th>Emp #</th>" +
     "<th class='r'>TIME</th><th class='r'>Starts</th><th class='r'>Ends</th><th class='r'>Notified</th></tr></thead><tbody>" +
     rows.map(function(a) {
       return "<tr" + (a.emp === MY_EMP ? " class='me'" : "") + "><td class='num'>" + dayLabel(a.date) + "</td>" +
         "<td>" + seqBtn(a.seq, a.date) + "</td>" +
         "<td>" + esc(pilotName(a.pilot)) + (a.flag ? "<span class='flag'>" + esc(a.flag) + "</span>" : "") + "</td>" +
+        "<td><span class='rtype' title='" + esc(typeLabel(types[String(a.emp)])) + "'>" + esc(types[String(a.emp)] || "—") + "</span></td>" +
         "<td class='num r'>" + a.sen + "</td><td class='num muted-note'>" + esc(a.emp) + "</td>" +
         "<td class='num r'>" + esc(a.time) + "</td><td class='num r'>" + esc(a.starts) + "</td>" +
         "<td class='num r'>" + esc(a.ends) + "</td><td class='num r muted-note'>" + esc(a.notified) + "</td></tr>";
