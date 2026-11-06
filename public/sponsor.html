@@ -445,6 +445,11 @@ function signOut() {
 async function initApp() {
   var r = await fetch("/api/sponsor", { headers: authHeaders() });
   if (r.status === 401) { signOut(); return; }
+  if (r.status === 503) {
+    document.getElementById("login").style.display = "none"; document.getElementById("app").style.display = "block";
+    document.getElementById("lede").textContent = "Locked: the logbook still uses the default password. Set LOGBOOK_PASSWORD on the server to open the sponsor tracker.";
+    return;
+  }
   var d = await r.json();
   D = { people: d.people || [], milestones: d.milestones || [], people_t: d.progress || {} };
   document.getElementById("login").style.display = "none";

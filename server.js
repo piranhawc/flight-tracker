@@ -4612,6 +4612,13 @@ const sponsorTracker = () => {
 const clip = (v, n) => String(v == null ? "" : v).slice(0, n);
 const isoDay = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : null);
 
+// Other pilots' contact details: never behind the default "logbook" password.
+function sponsorGuard(req, res, next) {
+  if (LOGBOOK_PASSWORD === "logbook") return res.status(503).json({ error: "Set LOGBOOK_PASSWORD before using the sponsor tracker" });
+  next();
+}
+app.use("/api/sponsor", sponsorGuard);
+
 app.get("/api/sponsor", logbookAuth, (req, res) => {
   const people = sponsorRead("people.json", { people: [] });
   const t = sponsorTracker();
