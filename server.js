@@ -4589,6 +4589,70 @@ app.post("/api/logbook/refresh-crew-names", logbookAuth, async (req, res) => {
 // served only behind the logbook password. Snapshots are pulled from Sabre
 // deliberately and rarely; this endpoint only reads what's on disk and never
 // contacts Sabre itself.
+// --- Sponsor tracker (/sponsor.html) ---
+// Mike's new-hire sponsees, exported once from APA's PilotSponsor site
+// (Compass New Hires -> Sponsor Worksheet) into data/sponsor/people.json.
+// Milestones, check-offs and notes live in data/sponsor/tracker.json. It is
+// other pilots' contact data: data/ only, never the (public) repo.
+const SPONSOR_DIR = path.join(process.env.DATA_DIR || "/app/data", "sponsor");
+const sponsorFile = n => path.join(SPONSOR_DIR, n);
+function sponsorRead(n, dflt) {
+  try { return JSON.parse(fs.readFileSync(sponsorFile(n), "utf8")); } catch { return dflt; }
+}
+function sponsorWrite(n, obj) {
+  fs.mkdirSync(SPONSOR_DIR, { recursive: true });
+  const tmp = sponsorFile(n) + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 1));
+  fs.renameSync(tmp, sponsorFile(n));
+}
+const sponsorTracker = () => {
+  const t = sponsorRead("tracker.json", {});
+  return { milestones: Array.isArray(t.milestones) ? t.milestones : [], people: t.people && typeof t.people === "object" ? t.people : {} };
+};
+const clip = (v, n) => String(v == null ? "" : v).slice(0, n);
+const isoDay = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : null);
+
+app.get("/api/sponsor", logbookAuth, (req, res) => {
+  const people = sponsorRead("people.json", { people: [] });
+  const t = sponsorTracker();
+  res.json({ fetched_at: people.fetched_at || null, source: people.source || null, people: people.people || [],
+             milestones: t.milestones, progress: t.people });
+});
+
+app.put("/api/sponsor/milestones", logbookAuth, (req, res) => {
+  const list = Array.isArray(req.body && req.body.milestones) ? req.body.milestones : null;
+  if (!list || list.length > 200) return res.status(400).json({ error: "milestones must be a list" });
+  const t = sponsorTracker();
+  t.milestones = list.map(m => {
+    const off = m.offsetDays === "" || m.offsetDays == null ? null : Math.round(Number(m.offsetDays));
+    return { id: clip(m.id, 40).replace(/[^A-Za-z0-9_-]/g, "") || ("m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
+             name: clip(m.name, 200).trim() || "Untitled", offsetDays: Number.isFinite(off) ? off : null, date: isoDay(m.date) };
+  });
+  sponsorWrite("tracker.json", t);
+  res.json(t);
+});
+
+app.put("/api/sponsor/person/:emp", logbookAuth, (req, res) => {
+  const emp = String(req.params.emp || "");
+  if (!/^\d{3,7}$/.test(emp)) return res.status(400).json({ error: "bad emp" });
+  const b = req.body || {}, t = sponsorTracker();
+  const p = t.people[emp] || (t.people[emp] = { checks: {}, notes: "" });
+  if (typeof b.notes === "string") p.notes = clip(b.notes, 20000);
+  if (b.check && typeof b.check.id === "string") {
+    const id = b.check.id.replace(/[^A-Za-z0-9_-]/g, "");
+    p.checks = p.checks || {};
+    if (b.check.done) p.checks[id] = { done: true, at: isoDay(b.check.at) || new Date().toISOString().slice(0, 10) };
+    else delete p.checks[id];
+  }
+  if (b.due && typeof b.due.id === "string") {
+    const id = b.due.id.replace(/[^A-Za-z0-9_-]/g, "");
+    p.due = p.due || {};
+    if (isoDay(b.due.date)) p.due[id] = b.due.date; else delete p.due[id];
+  }
+  sponsorWrite("tracker.json", t);
+  res.json(p);
+});
+
 const RESERVE_DIR = path.join(process.env.DATA_DIR || "/app/data", "reserve");
 app.get("/api/reserve/snapshots", logbookAuth, (req, res) => {
   try {

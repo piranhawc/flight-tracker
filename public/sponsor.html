@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sponsor tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/league.css?v=1">
+<style>
+.tabs { display:flex; gap:0.4rem; margin:0 0 1rem; flex-wrap:wrap; }
+.tabs .chip.on { border-color:var(--series-1); color:var(--ink); background:rgba(78,161,255,0.12); }
+.mono, .num { font-variant-numeric: tabular-nums; }
+.namebtn { background:none; border:0; padding:0; font:inherit; font-weight:600; color:var(--ink); cursor:pointer; text-align:left; }
+.namebtn:hover { color:var(--series-1); }
+.sub { color:var(--muted); font-size:0.74rem; }
+table.matrix th.ms { font-size:0.7rem; font-weight:600; color:var(--ink-2); text-align:center; min-width:84px; max-width:120px;
+  white-space:normal; line-height:1.2; vertical-align:bottom; }
+table.matrix td.cell { text-align:center; }
+table.matrix td.sticky, table.matrix th.sticky { position:sticky; left:0; background:var(--surface); z-index:1; }
+.chk { display:inline-flex; flex-direction:column; align-items:center; gap:0.15rem; cursor:pointer; }
+.chk input { width:18px; height:18px; accent-color:var(--series-1); cursor:pointer; }
+.chk .d { font-size:0.66rem; color:var(--muted); white-space:nowrap; }
+.chk .d.late { color:var(--down); font-weight:600; }
+.chk .d.ok { color:var(--up); }
+.prog { height:6px; border-radius:3px; background:var(--track); overflow:hidden; width:90px; margin-top:0.25rem; }
+.prog > div { height:100%; background:var(--series-1); }
+/* drawer */
+#drawer { position:fixed; inset:0; z-index:80; display:none; }
+#drawer.open { display:block; }
+#drawer .scrim { position:absolute; inset:0; background:rgba(0,0,0,0.55); }
+#drawer .sheet { position:absolute; top:0; right:0; bottom:0; width:min(560px,100%); overflow:auto;
+  background:var(--surface); border-left:1px solid var(--border); padding:1.4rem 1.2rem 2rem; box-shadow:-12px 0 40px rgba(0,0,0,0.5); }
+#drawer h2 { margin:0; font-size:1.35rem; letter-spacing:-0.02em; padding-right:2.5rem; }
+#drawer .close { position:absolute; top:1rem; right:1rem; background:none; border:1px solid var(--border-2);
+  color:var(--ink-2); border-radius:999px; width:2rem; height:2rem; cursor:pointer; font-size:1rem; }
+.kv { display:grid; grid-template-columns:repeat(2,1fr); gap:0.5rem; margin:0.9rem 0 1.1rem; }
+.kv div { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.45rem 0.6rem; min-width:0; }
+.kv span { display:block; color:var(--muted); font-size:0.64rem; text-transform:uppercase; letter-spacing:0.05em; font-weight:600; }
+.kv b { font-weight:600; font-size:0.9rem; overflow-wrap:anywhere; }
+.kv a { color:var(--series-1); }
+h3.sect { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin:1.2rem 0 0.5rem; }
+.cl { list-style:none; margin:0; padding:0; }
+.cl li { display:grid; grid-template-columns:22px 1fr auto; gap:0.6rem; align-items:center; padding:0.55rem 0; border-bottom:1px solid var(--border); }
+.cl li input[type=checkbox] { width:18px; height:18px; accent-color:var(--series-1); }
+.cl .nm { font-size:0.9rem; }
+.cl li.done .nm { color:var(--muted); text-decoration:line-through; }
+.cl .meta { font-size:0.72rem; color:var(--muted); }
+.cl .meta.late { color:var(--down); font-weight:600; }
+.cl input[type=date] { background:var(--bg); border:1px solid var(--border-2); color:var(--ink-2); border-radius:6px; padding:0.15rem 0.3rem; font:inherit; font-size:0.74rem; color-scheme:dark; }
+textarea.notes { width:100%; min-height:180px; box-sizing:border-box; background:var(--bg); border:1px solid var(--border-2); border-radius:8px;
+  color:var(--ink); font:inherit; font-size:0.9rem; padding:0.6rem 0.7rem; resize:vertical; line-height:1.45; }
+textarea.notes:focus { outline:none; border-color:var(--series-1); }
+.saved { font-size:0.72rem; color:var(--muted); margin-left:0.5rem; }
+/* calendar */
+.calhead { display:flex; align-items:center; gap:0.6rem; margin-bottom:0.6rem; }
+.calhead h2 { margin:0; font-size:1.05rem; min-width:9rem; }
+.cal { display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:4px; }
+.cal .dow { font-size:0.66rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); text-align:center; padding:0.2rem 0; }
+.cal .day { min-height:86px; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0.25rem; min-width:0; }
+.cal .day.out { opacity:0.35; }
+.cal .day.today { border-color:var(--series-1); }
+.cal .dn { font-size:0.7rem; color:var(--muted); }
+.ev { display:block; width:100%; text-align:left; font:inherit; font-size:0.68rem; line-height:1.25; margin-top:2px; padding:2px 4px; border-radius:4px;
+  border:0; background:rgba(78,161,255,0.16); color:var(--ink); cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ev.done { background:transparent; color:var(--muted); text-decoration:line-through; }
+.ev.late { background:rgba(255,91,82,0.18); }
+@media (max-width:640px) { .cal .day { min-height:58px; } .ev { font-size:0.6rem; } }
+.agenda { list-style:none; margin:0; padding:0; }
+.agenda li { display:flex; gap:0.8rem; padding:0.45rem 0; border-bottom:1px solid var(--border); font-size:0.86rem; align-items:baseline; }
+.agenda .when { width:5.5rem; flex:none; color:var(--muted); font-size:0.76rem; }
+.agenda .when.late { color:var(--down); font-weight:600; }
+/* milestone editor */
+.msrow { display:grid; grid-template-columns:1fr 110px 150px auto; gap:0.5rem; align-items:center; padding:0.4rem 0; border-bottom:1px solid var(--border); }
+.msrow input { background:var(--bg); border:1px solid var(--border-2); color:var(--ink); border-radius:6px; padding:0.4rem 0.5rem; font:inherit; font-size:0.86rem; min-width:0; color-scheme:dark; }
+.msrow .acts { display:flex; gap:0.25rem; }
+.iconbtn { background:none; border:1px solid var(--border-2); color:var(--ink-2); border-radius:6px; width:1.9rem; height:1.9rem; cursor:pointer; }
+.iconbtn:hover { color:var(--ink); border-color:var(--muted); }
+.mshead { display:grid; grid-template-columns:1fr 110px 150px auto; gap:0.5rem; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); }
+@media (max-width:640px) { .msrow, .mshead { grid-template-columns:1fr 80px; } .msrow .fixed, .mshead .fixed { display:none; } .msrow .acts { grid-column:1 / -1; } }
+.btnrow { display:flex; gap:0.5rem; margin-top:0.8rem; flex-wrap:wrap; align-items:center; }
+.btn.ghost { background:transparent; border:1px solid var(--border-2); color:var(--ink-2); }
+.empty { color:var(--muted); font-size:0.9rem; padding:0.6rem 0; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="/"><span class="brand-dot"></span>Flight Tracker</a>
+    <nav class="nav">
+      <a class="navlink" href="/">Tracker</a>
+      <a class="navlink" href="/logbook.html">Logbook</a>
+      <a class="navlink" href="/stats.html">Stats</a>
+      <a class="navlink" href="/reserve.html">Reserve</a>
+      <a class="navlink on" href="/sponsor.html">Sponsor</a>
+    </nav>
+  </div>
+</header>
+
+<div id="login">
+  <h2 style="margin:0 0 0.8rem;font-size:1.1rem">Logbook sign-in</h2>
+  <form id="login-form">
+    <input class="input" type="password" id="password" placeholder="password" autocomplete="current-password">
+    <div class="err" id="login-err"></div>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+</div>
+
+<main class="container" id="app">
+  <h1>Sponsor tracker</h1>
+  <p class="lede" id="lede">Loading…</p>
+
+  <div class="summary" id="tiles"></div>
+
+  <div class="tabs" role="tablist">
+    <button class="chip on" type="button" data-view="people">People</button>
+    <button class="chip" type="button" data-view="calendar">Calendar</button>
+    <button class="chip" type="button" data-view="milestones">Milestones</button>
+  </div>
+
+  <section class="card view" id="v-people">
+    <div class="cardhead"><h2>Checklist</h2><button class="linkbtn" id="csv" type="button">Download CSV</button></div>
+    <div class="scrollx" id="matrix"></div>
+  </section>
+
+  <div class="view" id="v-calendar" style="display:none">
+    <section class="card">
+      <div class="calhead">
+        <button class="iconbtn" id="cal-prev" type="button" aria-label="Previous month">←</button>
+        <h2 id="cal-title"></h2>
+        <button class="iconbtn" id="cal-next" type="button" aria-label="Next month">→</button>
+        <button class="linkbtn" id="cal-today" type="button">Today</button>
+      </div>
+      <div class="cal" id="cal"></div>
+    </section>
+    <section class="card">
+      <div class="cardhead"><h2>Overdue and next 30 days</h2></div>
+      <ul class="agenda" id="agenda"></ul>
+    </section>
+  </div>
+
+  <section class="card view" id="v-milestones" style="display:none">
+    <div class="cardhead"><h2>Milestones</h2><span class="muted-note">applied to every new hire</span></div>
+    <p class="muted-note" style="margin:0 0 0.8rem">Due date is <b>days after hire date</b> (e.g. 30, 90, 365), or a <b>fixed date</b> for everyone. Leave both empty for no due date. A due date can also be changed per person in their panel.</p>
+    <div class="mshead"><span>Milestone</span><span>Days after hire</span><span class="fixed">Fixed date</span><span></span></div>
+    <div id="mslist"></div>
+    <div class="btnrow">
+      <button class="btn ghost" id="ms-add" type="button">+ Add milestone</button>
+      <button class="btn" id="ms-save" type="button">Save milestones</button>
+      <span class="saved" id="ms-saved"></span>
+    </div>
+  </section>
+</main>
+
+<div id="drawer" aria-hidden="true"><div class="scrim"></div><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="p-h"><button class="close" type="button" aria-label="Close">✕</button><div id="pbody"></div></div></div>
+
+<script>
+var token = localStorage.getItem("logbook-token") || null;
+var D = null, view = "people", calMonth = null, openEmp = null;
+
+function authHeaders(json) {
+  var h = token ? { "Authorization": "Bearer " + token } : {};
+  if (json) h["Content-Type"] = "application/json";
+  return h;
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+function todayISO() { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function addDays(iso, n) { var d = new Date(iso + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function fmt(iso, yr) {
+  if (!iso) return "—";
+  var o = { month: "short", day: "numeric", timeZone: "UTC" }; if (yr) o.year = "numeric";
+  return new Date(iso + "T12:00:00Z").toLocaleDateString("en-US", o);
+}
+function name(p) { return p.first + " " + p.last; }
+function track(emp) { return (D.people_t[emp] = D.people_t[emp] || { checks: {}, notes: "", due: {} }); }
+function dueOf(p, m) {
+  var t = track(p.emp);
+  if (t.due && t.due[m.id]) return t.due[m.id];
+  if (m.date) return m.date;
+  if (m.offsetDays != null && p.hire) return addDays(p.hire, m.offsetDays);
+  return null;
+}
+function isDone(p, m) { var c = (track(p.emp).checks || {})[m.id]; return !!(c && c.done); }
+function doneAt(p, m) { var c = (track(p.emp).checks || {})[m.id]; return c && c.at; }
+
+async function api(method, url, body) {
+  var r = await fetch(url, { method: method, headers: authHeaders(!!body), body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { signOut(); throw new Error("unauthorized"); }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+/* ---- tiles ---- */
+function renderTiles() {
+  var P = D.people, M = D.milestones, t = todayISO(), soon = addDays(t, 30), total = 0, done = 0, late = 0, next = 0;
+  P.forEach(function(p) { M.forEach(function(m) {
+    total++; if (isDone(p, m)) { done++; return; }
+    var d = dueOf(p, m); if (!d) return;
+    if (d < t) late++; else if (d <= soon) next++;
+  }); });
+  var tiles = [
+    { label: "New hires", big: P.length },
+    { label: "Milestones", big: M.length },
+    { label: "Checked off", mid: total ? done + " of " + total + " · " + Math.round(100 * done / total) + "%" : "—" },
+    { label: "Overdue", mid: String(late) },
+    { label: "Due in 30 days", mid: String(next) }
+  ];
+  document.getElementById("tiles").innerHTML = tiles.map(function(x) {
+    var v = x.big != null ? '<span class="stat-big">' + x.big + "</span>" : '<span class="stat-mid">' + esc(x.mid) + "</span>";
+    return '<div class="stat"><span class="stat-label">' + esc(x.label) + "</span>" + v + "</div>";
+  }).join("");
+}
+
+/* ---- people matrix ---- */
+function renderMatrix() {
+  var P = D.people, M = D.milestones, t = todayISO(), el = document.getElementById("matrix");
+  if (!P.length) { el.innerHTML = '<p class="empty">No new hires saved yet.</p>'; return; }
+  var head = "<tr><th class='sticky'>New hire</th><th>Class</th><th>Bid</th><th>Hired</th>" +
+    (M.length ? M.map(function(m) { return "<th class='ms' title='" + esc(m.name) + "'>" + esc(m.name) + "</th>"; }).join("")
+              : "<th class='ms'>No milestones yet: add them in the Milestones tab</th>") + "</tr>";
+  var rows = P.map(function(p) {
+    var n = M.filter(function(m) { return isDone(p, m); }).length;
+    var cells = M.map(function(m) {
+      var d = dueOf(p, m), dn = isDone(p, m), late = !dn && d && d < t;
+      var lbl = dn ? "✓ " + fmt(doneAt(p, m)) : d ? (late ? "late · " : "") + fmt(d) : "";
+      return "<td class='cell'><label class='chk' title='" + esc(m.name + (d ? " · due " + fmt(d, 1) : "")) + "'>" +
+        "<input type='checkbox' data-emp='" + esc(p.emp) + "' data-ms='" + esc(m.id) + "'" + (dn ? " checked" : "") + ">" +
+        "<span class='d" + (late ? " late" : dn ? " ok" : "") + "'>" + esc(lbl) + "</span></label></td>";
+    }).join("");
+    return "<tr><td class='sticky'><button class='namebtn' type='button' data-open='" + esc(p.emp) + "'>" + esc(name(p)) + "</button>" +
+      "<div class='sub'>#" + esc(p.emp) + (track(p.emp).notes ? " · 📝" : "") + "</div>" +
+      (M.length ? "<div class='prog'><div style='width:" + (100 * n / M.length).toFixed(0) + "%'></div></div>" : "") + "</td>" +
+      "<td class='num'>" + esc(p.class) + "</td><td class='num'>" + esc(p.bid) + "</td><td class='num'>" + esc(fmt(p.hire, 1)) + "</td>" +
+      (M.length ? cells : "<td></td>") + "</tr>";
+  }).join("");
+  el.innerHTML = "<table class='grid matrix'><thead>" + head + "</thead><tbody>" + rows + "</tbody></table>";
+}
+
+async function setCheck(emp, msId, done) {
+  var t = track(emp); t.checks = t.checks || {};
+  if (done) t.checks[msId] = { done: true, at: todayISO() }; else delete t.checks[msId];
+  renderAll();
+  try { D.people_t[emp] = await api("PUT", "/api/sponsor/person/" + encodeURIComponent(emp), { check: { id: msId, done: done, at: todayISO() } }); }
+  catch (e) { alert("Couldn't save: " + e.message); }
+  renderAll();
+}
+
+/* ---- person drawer ---- */
+function openPerson(emp) {
+  openEmp = emp; renderDrawer();
+  var d = document.getElementById("drawer"); d.classList.add("open"); d.setAttribute("aria-hidden", "false");
+}
+function closePerson() {
+  flushNotes();
+  openEmp = null; var d = document.getElementById("drawer"); d.classList.remove("open"); d.setAttribute("aria-hidden", "true");
+}
+function renderDrawer() {
+  var p = D.people.find(function(x) { return x.emp === openEmp; }); if (!p) return;
+  var t = track(p.emp), today = todayISO();
+  var kv = [
+    ["Emp #", esc(p.emp)], ["Class", esc(p.class)], ["Bid status", esc(p.bid)], ["Hired", esc(fmt(p.hire, 1))],
+    ["Email", p.email ? "<a href='mailto:" + esc(p.email) + "'>" + esc(p.email) + "</a>" : "—"],
+    ["Phone", p.phone ? "<a href='tel:" + esc(String(p.phone).replace(/[^0-9+]/g, "")) + "'>" + esc(p.phone) + "</a>" : "—"],
+    ["Came from", esc(p.from || "—")], ["Graduated", p.graduated ? "Yes" : "No"]
+  ];
+  var list = D.milestones.length ? "<ul class='cl'>" + D.milestones.map(function(m) {
+    var d = dueOf(p, m), dn = isDone(p, m), late = !dn && d && d < today;
+    var meta = dn ? "Done " + fmt(doneAt(p, m), 1) : d ? (late ? "Overdue · due " : "Due ") + fmt(d, 1) : "No due date";
+    return "<li class='" + (dn ? "done" : "") + "'><input type='checkbox' data-emp='" + esc(p.emp) + "' data-ms='" + esc(m.id) + "'" + (dn ? " checked" : "") +
+      " aria-label='" + esc(m.name) + "'><div><div class='nm'>" + esc(m.name) + "</div><div class='meta" + (late ? " late" : "") + "'>" + esc(meta) + "</div></div>" +
+      "<input type='date' data-due='" + esc(m.id) + "' value='" + esc((t.due || {})[m.id] || "") + "' title='Override due date for this person'></li>";
+  }).join("") + "</ul>" : "<p class='empty'>No milestones yet. Add them in the Milestones tab.</p>";
+  document.getElementById("pbody").innerHTML =
+    "<h2 id='p-h'>" + esc(name(p)) + "</h2>" +
+    "<div class='kv'>" + kv.map(function(x) { return "<div><span>" + x[0] + "</span><b>" + x[1] + "</b></div>"; }).join("") + "</div>" +
+    (p.apa_notes ? "<h3 class='sect'>Notes on PilotSponsor</h3><p style='white-space:pre-wrap;margin:0;color:var(--ink-2)'>" + esc(p.apa_notes) + "</p>" : "") +
+    "<h3 class='sect'>Milestones</h3>" + list +
+    "<h3 class='sect'>Notes <span class='saved' id='n-saved'></span></h3>" +
+    "<textarea class='notes' id='notes' placeholder='Calls, questions, how training is going…'>" + esc(t.notes || "") + "</textarea>";
+  var ta = document.getElementById("notes");
+  ta.addEventListener("input", function() { document.getElementById("n-saved").textContent = "editing…"; clearTimeout(noteTimer); noteTimer = setTimeout(flushNotes, 800); });
+  ta.addEventListener("blur", flushNotes);
+}
+var noteTimer = null;
+async function flushNotes() {
+  clearTimeout(noteTimer);
+  var ta = document.getElementById("notes"); if (!ta || !openEmp) return;
+  var t = track(openEmp); if (ta.value === (t.notes || "")) return;
+  var emp = openEmp, val = ta.value; t.notes = val;
+  try {
+    await api("PUT", "/api/sponsor/person/" + encodeURIComponent(emp), { notes: val });
+    var s = document.getElementById("n-saved"); if (s) s.textContent = "saved " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    renderMatrix();
+  } catch (e) { var s2 = document.getElementById("n-saved"); if (s2) s2.textContent = "not saved: " + e.message; }
+}
+async function setDue(emp, msId, date) {
+  var t = track(emp); t.due = t.due || {};
+  if (date) t.due[msId] = date; else delete t.due[msId];
+  try { D.people_t[emp] = await api("PUT", "/api/sponsor/person/" + encodeURIComponent(emp), { due: { id: msId, date: date || null } }); }
+  catch (e) { alert("Couldn't save: " + e.message); }
+  renderAll();
+}
+
+/* ---- calendar ---- */
+function allItems() {
+  var out = [];
+  D.people.forEach(function(p) { D.milestones.forEach(function(m) {
+    var d = dueOf(p, m); if (d) out.push({ date: d, p: p, m: m, done: isDone(p, m) });
+  }); });
+  return out.sort(function(a, b) { return a.date.localeCompare(b.date) || a.p.last.localeCompare(b.p.last); });
+}
+function renderCalendar() {
+  var t = todayISO();
+  if (!calMonth) calMonth = t.slice(0, 7);
+  var y = +calMonth.slice(0, 4), mo = +calMonth.slice(5, 7);
+  document.getElementById("cal-title").textContent = new Date(Date.UTC(y, mo - 1, 15)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+  var first = new Date(Date.UTC(y, mo - 1, 1)), start = addDays(first.toISOString().slice(0, 10), -first.getUTCDay());
+  var byDay = {}; allItems().forEach(function(it) { (byDay[it.date] = byDay[it.date] || []).push(it); });
+  var html = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(function(d) { return "<div class='dow'>" + d + "</div>"; }).join("");
+  for (var i = 0; i < 42; i++) {
+    var d = addDays(start, i), inM = d.slice(0, 7) === calMonth;
+    if (i === 35 && !inM) break;
+    html += "<div class='day" + (inM ? "" : " out") + (d === t ? " today" : "") + "'><div class='dn'>" + (+d.slice(8)) + "</div>" +
+      (byDay[d] || []).map(function(it) {
+        return "<button type='button' class='ev" + (it.done ? " done" : d < t ? " late" : "") + "' data-open='" + esc(it.p.emp) + "' title='" +
+          esc(name(it.p) + " · " + it.m.name) + "'>" + esc(it.p.last + " · " + it.m.name) + "</button>";
+      }).join("") + "</div>";
+  }
+  document.getElementById("cal").innerHTML = html;
+  var soon = addDays(t, 30), ag = allItems().filter(function(it) { return !it.done && it.date <= soon; });
+  document.getElementById("agenda").innerHTML = ag.length ? ag.map(function(it) {
+    return "<li><span class='when" + (it.date < t ? " late" : "") + "'>" + esc(it.date < t ? "late · " + fmt(it.date) : fmt(it.date)) + "</span>" +
+      "<span><button class='namebtn' type='button' data-open='" + esc(it.p.emp) + "'>" + esc(name(it.p)) + "</button> · " + esc(it.m.name) + "</span></li>";
+  }).join("") : "<li class='empty'>" + (D.milestones.length ? "Nothing overdue or due in the next 30 days." : "Add milestones with due dates to fill the calendar.") + "</li>";
+}
+
+/* ---- milestone editor ---- */
+var draft = [];
+function renderMsEditor() {
+  var el = document.getElementById("mslist");
+  if (!draft.length) { el.innerHTML = "<p class='empty'>No milestones yet. Add your first one below.</p>"; return; }
+  el.innerHTML = draft.map(function(m, i) {
+    return "<div class='msrow' data-i='" + i + "'>" +
+      "<input type='text' data-f='name' value='" + esc(m.name) + "' placeholder='e.g. Welcome call' aria-label='Milestone name'>" +
+      "<input type='number' data-f='offsetDays' value='" + esc(m.offsetDays == null ? "" : m.offsetDays) + "' placeholder='days' aria-label='Days after hire'>" +
+      "<input class='fixed' type='date' data-f='date' value='" + esc(m.date || "") + "' aria-label='Fixed date'>" +
+      "<div class='acts'><button class='iconbtn' type='button' data-act='up' aria-label='Move up'>↑</button>" +
+      "<button class='iconbtn' type='button' data-act='down' aria-label='Move down'>↓</button>" +
+      "<button class='iconbtn' type='button' data-act='del' aria-label='Delete'>✕</button></div></div>";
+  }).join("");
+}
+document.getElementById("mslist").addEventListener("input", function(e) {
+  var row = e.target.closest(".msrow"), f = e.target.getAttribute("data-f"); if (!row || !f) return;
+  var m = draft[+row.getAttribute("data-i")];
+  m[f] = f === "offsetDays" ? (e.target.value === "" ? null : Math.round(+e.target.value)) : f === "date" ? (e.target.value || null) : e.target.value;
+  document.getElementById("ms-saved").textContent = "unsaved changes";
+});
+document.getElementById("mslist").addEventListener("click", function(e) {
+  var b = e.target.closest("[data-act]"); if (!b) return;
+  var i = +b.closest(".msrow").getAttribute("data-i"), a = b.getAttribute("data-act");
+  if (a === "del") {
+    var used = D.people.filter(function(p) { return isDone(p, draft[i]); }).length;
+    if (used && !confirm("“" + draft[i].name + "” is checked off for " + used + " people. Delete it anyway?")) return;
+    draft.splice(i, 1);
+  }
+  if (a === "up" && i > 0) draft.splice(i - 1, 0, draft.splice(i, 1)[0]);
+  if (a === "down" && i < draft.length - 1) draft.splice(i + 1, 0, draft.splice(i, 1)[0]);
+  document.getElementById("ms-saved").textContent = "unsaved changes"; renderMsEditor();
+});
+document.getElementById("ms-add").addEventListener("click", function() {
+  draft.push({ id: "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: "", offsetDays: null, date: null });
+  renderMsEditor();
+  var ins = document.querySelectorAll("#mslist .msrow input[data-f=name]"); if (ins.length) ins[ins.length - 1].focus();
+});
+document.getElementById("ms-save").addEventListener("click", async function() {
+  var clean = draft.filter(function(m) { return String(m.name || "").trim(); });
+  try {
+    var r = await api("PUT", "/api/sponsor/milestones", { milestones: clean });
+    D.milestones = r.milestones; draft = JSON.parse(JSON.stringify(D.milestones));
+    document.getElementById("ms-saved").textContent = "saved · applied to all " + D.people.length + " new hires";
+    renderAll();
+  } catch (e) { document.getElementById("ms-saved").textContent = "not saved: " + e.message; }
+});
+
+/* ---- CSV ---- */
+document.getElementById("csv").addEventListener("click", function() {
+  var M = D.milestones, q = function(v) { v = String(v == null ? "" : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  var rows = [["Class", "Emp #", "Last", "First", "Email", "Phone", "Bid status", "Hire date", "From"].concat(M.map(function(m) { return m.name; })).concat(["Notes"])];
+  D.people.forEach(function(p) {
+    rows.push([p.class, p.emp, p.last, p.first, p.email, p.phone, p.bid, p.hire, p.from].concat(M.map(function(m) {
+      return isDone(p, m) ? "Done " + doneAt(p, m) : (dueOf(p, m) ? "Due " + dueOf(p, m) : "");
+    })).concat([track(p.emp).notes || ""]));
+  });
+  var blob = new Blob([rows.map(function(r) { return r.map(q).join(","); }).join("\n")], { type: "text/csv" });
+  var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "sponsor-worksheet-" + todayISO() + ".csv"; a.click();
+  setTimeout(function() { URL.revokeObjectURL(a.href); }, 1000);
+});
+
+/* ---- wiring ---- */
+function renderAll() {
+  renderTiles(); renderMatrix();
+  if (view === "calendar") renderCalendar();
+  if (openEmp) {
+    var ta = document.getElementById("notes"), keep = ta ? ta.value : null, focused = document.activeElement === ta;
+    renderDrawer();
+    if (keep != null && focused) { var n = document.getElementById("notes"); n.value = keep; n.focus(); }
+  }
+}
+function setView(v) {
+  view = v;
+  Array.prototype.forEach.call(document.querySelectorAll(".tabs .chip"), function(c) { c.classList.toggle("on", c.getAttribute("data-view") === v); });
+  ["people", "calendar", "milestones"].forEach(function(k) { document.getElementById("v-" + k).style.display = k === v ? "" : "none"; });
+  if (v === "calendar") renderCalendar();
+  if (v === "milestones") { draft = JSON.parse(JSON.stringify(D.milestones)); document.getElementById("ms-saved").textContent = ""; renderMsEditor(); }
+  try { localStorage.setItem("sponsor-view", v); } catch (e) {}
+}
+document.querySelector(".tabs").addEventListener("click", function(e) { var c = e.target.closest("[data-view]"); if (c) setView(c.getAttribute("data-view")); });
+document.addEventListener("click", function(e) {
+  var o = e.target.closest("[data-open]"); if (o) { openPerson(o.getAttribute("data-open")); return; }
+  if (e.target.closest("#drawer .close") || e.target.classList.contains("scrim")) closePerson();
+});
+document.addEventListener("change", function(e) {
+  var c = e.target;
+  if (c.matches("input[type=checkbox][data-ms]")) setCheck(c.getAttribute("data-emp"), c.getAttribute("data-ms"), c.checked);
+  else if (c.matches("input[type=date][data-due]") && openEmp) setDue(openEmp, c.getAttribute("data-due"), c.value);
+});
+document.addEventListener("keydown", function(e) { if (e.key === "Escape" && openEmp) closePerson(); });
+document.getElementById("cal-prev").addEventListener("click", function() { var d = new Date(calMonth + "-15T12:00:00Z"); d.setUTCMonth(d.getUTCMonth() - 1); calMonth = d.toISOString().slice(0, 7); renderCalendar(); });
+document.getElementById("cal-next").addEventListener("click", function() { var d = new Date(calMonth + "-15T12:00:00Z"); d.setUTCMonth(d.getUTCMonth() + 1); calMonth = d.toISOString().slice(0, 7); renderCalendar(); });
+document.getElementById("cal-today").addEventListener("click", function() { calMonth = todayISO().slice(0, 7); renderCalendar(); });
+window.addEventListener("beforeunload", flushNotes);
+
+function signOut() {
+  localStorage.removeItem("logbook-token"); token = null;
+  document.getElementById("login").style.display = "block";
+  document.getElementById("app").style.display = "none";
+  document.getElementById("login-err").textContent = "sign in again";
+}
+async function initApp() {
+  var r = await fetch("/api/sponsor", { headers: authHeaders() });
+  if (r.status === 401) { signOut(); return; }
+  var d = await r.json();
+  D = { people: d.people || [], milestones: d.milestones || [], people_t: d.progress || {} };
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  document.getElementById("lede").innerHTML = D.people.length
+    ? "<strong>" + D.people.length + " new hires</strong> you sponsor, from APA PilotSponsor's Compass New Hires sponsor worksheet" +
+      (d.fetched_at ? " (downloaded " + esc(fmt(d.fetched_at.slice(0, 10), 1)) + ")" : "") + ". Check-offs and notes save automatically."
+    : "No new hires saved yet.";
+  var v = "people"; try { v = localStorage.getItem("sponsor-view") || "people"; } catch (e) {}
+  setView(D.milestones.length ? v : "milestones");
+  renderAll();
+}
+
+document.getElementById("login-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  var resp = await fetch("/api/logbook/auth", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: document.getElementById("password").value }) });
+  if (!resp.ok) { document.getElementById("login-err").textContent = "incorrect password"; return; }
+  token = (await resp.json()).token; localStorage.setItem("logbook-token", token); initApp();
+});
+
+if (token) initApp(); else { document.getElementById("login").style.display = "block"; document.getElementById("app").style.display = "none"; }
+</script>
+</body>
+</html>
