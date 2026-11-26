@@ -62,6 +62,11 @@ select.chip { appearance:none; }
 .laybig { color:var(--ink); font-weight:800; font-size:1rem; font-variant-numeric:tabular-nums; margin-right:0.15rem; }
 .watchrow { display:flex; flex-wrap:wrap; align-items:center; gap:0.5rem; }
 .watchrow .err { min-height:0; }
+.pullrow { display:flex; flex-wrap:wrap; align-items:center; gap:0.6rem 1rem; margin-top:1rem; }
+.pullrow .btn[disabled] { opacity:0.45; cursor:not-allowed; }
+.pullstat { font-size:0.88rem; color:var(--ink-2); }
+.pullstat b { color:var(--ink); }
+.pullstat .bad { color:var(--down); font-weight:600; }
 .wchip { display:inline-flex; align-items:center; gap:0.15rem; background:var(--surface-2); border:1px solid var(--border-2);
   border-radius:999px; padding:0.1rem 0.2rem 0.1rem 0.7rem; font-size:0.8rem; font-weight:600; }
 .wchip button { background:none; border:0; color:var(--muted); cursor:pointer; font-size:0.95rem; padding:0.15rem 0.45rem; border-radius:999px; }
@@ -142,7 +147,12 @@ select.chip { appearance:none; }
       <span class="err" id="watch-err"></span>
     </div>
     <div class="days" id="watch-list" style="margin-top:0.8rem"></div>
-    <p class="muted-note" style="margin:0.8rem 0 0">Each pull covers every date on this list, all four airports, both directions. A date drops off once it has passed.</p>
+    <div class="pullrow">
+      <button class="btn" type="button" id="pull-now" style="margin-top:0">Pull now</button>
+      <span class="pullstat" id="pull-stat" role="status" aria-live="polite"></span>
+    </div>
+    <p class="muted-note" style="margin:0.8rem 0 0">A pull covers the first five dates on this list, all four airports, both directions, and takes about
+    5 minutes per date. The Mac mini picks a request up within 5 minutes. Up to 8 pulls in 24 hours, at least 30 minutes apart. A date drops off once it has passed.</p>
   </section>
 
   <section class="card" id="hist-card" style="display:none">
@@ -159,6 +169,7 @@ select.chip { appearance:none; }
 var token = localStorage.getItem("loads-token") || localStorage.getItem("logbook-token") || null;
 var INDEX = { dates: [], airports: ["GRR","ORD","AZO","SBN"], hub: "LHR" };
 var WATCH = { dates: [], max: 14 };
+var PULL = null, pullTimer = null;
 var DAY = null;                       // {date, snapshots:[...]} for the chosen date
 var S = { dir: "to", apt: "GRR", date: null, pull: null, sort: "aa" };
 var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -408,13 +419,50 @@ function renderWatch() {
   l.querySelectorAll("[data-rm]").forEach(function(b) { b.addEventListener("click", function() { setWatch(b.dataset.rm, false); }); });
   var wd = document.getElementById("watch-date"); wd.min = todayIso(); if (!wd.value) wd.value = S.date >= todayIso() ? S.date : todayIso();
 }
+function renderPull() {
+  var b = document.getElementById("pull-now"), el = document.getElementById("pull-stat");
+  if (!PULL) { el.textContent = ""; return; }
+  var st = PULL.status, left = PULL.max - PULL.used, h = "";
+  if (PULL.active) {
+    if (!st) h = "<b>Queued.</b> The Mac mini picks it up within 5 minutes (" + esc(PULL.request.dates.map(niceDate).join(", ")) + ").";
+    else if (st.state === "waiting") h = "<b>Waiting.</b> " + esc(st.message);
+    else h = "<b>Running.</b> " + esc(st.message);
+  } else if (st) {
+    h = (st.state === "done" ? "<b>Last pull finished " : '<span class="bad">Last pull ' + esc(st.state) + "</span> <b>") + esc(niceStamp(st.updated)) + ".</b> " + esc(st.message);
+  }
+  h += (h ? " " : "") + '<span class="sub">' + left + " of " + PULL.max + " pulls left in this 24 hours" +
+    (PULL.next_free ? "; next one frees up " + esc(niceStamp(PULL.next_free)) : "") + ".</span>";
+  el.innerHTML = h;
+  b.disabled = PULL.active || left <= 0 || !WATCH.dates.length;
+  b.textContent = PULL.active ? "Pull in progress" : "Pull now";
+}
+async function loadPull() {
+  var was = PULL && PULL.active;
+  var r = await fetch("/api/loads/pull", { headers: authHeaders() });
+  if (r.ok) PULL = await r.json();
+  renderPull();
+  clearTimeout(pullTimer);
+  if (PULL && PULL.active) pullTimer = setTimeout(loadPull, 20000);
+  else if (was) refreshIndex();                 // a pull just finished: show the new data
+}
+async function refreshIndex() {
+  var r = await fetch("/api/loads/index", { headers: authHeaders() });
+  if (r.ok) { INDEX = await r.json(); renderControls(); renderWatch(); loadDay(); }
+}
+async function pullNow() {
+  var r = await fetch("/api/loads/pull", { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()), body: "{}" });
+  var d = await r.json().catch(function() { return {}; });
+  if (!r.ok) { document.getElementById("pull-stat").innerHTML = '<span class="bad">' + esc(d.error || "could not queue the pull") + "</span>"; if (r.status !== 400) setTimeout(loadPull, 2500); return; }
+  PULL = d; renderPull(); clearTimeout(pullTimer); pullTimer = setTimeout(loadPull, 20000);
+}
+
 async function setWatch(date, on) {
   var err = document.getElementById("watch-err"); err.textContent = "";
   var r = await fetch("/api/loads/watch", { method: "PUT", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
     body: JSON.stringify({ date: date, watch: on }) });
   var d = await r.json().catch(function() { return {}; });
   if (!r.ok) { err.textContent = d.error || "could not save"; return; }
-  WATCH = d; renderWatch(); render();
+  WATCH = d; renderWatch(); renderPull(); render();
 }
 
 async function loadDay() {
@@ -451,7 +499,7 @@ async function initApp() {
   S.date = want; renderControls(); loadDay();
   var w = await fetch("/api/loads/watch", { headers: authHeaders() });
   if (w.ok) WATCH = await w.json();
-  renderWatch(); render();
+  renderWatch(); render(); loadPull();
 }
 
 document.querySelectorAll("#dirs .chip").forEach(function(b) { b.addEventListener("click", function() { S.dir = b.dataset.dir; pushUrl(); renderControls(); render(); }); });
@@ -459,6 +507,7 @@ document.getElementById("date").addEventListener("change", function() { if (this
 document.getElementById("prev").addEventListener("click", function() { setDate(addDays(S.date, -1)); });
 document.getElementById("next").addEventListener("click", function() { setDate(addDays(S.date, 1)); });
 document.getElementById("today").addEventListener("click", function() { setDate(todayIso()); });
+document.getElementById("pull-now").addEventListener("click", pullNow);
 document.getElementById("watch-add").addEventListener("click", function() { var v = document.getElementById("watch-date").value; if (v) setWatch(v, true); });
 document.getElementById("sort").addEventListener("change", function() { S.sort = this.value; pushUrl(); render(); });
 document.getElementById("pull").addEventListener("change", function() { S.pull = +this.value; render(); });

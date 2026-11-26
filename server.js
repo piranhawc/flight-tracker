@@ -4707,6 +4707,40 @@ app.get("/api/loads/index", loadsAuth, (req, res) => {
                dates: dates.map(d => ({ date: d, pulls: loadsPulls(d).length })).filter(d => d.pulls) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// "Pull now" (Mike, 2026-11-26: "initiate a pull immediately. Allow up to 8 a day").
+// This only RECORDS the request. The Mac mini's 5-minute tick picks it up
+// (loads_sync.py --serve-request), runs it, and writes pull-status.json back.
+const LOADS_PULLS_MAX = 8, LOADS_PULL_STALE_MS = 2 * 3600 * 1000;
+const loadsJson = (n, d) => { try { return JSON.parse(fs.readFileSync(path.join(LOADS_DIR, n), "utf8")); } catch (e) { return d; } };
+function loadsJsonWrite(n, obj) {
+  fs.mkdirSync(LOADS_DIR, { recursive: true });
+  const f = path.join(LOADS_DIR, n);
+  fs.writeFileSync(f + ".tmp", JSON.stringify(obj, null, 1)); fs.renameSync(f + ".tmp", f);
+}
+function loadsPullState() {
+  const now = Date.now();
+  const request = loadsJson("pull-request.json", null), st = loadsJson("pull-status.json", null);
+  const status = request && st && st.id === request.id ? st : null;
+  const finished = status && ["done", "failed", "refused"].includes(status.state);
+  const active = !!request && !finished && now - Date.parse(request.requested_at) < LOADS_PULL_STALE_MS;
+  const log = (loadsJson("pull-log.json", { at: [] }).at || []).filter(t => now - Date.parse(t) < 86400000);
+  return { request, status, active, used: log.length, max: LOADS_PULLS_MAX, log,
+           next_free: log.length >= LOADS_PULLS_MAX ? new Date(Date.parse(log[0]) + 86400000).toISOString() : null };
+}
+app.get("/api/loads/pull", loadsAuth, (req, res) => { const s = loadsPullState(); delete s.log; res.json(s); });
+app.post("/api/loads/pull", loadsAuth, express.json(), (req, res) => {
+  try {
+    const s = loadsPullState(), dates = loadsWatch().slice(0, 5);
+    if (!dates.length) return res.status(400).json({ error: "add a date to the pull list first" });
+    if (s.active) return res.status(409).json({ error: "a pull is already queued or running" });
+    if (s.used >= LOADS_PULLS_MAX) return res.status(429).json({ error: `all ${LOADS_PULLS_MAX} pulls for the last 24 hours are used`, next_free: s.next_free });
+    const at = new Date().toISOString();
+    loadsJsonWrite("pull-log.json", { at: [...s.log, at] });
+    loadsJsonWrite("pull-request.json", { id: Date.now().toString(36), requested_at: at, dates });
+    const out = loadsPullState(); delete out.log; res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // The dates Mike wants pulled, picked on the page. The Mac mini reads this file
 // (loads_sync.py --watched); this server still never contacts AA or Sabre itself.
 const LOADS_WATCH_MAX = 14;
