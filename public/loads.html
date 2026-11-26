@@ -41,7 +41,7 @@ select.chip { appearance:none; }
 .ltrack { position:relative; height:9px; border-radius:4px; background:var(--track); overflow:hidden; }
 .lfill { position:absolute; left:0; top:0; bottom:0; background:var(--series-dim); }
 .lnr { position:absolute; top:0; bottom:0; background:var(--series-1); border-left:2px solid var(--surface); }
-.lnum { display:flex; justify-content:space-between; font-size:0.72rem; color:var(--muted); margin-top:0.2rem; font-variant-numeric:tabular-nums; }
+.lnum { display:flex; justify-content:space-between; gap:0.6rem; font-size:0.72rem; color:var(--muted); margin-top:0.2rem; font-variant-numeric:tabular-nums; }
 .open { font-size:1.1rem; font-weight:800; font-variant-numeric:tabular-nums; }
 .neg { color:var(--down); font-weight:700; }
 .delta { font-size:0.74rem; font-weight:600; white-space:nowrap; font-variant-numeric:tabular-nums; }
@@ -56,6 +56,10 @@ select.chip { appearance:none; }
 .empty { color:var(--ink-2); font-size:0.95rem; }
 .empty code { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0.1rem 0.4rem; font-size:0.85em; color:var(--ink); }
 .hist td.now { font-weight:700; }
+.layhead { font-size:0.9rem; color:var(--ink-2); white-space:nowrap; }
+.layhead b { color:var(--ink); font-size:1.15rem; font-weight:800; font-variant-numeric:tabular-nums; }
+.itin .grid tr.layrow td { background:var(--bg); color:var(--ink-2); font-size:0.82rem; padding:0.4rem 0.9rem; border-bottom:1px solid var(--border); }
+.laybig { color:var(--ink); font-weight:800; font-size:1rem; font-variant-numeric:tabular-nums; margin-right:0.15rem; }
 .watchrow { display:flex; flex-wrap:wrap; align-items:center; gap:0.5rem; }
 .watchrow .err { min-height:0; }
 .wchip { display:inline-flex; align-items:center; gap:0.15rem; background:var(--surface-2); border:1px solid var(--border-2);
@@ -185,10 +189,21 @@ function legKey(l) { return l.flight + " " + l.from + "-" + l.to + " +" + (l._of
 function annotate(day) {
   (day.snapshots || []).forEach(function(s) { Object.keys(s.routes || {}).forEach(function(k) {
     s.routes[k].itineraries.forEach(function(it) { var off = 0;
-      it.legs.forEach(function(l, i) { if (i > 0 && mins(l.dep) < mins(it.legs[i - 1].dep)) off++; l._off = off; }); it._overnight = off > 0; });
+      it.legs.forEach(function(l, i) { if (i > 0 && mins(l.dep) < mins(it.legs[i - 1].dep)) off++; l._off = off; }); it._overnight = off > 0;
+      // Layover = next departure minus this arrival; both are local time at the connection airport.
+      it._lay = [];
+      for (var i = 0; i < it.legs.length - 1; i++) {
+        var a = it.legs[i], b = it.legs[i + 1], arrOff = a._off + (mins(a.arr) < mins(a.dep) ? 1 : 0);
+        var m = /([A-Z][a-z]{2}) (\d{1,2})/.exec(a.arr_note || "");
+        if (m) for (var d = 0; d < 4; d++) { var x = parseIso(addDays(day.date, d)); if (MON[x.getMonth()] === m[1] && x.getDate() === +m[2]) { arrOff = d; break; } }
+        var gap = (b._off * 1440 + mins(b.dep)) - (arrOff * 1440 + mins(a.arr));
+        it._lay.push({ at: a.to, mins: mins(a.arr) === 9999 || mins(b.dep) === 9999 ? null : gap, overnight: b._off > a._off });
+      } });
   }); });
   return day;
 }
+function dur(m) { if (m == null) return "?"; var h = Math.floor(Math.abs(m) / 60), r = Math.abs(m) % 60; return (m < 0 ? "−" : "") + (h ? h + "h " : "") + ("0" + r).slice(h ? -2 : -1) + "m"; }
+function layText(it) { return it._lay.map(function(x) { return dur(x.mins) + " in " + x.at + (x.overnight ? " (overnight)" : ""); }).join(" + "); }
 function dayTag(l) { return l._off ? ' <span class="sub">' + esc(niceDate(addDays(S.date, l._off))) + "</span>" : ""; }
 function tight(it) { var v = null; it.legs.forEach(function(l) { if (l.available != null && (v == null || l.available < v)) v = l.available; }); return v; }
 
@@ -342,10 +357,12 @@ function render() {
       var first = it.legs[0], last = it.legs[it.legs.length - 1], t = tight(it);
       h += '<div class="itin"><div class="itin-head"><span class="when">' + esc(first.from) + " " + esc(first.dep) + " → " + esc(last.to) + " " + esc(last.arr) +
         (last.arr_note ? ' <span class="sub">' + esc(last.arr_note.replace(/^Arrives /, "")) + "</span>" : "") + "</span>" +
-        '<span class="via">' + (it.legs.length === 1 ? "nonstop" : (it._overnight ? "overnight in " : "via ") + esc(it.legs.slice(0, -1).map(function(l) { return l.to; }).join(", "))) + "</span>" +
+        (it.legs.length === 1 ? '<span class="via">nonstop</span>' : '<span class="layhead"><b>' + esc(it._lay.map(function(x) { return dur(x.mins); }).join(" + ")) + "</b> layover in " +
+          esc(it._lay.map(function(x) { return x.at; }).join(", ")) + (it._overnight ? " · overnight" : "") + "</span>") +
         '<span class="tight">' + (it.legs.length === 1 ? "open seats " : "tightest leg ") + "<b>" + (t == null ? "–" : t) + "</b></span></div>" +
         '<div class="scrollx"><table class="grid"><thead><tr><th>Flight</th><th>Times</th><th>Load</th><th class="r">Non-revs</th><th class="r">Open</th><th class="r">After listed non-revs</th><th>Open by cabin</th></tr></thead><tbody>' +
-        it.legs.map(function(l) { return legRow(l, prevLegs, hasPrev); }).join("") + "</tbody></table></div></div>";
+        it.legs.map(function(l, i) { return legRow(l, prevLegs, hasPrev) + (i < it._lay.length ? '<tr class="layrow"><td colspan="7"><span class="laybig">' + esc(dur(it._lay[i].mins)) + "</span> layover in " + esc(it._lay[i].at) +
+          (it._lay[i].overnight ? " · overnight, departs " + esc(niceDate(addDays(S.date, it.legs[i + 1]._off))) : "") + "</td></tr>" : ""); }).join("") + "</tbody></table></div></div>";
     });
   }
   var notes = [];
