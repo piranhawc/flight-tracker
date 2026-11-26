@@ -100,6 +100,16 @@ select.chip { appearance:none; }
       <button class="chip sq" type="button" id="next" aria-label="Next day">›</button>
       <button class="chip" type="button" id="today">Today</button>
     </div>
+    <div class="grp"><span class="lab">Sort by</span>
+      <select class="chip" id="sort" aria-label="Sort itineraries">
+        <option value="aa">Selected time</option>
+        <option value="early">Earliest departure</option>
+        <option value="late">Latest departure</option>
+        <option value="seats">Available seats</option>
+        <option value="nonstop">Nonstop</option>
+        <option value="multi">Multi-stop</option>
+      </select>
+    </div>
     <div class="grp" id="pullgrp" style="display:none"><span class="lab">Pull</span>
       <select class="chip" id="pull" aria-label="Which pull"></select>
     </div>
@@ -127,7 +137,7 @@ select.chip { appearance:none; }
 var token = localStorage.getItem("logbook-token") || null;
 var INDEX = { dates: [], airports: ["GRR","ORD","AZO","SBN"], hub: "LHR" };
 var DAY = null;                       // {date, snapshots:[...]} for the chosen date
-var S = { dir: "to", apt: "GRR", date: null, pull: null };
+var S = { dir: "to", apt: "GRR", date: null, pull: null, sort: "aa" };
 var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 var DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
@@ -163,6 +173,20 @@ function annotate(day) {
 function dayTag(l) { return l._off ? ' <span class="sub">' + esc(niceDate(addDays(S.date, l._off))) + "</span>" : ""; }
 function tight(it) { var v = null; it.legs.forEach(function(l) { if (l.available != null && (v == null || l.available < v)) v = l.available; }); return v; }
 
+// The same six orders AA's results page offers. "Selected time" is the order AA returned them in.
+function sortIts(list) {
+  var a = list.map(function(it, i) { return { it: it, i: i, dep: mins(it.legs[0].dep), n: it.legs.length, t: tight(it) }; });
+  var by = {
+    aa: function(x, y) { return x.i - y.i; },
+    early: function(x, y) { return x.dep - y.dep || x.i - y.i; },
+    late: function(x, y) { return y.dep - x.dep || x.i - y.i; },
+    seats: function(x, y) { return (y.t == null ? -1 : y.t) - (x.t == null ? -1 : x.t) || x.dep - y.dep; },
+    nonstop: function(x, y) { return x.n - y.n || x.dep - y.dep; },
+    multi: function(x, y) { return y.n - x.n || x.dep - y.dep; }
+  };
+  return a.sort(by[S.sort] || by.aa).map(function(x) { return x.it; });
+}
+
 function snap() {
   if (!DAY || !DAY.snapshots.length) return null;
   var i = S.pull == null ? DAY.snapshots.length - 1 : Math.min(S.pull, DAY.snapshots.length - 1);
@@ -175,7 +199,7 @@ function legIndex(s, key) {            // flight -> leg, for one snapshot and on
 }
 
 function pushUrl() {
-  history.replaceState(null, "", "?dir=" + S.dir + "&apt=" + S.apt + "&date=" + S.date);
+  history.replaceState(null, "", "?dir=" + S.dir + "&apt=" + S.apt + "&date=" + S.date + (S.sort !== "aa" ? "&sort=" + S.sort : ""));
 }
 
 function renderControls() {
@@ -190,6 +214,7 @@ function renderControls() {
     a.appendChild(b);
   });
   document.getElementById("date").value = S.date;
+  document.getElementById("sort").value = S.sort;
   var t = todayIso(), past = [], now = [], fut = [];
   INDEX.dates.forEach(function(d) { (d.date < t ? past : d.date === t ? now : fut).push(d); });
   function chips(list) {
@@ -275,7 +300,7 @@ function render() {
     return;
   }
 
-  var its = rt.itineraries.slice().sort(function(a, b) { return mins(a.legs[0].dep) - mins(b.legs[0].dep) || mins(a.legs[a.legs.length - 1].dep) - mins(b.legs[b.legs.length - 1].dep); });
+  var its = sortIts(rt.itineraries);
   var prevLegs = cur.prev ? legIndex(cur.prev, key) : {}, hasPrev = !!cur.prev;
   var best = null; its.forEach(function(it) { var t = tight(it); if (t != null && (best == null || t > best.t)) best = { t: t, it: it }; });
   var legs = legIndex(s, key), nLegs = Object.keys(legs).length;
@@ -304,7 +329,7 @@ function render() {
   }
   var notes = [];
   (rt.searches || []).forEach(function(q) {
-    var how = q.via ? "via " + q.via : "nonstop";
+    var how = q.via ? "via " + q.via : (q.nonstop_only === false ? "with any connection" : "nonstop");
     if (q.status === "none") notes.push("AA found no flights " + how + ".");
     else if (q.status !== "ok") notes.push("Search " + how + " failed: " + (q.message || "unknown error") + ".");
     else if (q.message) notes.push("Search " + how + ": " + q.message + ".");
@@ -313,7 +338,7 @@ function render() {
   if (hasPrev) notes.push("▲/▼ under Open compares with the pull before this one (" + niceStamp(cur.prev.fetched_at) + ").");
   if (notes.length) h += '<ul class="notes">' + notes.map(function(x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul>";
   main.innerHTML = h;
-  document.getElementById("main-note").textContent = (rt.searches || []).map(function(q) { return q.via ? "via " + q.via : "nonstop"; }).join(" · ");
+  document.getElementById("main-note").textContent = (rt.searches || []).map(function(q) { return q.via ? "via " + q.via : (q.nonstop_only === false ? "any connection" : "nonstop only"); }).join(" · ");
 
   if (n > 1) {
     var keys = {}, order = [];
@@ -357,6 +382,7 @@ async function initApp() {
   var q = new URLSearchParams(location.search), t = todayIso();
   if (q.get("dir") === "from") S.dir = "from";
   if (INDEX.airports.indexOf((q.get("apt") || "").toUpperCase()) >= 0) S.apt = q.get("apt").toUpperCase();
+  if (["early","late","seats","nonstop","multi"].indexOf(q.get("sort")) >= 0) S.sort = q.get("sort");
   var want = q.get("date");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(want || "")) {      // default: today if pulled, else the next pulled date, else the latest
     var have = INDEX.dates.map(function(d) { return d.date; });
@@ -370,6 +396,7 @@ document.getElementById("date").addEventListener("change", function() { if (this
 document.getElementById("prev").addEventListener("click", function() { setDate(addDays(S.date, -1)); });
 document.getElementById("next").addEventListener("click", function() { setDate(addDays(S.date, 1)); });
 document.getElementById("today").addEventListener("click", function() { setDate(todayIso()); });
+document.getElementById("sort").addEventListener("change", function() { S.sort = this.value; pushUrl(); render(); });
 document.getElementById("pull").addEventListener("change", function() { S.pull = +this.value; render(); });
 
 document.getElementById("login-form").addEventListener("submit", async function(e) {
