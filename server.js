@@ -4660,6 +4660,34 @@ app.put("/api/sponsor/person/:emp", logbookAuth, (req, res) => {
   res.json(p);
 });
 
+// --- Seat loads to/from London (/loads.html) ---
+// Snapshots are pushed here by loads_sync.py on the Mac mini, which reads Jetnet Travel Planner's
+// space-available search ONLY when Mike asks for a pull. Nothing in this server contacts AA.
+// data/loads/<flight date>/<pull stamp>.json — every pull is kept, so a date shows its history.
+const LOADS_DIR = path.join(process.env.DATA_DIR || "/app/data", "loads");
+const LOADS_AIRPORTS = ["GRR", "ORD", "AZO", "SBN"];
+function loadsPulls(date) {
+  const d = path.join(LOADS_DIR, date);
+  if (!fs.existsSync(d)) return [];
+  return fs.readdirSync(d).filter(f => /^\d{8}T\d{6}\.json$/.test(f)).sort();
+}
+app.get("/api/loads/index", logbookAuth, (req, res) => {
+  try {
+    const dates = fs.existsSync(LOADS_DIR)
+      ? fs.readdirSync(LOADS_DIR).filter(f => /^\d{4}-\d{2}-\d{2}$/.test(f)).sort() : [];
+    res.json({ airports: LOADS_AIRPORTS, hub: "LHR",
+               dates: dates.map(d => ({ date: d, pulls: loadsPulls(d).length })).filter(d => d.pulls) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/loads/:date", logbookAuth, (req, res) => {
+  const date = String(req.params.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "bad date" });
+  try {
+    const snapshots = loadsPulls(date).map(f => JSON.parse(fs.readFileSync(path.join(LOADS_DIR, date, f), "utf8")));
+    res.json({ date, snapshots });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 const RESERVE_DIR = path.join(process.env.DATA_DIR || "/app/data", "reserve");
 app.get("/api/reserve/snapshots", logbookAuth, (req, res) => {
   try {

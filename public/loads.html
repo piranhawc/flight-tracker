@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>London seat loads</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/league.css?v=1">
+<style>
+.ctl { display:flex; flex-wrap:wrap; align-items:center; gap:0.5rem 1.4rem; margin:1.4rem 0 0; }
+.ctl .grp { display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap; }
+.ctl .lab { color:var(--muted); font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; font-weight:600; margin-right:0.2rem; }
+.date { background:var(--surface); border:1px solid var(--border-2); border-radius:999px; color:var(--ink);
+  padding:0.32rem 0.8rem; font:inherit; font-size:0.85rem; font-weight:600; color-scheme:dark; }
+.date:focus { outline:none; border-color:var(--series-1); }
+.chip.sq { padding:0.35rem 0.7rem; }
+select.chip { appearance:none; }
+.days { display:flex; flex-wrap:wrap; gap:0.35rem 0.4rem; align-items:center; margin:0.9rem 0 0; }
+.days .lab { color:var(--muted); font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; font-weight:600; margin:0 0.2rem 0 0.6rem; }
+.days .lab:first-child { margin-left:0; }
+.days .chip { font-size:0.78rem; padding:0.22rem 0.65rem; }
+.itin { border:1px solid var(--border); border-radius:10px; margin:0 0 0.9rem; overflow:hidden; }
+.itin:last-child { margin-bottom:0; }
+.itin-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:0.3rem 1rem; padding:0.7rem 0.9rem;
+  background:var(--surface-2); border-bottom:1px solid var(--border); }
+.itin-head .when { font-weight:700; letter-spacing:-0.01em; }
+.itin-head .via { color:var(--ink-2); font-size:0.85rem; }
+.itin-head .tight { margin-left:auto; font-size:0.85rem; color:var(--ink-2); white-space:nowrap; }
+.itin-head .tight b { color:var(--ink); font-size:1.05rem; font-variant-numeric:tabular-nums; }
+.itin .grid { font-size:0.86rem; min-width:760px; }
+.itin .grid td { white-space:nowrap; }
+.itin .grid td .sub { white-space:nowrap; }
+.itin .grid tbody td { padding:0.55rem 0.5rem; vertical-align:middle; }
+.itin .grid td:first-child, .itin .grid th:first-child { padding-left:0.9rem; }
+.itin .grid td:last-child, .itin .grid th:last-child { padding-right:0.9rem; }
+.fl { font-weight:700; white-space:nowrap; }
+.sub { color:var(--muted); font-size:0.74rem; }
+.loadcell { min-width:150px; }
+.ltrack { position:relative; height:9px; border-radius:4px; background:var(--track); overflow:hidden; }
+.lfill { position:absolute; left:0; top:0; bottom:0; background:var(--series-dim); }
+.lnr { position:absolute; top:0; bottom:0; background:var(--series-1); border-left:2px solid var(--surface); }
+.lnum { display:flex; justify-content:space-between; font-size:0.72rem; color:var(--muted); margin-top:0.2rem; font-variant-numeric:tabular-nums; }
+.open { font-size:1.1rem; font-weight:800; font-variant-numeric:tabular-nums; }
+.neg { color:var(--down); font-weight:700; }
+.delta { font-size:0.74rem; font-weight:600; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.delta.up { color:var(--up); } .delta.dn { color:var(--down); } .delta.eq { color:var(--muted); }
+.cab { white-space:nowrap; color:var(--ink-2); font-variant-numeric:tabular-nums; }
+.cab b { color:var(--ink); }
+.cancel { text-decoration:line-through; color:var(--muted); }
+.key { display:flex; flex-wrap:wrap; gap:0.3rem 1.2rem; font-size:0.76rem; color:var(--muted); margin:0 0 0.9rem; }
+.key i { display:inline-block; width:14px; height:8px; border-radius:2px; margin-right:0.35rem; vertical-align:middle; }
+.notes { margin:0.9rem 0 0; padding:0; list-style:none; font-size:0.8rem; color:var(--muted); }
+.notes li { margin:0.15rem 0; }
+.empty { color:var(--ink-2); font-size:0.95rem; }
+.empty code { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0.1rem 0.4rem; font-size:0.85em; color:var(--ink); }
+.hist td.now { font-weight:700; }
+@media (max-width:640px) { .itin-head .tight { margin-left:0; width:100%; } }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="/"><span class="brand-dot"></span>Flight Tracker</a>
+    <nav class="nav">
+      <a class="navlink" href="/">Tracker</a>
+      <a class="navlink" href="/logbook.html">Logbook</a>
+      <a class="navlink" href="/stats.html">Stats</a>
+      <a class="navlink" href="/reserve.html">Reserve</a>
+      <a class="navlink on" href="/loads.html">Loads</a>
+      <a class="navlink" href="/destinations.html">Destinations</a>
+    </nav>
+  </div>
+</header>
+
+<div id="login">
+  <h2 style="margin:0 0 0.8rem;font-size:1.1rem">Logbook sign-in</h2>
+  <form id="login-form">
+    <input class="input" type="password" id="password" placeholder="password" autocomplete="current-password">
+    <div class="err" id="login-err"></div>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+</div>
+
+<main class="container" id="app">
+  <h1>London seat loads</h1>
+  <p class="lede" id="lede">Loading…</p>
+
+  <div class="ctl" role="group" aria-label="Route and date">
+    <div class="grp" id="dirs"><span class="lab">Direction</span>
+      <button class="chip" type="button" data-dir="to">To London</button>
+      <button class="chip" type="button" data-dir="from">From London</button>
+    </div>
+    <div class="grp" id="apts"><span class="lab" id="apt-lab">From</span></div>
+    <div class="grp"><span class="lab">Flight date</span>
+      <button class="chip sq" type="button" id="prev" aria-label="Previous day">‹</button>
+      <input class="date" type="date" id="date" aria-label="Flight date">
+      <button class="chip sq" type="button" id="next" aria-label="Next day">›</button>
+      <button class="chip" type="button" id="today">Today</button>
+    </div>
+    <div class="grp" id="pullgrp" style="display:none"><span class="lab">Pull</span>
+      <select class="chip" id="pull" aria-label="Which pull"></select>
+    </div>
+  </div>
+  <div class="days" id="days"></div>
+
+  <div class="summary" id="tiles" style="display:none"></div>
+
+  <section class="card" id="main-card" style="margin-top:1.4rem">
+    <div class="cardhead"><h2 id="main-title">Itineraries</h2><span class="muted-note" id="main-note"></span></div>
+    <div id="main"></div>
+  </section>
+
+  <section class="card" id="hist-card" style="display:none">
+    <div class="cardhead"><h2>Open seats by pull</h2><span class="muted-note">each flight on this route, one column per pull; non-revs listed in brackets</span></div>
+    <div class="scrollx" id="hist"></div>
+  </section>
+
+  <p class="muted-note">Loads come from Jetnet Travel Planner's space-available search and are pulled only when Mike asks for them, so each
+  date shows the numbers as of its pull time, not live. Every pull is kept. “After listed non-revs” is open seats minus
+  non-revs already listed; it ignores pass priority.</p>
+</main>
+
+<script>
+var token = localStorage.getItem("logbook-token") || null;
+var INDEX = { dates: [], airports: ["GRR","ORD","AZO","SBN"], hub: "LHR" };
+var DAY = null;                       // {date, snapshots:[...]} for the chosen date
+var S = { dir: "to", apt: "GRR", date: null, pull: null };
+var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+var DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function(c) { return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]; }); }
+function authHeaders() { return token ? { "Authorization": "Bearer " + token } : {}; }
+function iso(d) { return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+function todayIso() { return iso(new Date()); }
+function parseIso(s) { var p = s.split("-"); return new Date(+p[0], +p[1] - 1, +p[2]); }
+function addDays(s, n) { var d = parseIso(s); d.setDate(d.getDate() + n); return iso(d); }
+function niceDate(s) { var d = parseIso(s); return DOW[d.getDay()] + " " + MON[d.getMonth()] + " " + d.getDate(); }
+function relDay(s) {
+  var n = Math.round((parseIso(s) - parseIso(todayIso())) / 86400000);
+  return n === 0 ? "today" : n === 1 ? "tomorrow" : n === -1 ? "yesterday" : n > 0 ? "in " + n + " days" : -n + " days ago";
+}
+function niceStamp(t) {
+  var d = new Date(t); if (isNaN(d)) return t;
+  var h = d.getHours(), m = ("0" + d.getMinutes()).slice(-2), ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12;
+  return DOW[d.getDay()] + " " + MON[d.getMonth()] + " " + d.getDate() + ", " + h + ":" + m + " " + ap;
+}
+function mins(t) { var m = /^(\d{1,2}):(\d{2})\s*([AP])M/i.exec(t || ""); if (!m) return 9999; return ((+m[1] % 12) + (m[3].toUpperCase() === "P" ? 12 : 0)) * 60 + +m[2]; }
+function routeKey() { return S.dir === "to" ? S.apt + "-" + INDEX.hub : INDEX.hub + "-" + S.apt; }
+function routeLabel() { return S.dir === "to" ? S.apt + " → " + INDEX.hub : INDEX.hub + " → " + S.apt; }
+function legKey(l) { return l.flight + " " + l.from + "-" + l.to + " +" + (l._off || 0); }
+// A leg that leaves earlier in the day than the leg before it is the next day's flight (an
+// overnight connection), so it is a different flight from the same number on the search date.
+function annotate(day) {
+  (day.snapshots || []).forEach(function(s) { Object.keys(s.routes || {}).forEach(function(k) {
+    s.routes[k].itineraries.forEach(function(it) { var off = 0;
+      it.legs.forEach(function(l, i) { if (i > 0 && mins(l.dep) < mins(it.legs[i - 1].dep)) off++; l._off = off; }); it._overnight = off > 0; });
+  }); });
+  return day;
+}
+function dayTag(l) { return l._off ? ' <span class="sub">' + esc(niceDate(addDays(S.date, l._off))) + "</span>" : ""; }
+function tight(it) { var v = null; it.legs.forEach(function(l) { if (l.available != null && (v == null || l.available < v)) v = l.available; }); return v; }
+
+function snap() {
+  if (!DAY || !DAY.snapshots.length) return null;
+  var i = S.pull == null ? DAY.snapshots.length - 1 : Math.min(S.pull, DAY.snapshots.length - 1);
+  return { i: i, s: DAY.snapshots[i], prev: i > 0 ? DAY.snapshots[i - 1] : null };
+}
+function legIndex(s, key) {            // flight -> leg, for one snapshot and one route
+  var out = {}, rt = s && s.routes && s.routes[key];
+  if (rt) rt.itineraries.forEach(function(it) { it.legs.forEach(function(l) { out[legKey(l)] = l; }); });
+  return out;
+}
+
+function pushUrl() {
+  history.replaceState(null, "", "?dir=" + S.dir + "&apt=" + S.apt + "&date=" + S.date);
+}
+
+function renderControls() {
+  document.querySelectorAll("#dirs .chip").forEach(function(b) { b.setAttribute("aria-pressed", b.dataset.dir === S.dir ? "true" : "false"); });
+  document.getElementById("apt-lab").textContent = S.dir === "to" ? "From" : "To";
+  var a = document.getElementById("apts");
+  a.querySelectorAll(".chip").forEach(function(b) { b.remove(); });
+  INDEX.airports.forEach(function(code) {
+    var b = document.createElement("button"); b.className = "chip"; b.type = "button"; b.textContent = code;
+    b.setAttribute("aria-pressed", code === S.apt ? "true" : "false");
+    b.addEventListener("click", function() { S.apt = code; pushUrl(); renderControls(); render(); });
+    a.appendChild(b);
+  });
+  document.getElementById("date").value = S.date;
+  var t = todayIso(), past = [], now = [], fut = [];
+  INDEX.dates.forEach(function(d) { (d.date < t ? past : d.date === t ? now : fut).push(d); });
+  function chips(list) {
+    return list.map(function(d) {
+      return '<button class="chip" type="button" data-date="' + d.date + '" aria-pressed="' + (d.date === S.date) + '" title="' + d.pulls + (d.pulls === 1 ? " pull" : " pulls") + '">' + esc(niceDate(d.date)) + "</button>";
+    }).join("");
+  }
+  var h = "";
+  if (!INDEX.dates.length) h = '<span class="muted-note">No dates pulled yet.</span>';
+  else {
+    if (past.length) h += '<span class="lab">Past</span>' + chips(past.slice(-12));
+    if (now.length) h += '<span class="lab">Today</span>' + chips(now);
+    if (fut.length) h += '<span class="lab">Upcoming</span>' + chips(fut.slice(0, 20));
+  }
+  var days = document.getElementById("days"); days.innerHTML = h;
+  days.querySelectorAll("[data-date]").forEach(function(b) { b.addEventListener("click", function() { setDate(b.dataset.date); }); });
+}
+
+function deltaHtml(cur, was) {
+  if (cur == null || was == null) return "";
+  var d = cur - was;
+  if (d === 0) return '<span class="delta eq">no change</span>';
+  return '<span class="delta ' + (d > 0 ? "up" : "dn") + '">' + (d > 0 ? "▲ +" : "▼ −") + Math.abs(d) + "</span>";
+}
+
+function legRow(l, prevLegs, hasPrev) {
+  var cap = l.capacity || 0, conf = l.confirmed || 0, nr = l.nonrevs || 0;
+  var pc = cap ? Math.min(100, conf / cap * 100) : 0, pn = cap ? Math.min(100 - pc, nr / cap * 100) : 0;
+  var after = l.available == null ? null : l.available - nr;
+  var was = prevLegs[legKey(l)];
+  var cabins = (l.cabins || []).map(function(c) { return "<b>" + esc(c.seats == null ? "–" : c.seats) + "</b> " + esc(c.name); }).join(" · ");
+  var cls = l.cancelled ? ' class="cancel"' : "";
+  return "<tr>" +
+    '<td><span class="fl">AA ' + esc(l.flight) + "</span>" + (l.cancelled ? ' <span class="neg">cancelled</span>' : "") +
+      '<div class="sub">' + esc(l.aircraft || "") + (l.operated_by ? " · " + esc(l.operated_by.replace(/^Operated by /, "").replace(/ as American Eagle$/, "")) : "") + "</div></td>" +
+    "<td" + cls + ">" + esc(l.from) + " " + esc(l.dep) + dayTag(l) + '<div class="sub">→ ' + esc(l.to) + " " + esc(l.arr) + (l.arr_note ? " (" + esc(l.arr_note.replace(/^Arrives /, "")) + ")" : "") + "</div></td>" +
+    '<td class="loadcell"><div class="ltrack" role="img" aria-label="' + conf + " confirmed and " + nr + " non-revs listed of " + cap + ' seats">' +
+      '<span class="lfill" style="width:' + pc.toFixed(1) + '%"></span>' + (nr ? '<span class="lnr" style="left:' + pc.toFixed(1) + "%;width:" + Math.max(pn, 1.2).toFixed(1) + '%"></span>' : "") + "</div>" +
+      '<div class="lnum"><span>' + conf + " / " + cap + " confirmed</span><span>" + (cap ? Math.round(conf / cap * 100) + "%" : "") + "</span></div></td>" +
+    '<td class="r num">' + nr + "</td>" +
+    '<td class="r"><span class="open">' + esc(l.available == null ? "–" : l.available) + "</span>" + (hasPrev ? "<div>" + deltaHtml(l.available, was && was.available) + "</div>" : "") + "</td>" +
+    '<td class="r num">' + (after == null ? "–" : after < 0 ? '<span class="neg">' + after + "</span>" : after) + "</td>" +
+    '<td class="cab">' + (cabins || "–") + "</td>" +
+    "</tr>";
+}
+
+function render() {
+  var key = routeKey(), cur = snap(), lede = document.getElementById("lede"), main = document.getElementById("main");
+  var tiles = document.getElementById("tiles"), histCard = document.getElementById("hist-card"), pg = document.getElementById("pullgrp");
+  var rel = S.date < todayIso() ? "past" : S.date === todayIso() ? "today" : "upcoming";
+  document.title = routeLabel() + " loads · " + niceDate(S.date);
+  document.getElementById("main-title").textContent = routeLabel() + " · " + niceDate(S.date);
+  document.getElementById("main-note").textContent = "";
+  tiles.style.display = "none"; histCard.style.display = "none"; pg.style.display = "none";
+
+  if (!cur) {
+    lede.textContent = routeLabel() + " on " + niceDate(S.date) + " (" + relDay(S.date) + "): nothing pulled for this date.";
+    var near = INDEX.dates.filter(function(d) { return d.date !== S.date; }).sort(function(a, b) {
+      return Math.abs(parseIso(a.date) - parseIso(S.date)) - Math.abs(parseIso(b.date) - parseIso(S.date)); }).slice(0, 4);
+    main.innerHTML = '<p class="empty">No loads have been pulled for <b>' + esc(niceDate(S.date)) + "</b>." +
+      (rel === "past" ? " The date has passed, so it can't be pulled now." :
+        " Pulls are manual. Ask Hermes <code>pull London loads for " + esc(S.date) + "</code>, or run <code>loads_sync.py " + esc(S.date) + "</code> on the Mac mini.") + "</p>" +
+      (near.length ? '<p class="muted-note">Nearest dates with data: ' + near.map(function(d) {
+        return '<button class="linkbtn" type="button" data-date="' + d.date + '">' + esc(niceDate(d.date)) + "</button>"; }).join(" · ") + "</p>" : "");
+    main.querySelectorAll("[data-date]").forEach(function(b) { b.addEventListener("click", function() { setDate(b.dataset.date); }); });
+    return;
+  }
+
+  var s = cur.s, rt = s.routes[key], n = DAY.snapshots.length;
+  if (n > 1) {
+    pg.style.display = "";
+    var sel = document.getElementById("pull");
+    sel.innerHTML = DAY.snapshots.map(function(x, i) { return '<option value="' + i + '">' + esc(niceStamp(x.fetched_at)) + (i === n - 1 ? " (latest)" : "") + "</option>"; }).join("");
+    sel.value = cur.i;
+  }
+  var pulled = "pulled " + niceStamp(s.fetched_at) + (n > 1 ? " (pull " + (cur.i + 1) + " of " + n + ")" : "");
+  lede.textContent = routeLabel() + " on " + niceDate(S.date) + " (" + relDay(S.date) + "), " + pulled + "." +
+    (rel === "past" ? " This date has passed; these are the numbers from that pull." : "");
+
+  if (!rt) {
+    main.innerHTML = '<p class="empty">This pull didn\'t include ' + esc(routeLabel()) + ".</p>" +
+      '<p class="muted-note">It covered: ' + esc(Object.keys(s.routes).join(", ").replace(/-/g, " → ") || "nothing") + (s.note ? ". " + esc(s.note) : "") + "</p>";
+    return;
+  }
+
+  var its = rt.itineraries.slice().sort(function(a, b) { return mins(a.legs[0].dep) - mins(b.legs[0].dep) || mins(a.legs[a.legs.length - 1].dep) - mins(b.legs[b.legs.length - 1].dep); });
+  var prevLegs = cur.prev ? legIndex(cur.prev, key) : {}, hasPrev = !!cur.prev;
+  var best = null; its.forEach(function(it) { var t = tight(it); if (t != null && (best == null || t > best.t)) best = { t: t, it: it }; });
+  var legs = legIndex(s, key), nLegs = Object.keys(legs).length;
+
+  tiles.style.display = "";
+  tiles.innerHTML =
+    '<div class="stat"><span class="stat-label">Itineraries</span><span class="stat-big">' + its.length + "</span></div>" +
+    '<div class="stat"><span class="stat-label">Flights involved</span><span class="stat-big">' + nLegs + "</span></div>" +
+    '<div class="stat"><span class="stat-label">Most open seats, tightest leg</span><span class="stat-big">' + (best ? best.t : "–") +
+      (best ? '<span class="unit">' + esc(best.it.legs.map(function(l) { return "AA " + l.flight; }).join(" + ")) + "</span>" : "") + "</span></div>" +
+    '<div class="stat"><span class="stat-label">Pulled</span><span class="stat-mid">' + esc(niceStamp(s.fetched_at)) + "</span></div>";
+
+  var h = "";
+  if (!its.length) h = '<p class="empty">AA returned no flights for ' + esc(routeLabel()) + " on this date.</p>";
+  else {
+    h += '<div class="key"><span><i style="background:var(--series-dim)"></i>confirmed passengers</span><span><i style="background:var(--series-1)"></i>non-revs listed</span><span><i style="background:var(--track);border:1px solid var(--border-2)"></i>open</span></div>';
+    its.forEach(function(it) {
+      var first = it.legs[0], last = it.legs[it.legs.length - 1], t = tight(it);
+      h += '<div class="itin"><div class="itin-head"><span class="when">' + esc(first.from) + " " + esc(first.dep) + " → " + esc(last.to) + " " + esc(last.arr) +
+        (last.arr_note ? ' <span class="sub">' + esc(last.arr_note.replace(/^Arrives /, "")) + "</span>" : "") + "</span>" +
+        '<span class="via">' + (it.legs.length === 1 ? "nonstop" : (it._overnight ? "overnight in " : "via ") + esc(it.legs.slice(0, -1).map(function(l) { return l.to; }).join(", "))) + "</span>" +
+        '<span class="tight">' + (it.legs.length === 1 ? "open seats " : "tightest leg ") + "<b>" + (t == null ? "–" : t) + "</b></span></div>" +
+        '<div class="scrollx"><table class="grid"><thead><tr><th>Flight</th><th>Times</th><th>Load</th><th class="r">Non-revs</th><th class="r">Open</th><th class="r">After listed non-revs</th><th>Open by cabin</th></tr></thead><tbody>' +
+        it.legs.map(function(l) { return legRow(l, prevLegs, hasPrev); }).join("") + "</tbody></table></div></div>";
+    });
+  }
+  var notes = [];
+  (rt.searches || []).forEach(function(q) {
+    var how = q.via ? "via " + q.via : "nonstop";
+    if (q.status === "none") notes.push("AA found no flights " + how + ".");
+    else if (q.status !== "ok") notes.push("Search " + how + " failed: " + (q.message || "unknown error") + ".");
+    else if (q.message) notes.push("Search " + how + ": " + q.message + ".");
+  });
+  if (s.note) notes.push(s.note);
+  if (hasPrev) notes.push("▲/▼ under Open compares with the pull before this one (" + niceStamp(cur.prev.fetched_at) + ").");
+  if (notes.length) h += '<ul class="notes">' + notes.map(function(x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul>";
+  main.innerHTML = h;
+  document.getElementById("main-note").textContent = (rt.searches || []).map(function(q) { return q.via ? "via " + q.via : "nonstop"; }).join(" · ");
+
+  if (n > 1) {
+    var keys = {}, order = [];
+    DAY.snapshots.forEach(function(x) { var li = legIndex(x, key); Object.keys(li).forEach(function(k) { if (!keys[k]) { keys[k] = li[k]; order.push(k); } }); });
+    order.sort(function(a, b) { return (keys[a]._off - keys[b]._off) || mins(keys[a].dep) - mins(keys[b].dep); });
+    if (order.length) {
+      histCard.style.display = "";
+      var t = '<table class="grid hist"><thead><tr><th>Flight</th><th>Departs</th>' + DAY.snapshots.map(function(x) { return '<th class="r">' + esc(niceStamp(x.fetched_at)) + "</th>"; }).join("") + "</tr></thead><tbody>";
+      order.forEach(function(k) {
+        t += '<tr><td><span class="fl">AA ' + esc(keys[k].flight) + '</span> <span class="sub">' + esc(keys[k].from + "-" + keys[k].to) + "</span></td><td>" + esc(keys[k].dep) + dayTag(keys[k]) + "</td>" +
+          DAY.snapshots.map(function(x, i) { var l = legIndex(x, key)[k];
+            return '<td class="r num' + (i === cur.i ? " now" : "") + '">' + (l && l.available != null ? l.available + ' <span class="sub">(' + (l.nonrevs || 0) + ")</span>" : "–") + "</td>"; }).join("") + "</tr>";
+      });
+      document.getElementById("hist").innerHTML = t + "</tbody></table>";
+    }
+  }
+}
+
+async function loadDay() {
+  DAY = null;
+  if (INDEX.dates.some(function(d) { return d.date === S.date; })) {
+    var r = await fetch("/api/loads/" + S.date, { headers: authHeaders() });
+    if (r.ok) DAY = annotate(await r.json());
+  }
+  S.pull = null; render();
+}
+function setDate(d) { if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return; S.date = d; pushUrl(); renderControls(); loadDay(); }
+
+async function initApp() {
+  var r = await fetch("/api/loads/index", { headers: authHeaders() });
+  if (r.status === 401) {
+    localStorage.removeItem("logbook-token"); token = null;
+    document.getElementById("login").style.display = "block";
+    document.getElementById("app").style.display = "none";
+    document.getElementById("login-err").textContent = "sign in again";
+    return;
+  }
+  INDEX = await r.json();
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  var q = new URLSearchParams(location.search), t = todayIso();
+  if (q.get("dir") === "from") S.dir = "from";
+  if (INDEX.airports.indexOf((q.get("apt") || "").toUpperCase()) >= 0) S.apt = q.get("apt").toUpperCase();
+  var want = q.get("date");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(want || "")) {      // default: today if pulled, else the next pulled date, else the latest
+    var have = INDEX.dates.map(function(d) { return d.date; });
+    want = have.indexOf(t) >= 0 ? t : (have.filter(function(d) { return d > t; })[0] || have[have.length - 1] || t);
+  }
+  S.date = want; renderControls(); loadDay();
+}
+
+document.querySelectorAll("#dirs .chip").forEach(function(b) { b.addEventListener("click", function() { S.dir = b.dataset.dir; pushUrl(); renderControls(); render(); }); });
+document.getElementById("date").addEventListener("change", function() { if (this.value) setDate(this.value); });
+document.getElementById("prev").addEventListener("click", function() { setDate(addDays(S.date, -1)); });
+document.getElementById("next").addEventListener("click", function() { setDate(addDays(S.date, 1)); });
+document.getElementById("today").addEventListener("click", function() { setDate(todayIso()); });
+document.getElementById("pull").addEventListener("change", function() { S.pull = +this.value; render(); });
+
+document.getElementById("login-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  var resp = await fetch("/api/logbook/auth", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: document.getElementById("password").value }) });
+  if (!resp.ok) { document.getElementById("login-err").textContent = "incorrect password"; return; }
+  token = (await resp.json()).token; localStorage.setItem("logbook-token", token); initApp();
+});
+
+if (token) initApp();
+</script>
+</body>
+</html>
