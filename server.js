@@ -4671,7 +4671,35 @@ function loadsPulls(date) {
   if (!fs.existsSync(d)) return [];
   return fs.readdirSync(d).filter(f => /^\d{8}T\d{6}\.json$/.test(f)).sort();
 }
-app.get("/api/loads/index", logbookAuth, (req, res) => {
+// Its own password (Mike, 2026-11-26), set as LOADS_PASSWORD in the container, never in this
+// public repo. Unset means the page stays behind the logbook password only. A logbook token
+// also opens it. The password is short, so wrong guesses are limited per address.
+const LOADS_PASSWORD = process.env.LOADS_PASSWORD || "";
+const loadsFails = new Map();          // ip -> { n, until }
+const LOADS_MAX_FAILS = 5, LOADS_LOCK_MS = 30 * 60 * 1000;
+function loadsAuth(req, res, next) {
+  const token = (req.headers.authorization || "").replace(/^Bearer /, "");
+  if (token && verifyToken(token, ["loads", "logbook"])) return next();
+  res.status(401).json({ error: "unauthorized" });
+}
+app.post("/api/loads/auth", express.json(), (req, res) => {
+  const ip = getClientIp(req), now = Date.now();
+  let f = loadsFails.get(ip);
+  if (f && f.until > now) return res.status(429).json({ error: "too many tries, wait 30 minutes" });
+  if (!f || now - f.first > LOADS_LOCK_MS) f = { n: 0, first: now, until: 0 };
+  const password = String((req.body && req.body.password) || "");
+  const ok = !!password && ((LOADS_PASSWORD && password === LOADS_PASSWORD) || password === LOGBOOK_PASSWORD);
+  if (!ok) {
+    f.n += 1; if (f.n >= LOADS_MAX_FAILS) f.until = now + LOADS_LOCK_MS;
+    loadsFails.set(ip, f);
+    if (loadsFails.size > 5000) loadsFails.clear();
+    return res.status(401).json({ error: "bad password" });
+  }
+  loadsFails.delete(ip);
+  loginLog.record({ surface: "loads", identity: password === LOGBOOK_PASSWORD ? "Mike (owner)" : "loads password", ip, user_agent: req.headers["user-agent"] });
+  res.json({ token: issueToken(password === LOGBOOK_PASSWORD ? "logbook" : "loads") });
+});
+app.get("/api/loads/index", loadsAuth, (req, res) => {
   try {
     const dates = fs.existsSync(LOADS_DIR)
       ? fs.readdirSync(LOADS_DIR).filter(f => /^\d{4}-\d{2}-\d{2}$/.test(f)).sort() : [];
@@ -4679,7 +4707,7 @@ app.get("/api/loads/index", logbookAuth, (req, res) => {
                dates: dates.map(d => ({ date: d, pulls: loadsPulls(d).length })).filter(d => d.pulls) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.get("/api/loads/:date", logbookAuth, (req, res) => {
+app.get("/api/loads/:date", loadsAuth, (req, res) => {
   const date = String(req.params.date || "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "bad date" });
   try {

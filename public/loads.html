@@ -76,7 +76,7 @@ select.chip { appearance:none; }
 </header>
 
 <div id="login">
-  <h2 style="margin:0 0 0.8rem;font-size:1.1rem">Logbook sign-in</h2>
+  <h2 style="margin:0 0 0.8rem;font-size:1.1rem">Loads sign-in</h2>
   <form id="login-form">
     <input class="input" type="password" id="password" placeholder="password" autocomplete="current-password">
     <div class="err" id="login-err"></div>
@@ -134,7 +134,7 @@ select.chip { appearance:none; }
 </main>
 
 <script>
-var token = localStorage.getItem("logbook-token") || null;
+var token = localStorage.getItem("loads-token") || localStorage.getItem("logbook-token") || null;
 var INDEX = { dates: [], airports: ["GRR","ORD","AZO","SBN"], hub: "LHR" };
 var DAY = null;                       // {date, snapshots:[...]} for the chosen date
 var S = { dir: "to", apt: "GRR", date: null, pull: null, sort: "aa" };
@@ -370,7 +370,7 @@ function setDate(d) { if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return; S.date = d; pu
 async function initApp() {
   var r = await fetch("/api/loads/index", { headers: authHeaders() });
   if (r.status === 401) {
-    localStorage.removeItem("logbook-token"); token = null;
+    localStorage.removeItem("loads-token"); token = null;
     document.getElementById("login").style.display = "block";
     document.getElementById("app").style.display = "none";
     document.getElementById("login-err").textContent = "sign in again";
@@ -401,10 +401,10 @@ document.getElementById("pull").addEventListener("change", function() { S.pull =
 
 document.getElementById("login-form").addEventListener("submit", async function(e) {
   e.preventDefault();
-  var resp = await fetch("/api/logbook/auth", { method: "POST", headers: { "Content-Type": "application/json" },
+  var resp = await fetch("/api/loads/auth", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ password: document.getElementById("password").value }) });
-  if (!resp.ok) { document.getElementById("login-err").textContent = "incorrect password"; return; }
-  token = (await resp.json()).token; localStorage.setItem("logbook-token", token); initApp();
+  if (!resp.ok) { document.getElementById("login-err").textContent = resp.status === 429 ? "too many tries, wait 30 minutes" : "incorrect password"; return; }
+  token = (await resp.json()).token; localStorage.setItem("loads-token", token); initApp();
 });
 
 if (token) initApp();
