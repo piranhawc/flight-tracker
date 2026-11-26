@@ -56,6 +56,13 @@ select.chip { appearance:none; }
 .empty { color:var(--ink-2); font-size:0.95rem; }
 .empty code { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0.1rem 0.4rem; font-size:0.85em; color:var(--ink); }
 .hist td.now { font-weight:700; }
+.watchrow { display:flex; flex-wrap:wrap; align-items:center; gap:0.5rem; }
+.watchrow .err { min-height:0; }
+.wchip { display:inline-flex; align-items:center; gap:0.15rem; background:var(--surface-2); border:1px solid var(--border-2);
+  border-radius:999px; padding:0.1rem 0.2rem 0.1rem 0.7rem; font-size:0.8rem; font-weight:600; }
+.wchip button { background:none; border:0; color:var(--muted); cursor:pointer; font-size:0.95rem; padding:0.15rem 0.45rem; border-radius:999px; }
+.wchip button:hover { color:var(--down); }
+.wchip .st { color:var(--muted); font-weight:500; font-size:0.72rem; margin-left:0.25rem; }
 @media (max-width:640px) { .itin-head .tight { margin-left:0; width:100%; } }
 </style>
 </head>
@@ -123,6 +130,17 @@ select.chip { appearance:none; }
     <div id="main"></div>
   </section>
 
+  <section class="card" id="watch-card">
+    <div class="cardhead"><h2>Dates to pull</h2><span class="muted-note" id="watch-note"></span></div>
+    <div class="watchrow">
+      <input class="date" type="date" id="watch-date" aria-label="Date to add to the pull list">
+      <button class="chip" type="button" id="watch-add">Add date</button>
+      <span class="err" id="watch-err"></span>
+    </div>
+    <div class="days" id="watch-list" style="margin-top:0.8rem"></div>
+    <p class="muted-note" style="margin:0.8rem 0 0">Each pull covers every date on this list, all four airports, both directions. A date drops off once it has passed.</p>
+  </section>
+
   <section class="card" id="hist-card" style="display:none">
     <div class="cardhead"><h2>Open seats by pull</h2><span class="muted-note">each flight on this route, one column per pull; non-revs listed in brackets</span></div>
     <div class="scrollx" id="hist"></div>
@@ -136,6 +154,7 @@ select.chip { appearance:none; }
 <script>
 var token = localStorage.getItem("loads-token") || localStorage.getItem("logbook-token") || null;
 var INDEX = { dates: [], airports: ["GRR","ORD","AZO","SBN"], hub: "LHR" };
+var WATCH = { dates: [], max: 14 };
 var DAY = null;                       // {date, snapshots:[...]} for the chosen date
 var S = { dir: "to", apt: "GRR", date: null, pull: null, sort: "aa" };
 var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -276,10 +295,12 @@ function render() {
       return Math.abs(parseIso(a.date) - parseIso(S.date)) - Math.abs(parseIso(b.date) - parseIso(S.date)); }).slice(0, 4);
     main.innerHTML = '<p class="empty">No loads have been pulled for <b>' + esc(niceDate(S.date)) + "</b>." +
       (rel === "past" ? " The date has passed, so it can't be pulled now." :
-        " Pulls are manual. Ask Hermes <code>pull London loads for " + esc(S.date) + "</code>, or run <code>loads_sync.py " + esc(S.date) + "</code> on the Mac mini.") + "</p>" +
+        (WATCH.dates.indexOf(S.date) >= 0 ? " It is on the pull list and will be filled by the next pull." :
+          ' <button class="linkbtn" type="button" id="watch-this">Add it to the pull list</button>')) + "</p>" +
       (near.length ? '<p class="muted-note">Nearest dates with data: ' + near.map(function(d) {
         return '<button class="linkbtn" type="button" data-date="' + d.date + '">' + esc(niceDate(d.date)) + "</button>"; }).join(" · ") + "</p>" : "");
     main.querySelectorAll("[data-date]").forEach(function(b) { b.addEventListener("click", function() { setDate(b.dataset.date); }); });
+    var wt = document.getElementById("watch-this"); if (wt) wt.addEventListener("click", function() { setWatch(S.date, true); });
     return;
   }
 
@@ -357,6 +378,28 @@ function render() {
   }
 }
 
+function renderWatch() {
+  var have = {}; INDEX.dates.forEach(function(d) { have[d.date] = d.pulls; });
+  document.getElementById("watch-note").textContent = WATCH.dates.length + " of " + WATCH.max + " dates";
+  var l = document.getElementById("watch-list");
+  l.innerHTML = WATCH.dates.length ? WATCH.dates.map(function(d) {
+    return '<span class="wchip"><button class="linkbtn" type="button" data-date="' + d + '" style="color:var(--ink);padding:0">' + esc(niceDate(d)) + "</button>" +
+      '<span class="st">' + (have[d] ? have[d] + (have[d] === 1 ? " pull" : " pulls") : "not pulled yet") + "</span>" +
+      '<button type="button" data-rm="' + d + '" aria-label="Remove ' + esc(niceDate(d)) + ' from the pull list">✕</button></span>';
+  }).join("") : '<span class="muted-note">No dates on the list.</span>';
+  l.querySelectorAll("[data-date]").forEach(function(b) { b.addEventListener("click", function() { setDate(b.dataset.date); }); });
+  l.querySelectorAll("[data-rm]").forEach(function(b) { b.addEventListener("click", function() { setWatch(b.dataset.rm, false); }); });
+  var wd = document.getElementById("watch-date"); wd.min = todayIso(); if (!wd.value) wd.value = S.date >= todayIso() ? S.date : todayIso();
+}
+async function setWatch(date, on) {
+  var err = document.getElementById("watch-err"); err.textContent = "";
+  var r = await fetch("/api/loads/watch", { method: "PUT", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+    body: JSON.stringify({ date: date, watch: on }) });
+  var d = await r.json().catch(function() { return {}; });
+  if (!r.ok) { err.textContent = d.error || "could not save"; return; }
+  WATCH = d; renderWatch(); render();
+}
+
 async function loadDay() {
   DAY = null;
   if (INDEX.dates.some(function(d) { return d.date === S.date; })) {
@@ -389,6 +432,9 @@ async function initApp() {
     want = have.indexOf(t) >= 0 ? t : (have.filter(function(d) { return d > t; })[0] || have[have.length - 1] || t);
   }
   S.date = want; renderControls(); loadDay();
+  var w = await fetch("/api/loads/watch", { headers: authHeaders() });
+  if (w.ok) WATCH = await w.json();
+  renderWatch(); render();
 }
 
 document.querySelectorAll("#dirs .chip").forEach(function(b) { b.addEventListener("click", function() { S.dir = b.dataset.dir; pushUrl(); renderControls(); render(); }); });
@@ -396,6 +442,7 @@ document.getElementById("date").addEventListener("change", function() { if (this
 document.getElementById("prev").addEventListener("click", function() { setDate(addDays(S.date, -1)); });
 document.getElementById("next").addEventListener("click", function() { setDate(addDays(S.date, 1)); });
 document.getElementById("today").addEventListener("click", function() { setDate(todayIso()); });
+document.getElementById("watch-add").addEventListener("click", function() { var v = document.getElementById("watch-date").value; if (v) setWatch(v, true); });
 document.getElementById("sort").addEventListener("change", function() { S.sort = this.value; pushUrl(); render(); });
 document.getElementById("pull").addEventListener("change", function() { S.pull = +this.value; render(); });
 

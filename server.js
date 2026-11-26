@@ -4707,6 +4707,37 @@ app.get("/api/loads/index", loadsAuth, (req, res) => {
                dates: dates.map(d => ({ date: d, pulls: loadsPulls(d).length })).filter(d => d.pulls) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// The dates Mike wants pulled, picked on the page. The Mac mini reads this file
+// (loads_sync.py --watched); this server still never contacts AA or Sabre itself.
+const LOADS_WATCH_MAX = 14;
+const loadsToday = () => new Date(Date.now() - 6 * 3600 * 1000).toISOString().slice(0, 10);   // US Central-ish day
+function loadsWatch() {
+  let w = [];
+  try { w = JSON.parse(fs.readFileSync(path.join(LOADS_DIR, "watch.json"), "utf8")).dates || []; } catch (e) {}
+  const today = loadsToday();
+  return [...new Set(w.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= today))].sort();
+}
+app.get("/api/loads/watch", loadsAuth, (req, res) => res.json({ dates: loadsWatch(), max: LOADS_WATCH_MAX }));
+app.put("/api/loads/watch", loadsAuth, express.json(), (req, res) => {
+  const b = req.body || {}, date = String(b.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(Date.parse(date + "T00:00:00Z"))) return res.status(400).json({ error: "bad date" });
+  let dates = loadsWatch();
+  if (b.watch === false) dates = dates.filter(d => d !== date);
+  else {
+    const today = loadsToday(), last = new Date(Date.now() + 331 * 86400000).toISOString().slice(0, 10);
+    if (date < today) return res.status(400).json({ error: "that date has passed" });
+    if (date > last) return res.status(400).json({ error: "too far ahead; flights are not on sale yet" });
+    if (!dates.includes(date) && dates.length >= LOADS_WATCH_MAX) return res.status(400).json({ error: `the list is full (${LOADS_WATCH_MAX} dates); remove one first` });
+    dates = [...new Set([...dates, date])].sort();
+  }
+  try {
+    fs.mkdirSync(LOADS_DIR, { recursive: true });
+    const f = path.join(LOADS_DIR, "watch.json");
+    fs.writeFileSync(f + ".tmp", JSON.stringify({ dates, updated: new Date().toISOString() }, null, 1));
+    fs.renameSync(f + ".tmp", f);
+    res.json({ dates, max: LOADS_WATCH_MAX });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.get("/api/loads/:date", loadsAuth, (req, res) => {
   const date = String(req.params.date || "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "bad date" });
